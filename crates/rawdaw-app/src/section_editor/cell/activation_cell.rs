@@ -15,9 +15,10 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{ActivationState, TrackKind};
+use crate::fixture::{ActivationState, Realization, TrackKind};
 use crate::parts::StripePaper;
 use crate::section_editor::cell::identity_column::IdentityColumn;
+use crate::section_editor::cell::realization_column::RealizationColumn;
 use crate::theme;
 
 #[component]
@@ -34,6 +35,10 @@ pub fn ActivationCell(
     /// the right-aligned `silenced in this variant` /
     /// `replaced in this variant` tag in the cell footer.
     source_label: String,
+    /// `None` when the activation has no realization block (round-1
+    /// fixture rows still go through this component for now). Phases
+    /// 5 reads this in `RealizationColumn`.
+    realization: Option<Realization>,
 ) -> NodeHandle {
     let opacity = if matches!(state, ActivationState::Silent) {
         "0.78"
@@ -47,6 +52,7 @@ pub fn ActivationCell(
     let bg = theme::BG1.to_string();
     let radius = 6.0_f32;
     let stripe_color_for_identity = pattern_color.clone();
+    let realization_track_role = track_role.clone();
 
     rsx! {
         div { style: {wrap_style.clone()},
@@ -67,33 +73,14 @@ pub fn ActivationCell(
                         overridden_by_variant: overridden_by_variant,
                         source_label: source_label,
                     }
-                    RealizationPlaceholder { }
+                    RealizationColumn {
+                        realization: realization,
+                        track_kind: track_kind,
+                        track_role: realization_track_role,
+                    }
                     SchedulePlaceholder { }
                 }
             }
-        }
-    }
-}
-
-#[component]
-fn RealizationPlaceholder() -> NodeHandle {
-    let style = format!(
-        "padding: 12px 14px; border-right: 1px solid {line}; \
-         display: flex; flex-direction: column; gap: 6px; \
-         font-size: 11px; color: {text3}; font-style: italic;",
-        line = theme::LINE,
-        text3 = theme::TEXT3,
-    );
-    rsx! {
-        div { style: {style.clone()},
-            div {
-                style: "font-size: 10.5px; letter-spacing: 0.6px; \
-                        text-transform: uppercase; color: rgba(232,234,238,0.42); \
-                        font-weight: 600; font-style: normal;",
-                "Realization"
-            }
-            div { "voicing · octave · humanize" }
-            div { "(filled in phase 5)" }
         }
     }
 }

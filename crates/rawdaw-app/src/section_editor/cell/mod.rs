@@ -36,6 +36,7 @@ use crate::theme;
 mod activation_cell;
 mod cell_inherit;
 mod identity_column;
+mod realization_column;
 
 use activation_cell::ActivationCell;
 use cell_inherit::CellInherit;
@@ -232,7 +233,13 @@ fn CellRow(slot: CellSlot) -> NodeHandle {
             source_label,
             activation,
         } => {
-            let _ = activation; // realization/schedule columns ingest this in phases 5/6
+            // The realization parameters travel into the cell so Phase 5's
+            // RealizationColumn can compare them against the track role's
+            // defaults (`fixture::role_defaults`) and surface
+            // `↳ role default` vs `*` overrides per field. The schedule
+            // column (Phase 6) will read `activation.variant_schedule`
+            // similarly.
+            let realization = activation.realization;
             rsx! {
                 ActivationCell {
                     track_name: slot.track_name,
@@ -244,6 +251,7 @@ fn CellRow(slot: CellSlot) -> NodeHandle {
                     state: state,
                     overridden_by_variant: overridden_by_variant,
                     source_label: source_label.unwrap_or_default(),
+                    realization: realization,
                 }
             }
         }

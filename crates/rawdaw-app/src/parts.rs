@@ -139,6 +139,69 @@ pub fn StripePaper(
     }
 }
 
+/// Where an inherited value came from. Drives the [`InheritanceTag`]
+/// label and tooltip text. Default is `RoleDefault` because that's
+/// the only kind of inheritance the round-2 cell renders today —
+/// section-variant `↳ base` markers live on the meta bar and are
+/// inlined there because they fight rsx String-capture moves.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum InheritanceSource {
+    /// Field's value matches the track role's default — i.e. the cell
+    /// hasn't overridden it. Rendered as `↳ role default`.
+    #[default]
+    RoleDefault,
+    /// Field's value matches base (used on per-variant fields elsewhere
+    /// in the editor; not currently a cell-realization marker, but
+    /// keeps the enum extensible).
+    Base,
+}
+
+impl InheritanceSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::RoleDefault => "↳ role default",
+            Self::Base => "↳ base",
+        }
+    }
+
+    fn tooltip(self) -> &'static str {
+        match self {
+            Self::RoleDefault => "value matches the track role's default",
+            Self::Base => "inherited from base",
+        }
+    }
+}
+
+/// Small bordered badge announcing where a value came from. Currently
+/// surfaces on per-cell realization rows ([`InheritanceSource::RoleDefault`])
+/// and reserved for any future "this field is inheriting from base"
+/// indicator on per-variant cell fields ([`InheritanceSource::Base`]).
+///
+/// The address-space caveat in the round-2 README still applies: today
+/// `*` means "differs from base" on section meta and "differs from
+/// role default" on cell realization. If round 3 ever pairs both axes
+/// on the same field, the cell needs a paired indicator
+/// (e.g. `*` for role-override and `°` for variant-of-base).
+#[component]
+pub fn InheritanceTag(source: InheritanceSource) -> NodeHandle {
+    let style = format!(
+        "display: inline-flex; align-items: center; gap: 3px; \
+         color: {text3}; cursor: help; \
+         padding: 1px 5px; border-radius: 2px; \
+         border: 1px solid {line_soft}; letter-spacing: 0.2px; \
+         font-size: 10.5px;",
+        text3 = crate::theme::TEXT3,
+        line_soft = crate::theme::LINE_SOFT,
+    );
+    let label_owned = source.label().to_string();
+    let tip_owned = source.tooltip().to_string();
+    rsx! {
+        span { style: {style.clone()}, title: {tip_owned.clone()},
+            {label_owned.clone()}
+        }
+    }
+}
+
 /// Small state badge for an activation row / cell: `active` / `silent` /
 /// `inherit`, with an optional `*` mark when the value differs from
 /// base (variant-overridden). Shared by the round-1 inspector's

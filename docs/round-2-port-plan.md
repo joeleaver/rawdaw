@@ -289,7 +289,7 @@ from the arrangement view still works.
 
 ---
 
-## Phase 5 — Realization column + InheritanceTag
+## Phase 5 — Realization column + InheritanceTag ✅ done
 
 **Goal.** Where computed inheritance rules become real. Honor the
 port-time rule strictly: don't store inheritance flags — compute by
@@ -316,6 +316,43 @@ comparison.
 default`, `Anchored · 4` with `*`, humanize row populated. Drum cell
 shows the replacement text instead of dropdowns. Pad cell at chorus
 shows `drop2` + `*` (overrides role's `triad-open`).
+
+**Deviations from the original plan.**
+- **`InheritanceTag` lives in `parts.rs`, not `components/`.** Same
+  rationale as Phase 4's StripePaper landing. Source enum is
+  `InheritanceSource { RoleDefault, Base }`. The `Base` variant is
+  reserved for future use (the meta-bar's `↳ base` markers were
+  inlined in Phase 2 because String captures fight rsx `if` blocks
+  there — until that's revisited, only `RoleDefault` actually fires).
+- **Custom mini-controls, not stock `Slider`/`NumberInput`.** The
+  mockup's `MicroSlider` is a 64x4 div with a tinted accent fill bar
+  + label/value above; the seed field is a tiny tabular-nums readout.
+  Stock components would have been heavier and visually wrong.
+  Re-evaluate if the controls become interactive in a future round.
+- **`humanize_row` does not live in its own file.** The plan listed
+  `section_editor::cell::humanize_row` as a separate module; in
+  practice the HumanizeRow + MicroSlider + SeedField helpers
+  (~110 lines total) live inline at the bottom of
+  `realization_column.rs`, which itself stays well under the
+  ~700-line cap. Splitting would have added module noise without
+  cohesion gain.
+- **Realization plumbed through `ActivationCell` as `Option<Realization>`.**
+  The cell resolver already carries the `Activation` in
+  `ResolvedVariant::Active`; Phase 5 just adds a single
+  `realization: Option<Realization>` prop on `ActivationCell` and
+  forwards it. Phase 6 will follow the same pattern for the variant
+  schedule.
+- **Six new unit tests in `realization_column::tests`.** Cover the
+  three plan-required role-default comparisons (lead/triad-close
+  matches melodic role, pad/drop2 overrides, lead/Anchored(4)
+  overrides melodic) plus humanize-display formatting (rounded
+  velocity percent, `straight` swing, integer-percent rounding) and
+  the fill clamp.
+- **`humanize_row` `role_default` parameter is currently threaded
+  through but not surfaced.** The mockup doesn't paint a per-row
+  inheritance indicator on humanize controls (only on
+  voicing/octave). We accept the unused param now so the API doesn't
+  shift when a future spec round adds per-control inheritance marks.
 
 ---
 
