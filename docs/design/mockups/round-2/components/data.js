@@ -49,15 +49,18 @@
 
   // ─── Role defaults (used to compute "inherited from role" markers) ────
   // The activation's realization block can override these per-cell. When a
-  // cell value matches the role default, the UI shows an "inherited from
-  // role: X" marker instead of an override mark.
+  // cell value matches the role default, the UI shows a small `↳ role default`
+  // tag (the role itself is already disclosed in the cell header).
+  //
+  // Note: `octave` is OctaveSpec from composition-model.md —
+  // { Nearest, Anchored(o), UpFromPrev, DownFromPrev, RelativeToRole }.
   const roleDefaults = {
-    bass:        { voicing: 'power',           octave: 'role-default', humanization: { velocity: 0.04, timing: 4, swing: 0.0  } },
-    voicing:     { voicing: 'four-way-close',  octave: 'nearest',      humanization: { velocity: 0.06, timing: 6, swing: 0.0  } },
-    arp:         { voicing: 'triad-close',     octave: 'nearest',      humanization: { velocity: 0.05, timing: 3, swing: 0.0  } },
-    melodic:     { voicing: 'triad-close',     octave: 'nearest',      humanization: { velocity: 0.06, timing: 5, swing: 0.0  } },
-    pad:         { voicing: 'triad-open',      octave: 'role-default', humanization: { velocity: 0.02, timing: 2, swing: 0.0  } },
-    countermel:  { voicing: 'shell',           octave: 'nearest',      humanization: { velocity: 0.05, timing: 4, swing: 0.0  } },
+    bass:        { voicing: 'power',           octave: 'nearest',       humanization: { velocity: 0.04, timing: 4, swing: 0.0  } },
+    voicing:     { voicing: 'four-way-close',  octave: 'nearest',       humanization: { velocity: 0.06, timing: 6, swing: 0.0  } },
+    arp:         { voicing: 'triad-close',     octave: 'nearest',       humanization: { velocity: 0.05, timing: 3, swing: 0.0  } },
+    melodic:     { voicing: 'triad-close',     octave: 'nearest',       humanization: { velocity: 0.06, timing: 5, swing: 0.0  } },
+    pad:         { voicing: 'triad-open',      octave: 'anchored-3',    humanization: { velocity: 0.02, timing: 2, swing: 0.0  } },
+    countermel:  { voicing: 'shell',           octave: 'nearest',       humanization: { velocity: 0.05, timing: 4, swing: 0.0  } },
   };
 
   // Display labels for the voicing enum.
@@ -72,15 +75,16 @@
     'power':          'power',
   };
 
-  // Display labels for OctaveSpec.
+  // Display labels for OctaveSpec (per composition-model.md).
   const octaveLabels = {
-    'nearest':       'Nearest',
-    'role-default':  'Role default',
-    'anchored-3':    'Anchored · 3',
-    'anchored-4':    'Anchored · 4',
-    'anchored-5':    'Anchored · 5',
-    'up-from-prev':  'Up from prev',
-    'down-from-prev':'Down from prev',
+    'nearest':        'Nearest',
+    'anchored-2':     'Anchored · 2',
+    'anchored-3':     'Anchored · 3',
+    'anchored-4':     'Anchored · 4',
+    'anchored-5':     'Anchored · 5',
+    'up-from-prev':   'Up from prev',
+    'down-from-prev': 'Down from prev',
+    'relative-to-role': 'Relative to role',
   };
 
   // ─── Library: chord loops ───────────────────────────────────────────────
@@ -112,11 +116,14 @@
   };
 
   // ─── Library: patterns ──────────────────────────────────────────────────
+  // `defaultVariant` mirrors `Pattern.default_variant` in composition-model.md
+  // — the variant that plays for any bar range not covered by an explicit
+  // entry in an activation's variantSchedule.
   const patterns = {
-    'bass-main':  { id: 'p_bass',  name: 'bass-main',  color: palette.teal,  kind: 'Pitched', variants: 2, meta: 'Pitched · 2 variants' },
-    'lead-main':  { id: 'p_lead',  name: 'lead-main',  color: palette.plum,  kind: 'Pitched', variants: 1, meta: 'Pitched · 1 variant'  },
-    'drums-main': { id: 'p_drums', name: 'drums-main', color: palette.sage,  kind: 'Drum',    variants: 2, meta: 'Drum · 2 variants'    },
-    'pad-bed':    { id: 'p_pad',   name: 'pad-bed',    color: palette.slate, kind: 'Pitched', variants: 1, meta: 'Pitched · 1 variant'  },
+    'bass-main':  { id: 'p_bass',  name: 'bass-main',  color: palette.teal,  kind: 'Pitched', variants: 2, defaultVariant: 'main', meta: 'Pitched · 2 variants' },
+    'lead-main':  { id: 'p_lead',  name: 'lead-main',  color: palette.plum,  kind: 'Pitched', variants: 1, defaultVariant: 'main', meta: 'Pitched · 1 variant'  },
+    'drums-main': { id: 'p_drums', name: 'drums-main', color: palette.sage,  kind: 'Drum',    variants: 2, defaultVariant: 'main', meta: 'Drum · 2 variants'    },
+    'pad-bed':    { id: 'p_pad',   name: 'pad-bed',    color: palette.slate, kind: 'Pitched', variants: 1, defaultVariant: 'main', meta: 'Pitched · 1 variant'  },
   };
 
   // ─── Library: sections ──────────────────────────────────────────────────
@@ -148,7 +155,7 @@
           pattern: 'bass-main',  state: 'active',
           realization: {
             voicing: 'power',           voicingFromRole: true,   // inherits from role:bass
-            octave:  'role-default',    octaveFromRole:  true,
+            octave:  'nearest',         octaveFromRole:  true,
             humanization: { velocity: 0.04, timing: 4, swing: 0, seed: 1742 },
           },
           perNoteOverrides: 0,
@@ -169,12 +176,36 @@
           },
           perNoteOverrides: 0,
         },
-        pad:   { pattern: 'pad-bed', state: 'inherit' },
+        // `pad` deliberately omitted from verse — exercises the
+        // "no entry in base → cell renders as inherit placeholder" path.
       },
-      // sparse override: stripped variant silences bass + drums
+      // sparse override: stripped variant silences bass + drums entirely,
+      // AND replaces lead's activation with a variant-schedule that drops
+      // out for the last bar (a sub-range silence — exercises (BarRange,
+      // None) on a variantSchedule). The cell-level Silent in
+      // section-variants.md is the full-activation case; this is the
+      // partial-silence-within-an-activation case.
       variantOverrides: {
         stripped: {
-          activations: { bass: 'silent', drums: 'silent' },
+          activations: {
+            bass:  'silent',
+            drums: 'silent',
+            lead:  { replace: {
+              pattern: 'lead-main',
+              state: 'active',
+              // Bar 4 is silenced; bars 1–3 play the pattern's defaultVariant
+              // implicitly. No phantom "main" entry — same rule as chorus drums.
+              variantSchedule: [
+                { range: [3, 4], variant: null },  // silenced sub-range
+              ],
+              realization: {
+                voicing: 'triad-close',     voicingFromRole: true,
+                octave:  'anchored-4',      octaveFromRole:  false,
+                humanization: { velocity: 0.05, timing: 4, swing: 0, seed: 913 },
+              },
+              perNoteOverrides: 2,
+            }},
+          },
         },
       },
     },
@@ -189,7 +220,7 @@
           pattern: 'bass-main',  state: 'active',
           realization: {
             voicing: 'power',           voicingFromRole: true,
-            octave:  'role-default',    octaveFromRole:  true,
+            octave:  'nearest',         octaveFromRole:  true,
             humanization: { velocity: 0.04, timing: 4, swing: 0, seed: 1742 },
           },
           perNoteOverrides: 0,
@@ -205,10 +236,11 @@
         },
         drums: {
           pattern: 'drums-main', state: 'active',
-          // Pattern-variant schedule: fill in the last bar.
-          // (bar indices are absolute relative to bar 0 of the section)
+          // Pattern-variant schedule: only the non-default entry is stored.
+          // Uncovered ranges (bars 1–7 here) play the pattern's defaultVariant
+          // — computed at render time, never persisted as a phantom "main"
+          // entry. Matches the port-time rule in README.
           variantSchedule: [
-            { range: [0, 7], variant: 'main' },
             { range: [7, 8], variant: 'fill' },
           ],
           realization: {
@@ -220,7 +252,7 @@
           pattern: 'pad-bed', state: 'active',
           realization: {
             voicing: 'drop2',           voicingFromRole: false,  // overridden from role: pad (triad-open)
-            octave:  'role-default',    octaveFromRole:  true,
+            octave:  'nearest',         octaveFromRole:  false,  // overridden too — pad's role default is anchored
             humanization: { velocity: 0.02, timing: 2, swing: 0, seed: 3104 },
           },
           perNoteOverrides: 0,

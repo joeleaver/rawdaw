@@ -14,17 +14,24 @@ designs the activation cell at full fidelity.
 
 ## Quick start
 
-Open `section-editor.html` in any modern browser. Two artboards sit on
-the design canvas:
+Open `section-editor.html` in any modern browser. Three artboards on the
+design canvas:
 
-- **A · Verse / base** — clean baseline. Variant tabs visible (`base`,
-  `stripped`). Activation cells for bass / lead / drums / pad with
-  realization params populated.
-- **B · Chorus / base · drum-fill schedule + voicing override** — the
-  same surface for the 8-bar chorus, showing the **variant schedule
-  timeline** (drums: `main` bars 1–7, `fill` bar 8) and an explicit
-  voicing override (pad: `drop2` overriding role `pad`'s default
-  `triad-open`).
+- **A · Verse / base** — clean baseline. Variant tabs (`base`,
+  `stripped`); the pad track is **deliberately absent** from
+  `verse.activations`, so its cell renders as a dashed-border inherit
+  placeholder. Activation cells for bass / lead / drums show the
+  role-default vs. override patterns.
+- **B · Chorus / base** — variant schedule on drums (`main` 1–7,
+  `fill` 8 — diagonal hatch); voicing override on pad (`drop2`
+  overriding role `pad`'s `triad-open`).
+- **C · Verse / stripped** — exercises the section-variant override
+  path. Bass + drums are **Silent** (full-activation silence with a
+  "silenced in this variant" tag and inert realization). Lead carries
+  a **sub-range silence** — its variant schedule plays `main` for bars
+  1–3 and `(BarRange, None)` for bar 4, rendered with a dashed slashed
+  segment and an eye-off legend chip. Demonstrates both override axes
+  coexisting: section-variant override + activation-internal schedule.
 
 ```
 mockups/round-2/
@@ -165,6 +172,53 @@ Each cell is a 3-column grid:
     pattern's color) across the whole schedule without losing
     legibility. Color stays object-identity, hatch is the modulator.
 
+19. **Three "default" concepts get three different treatments.** The
+    word "default" is overloaded in the model — distinguishing them
+    visually keeps principle 10 honest:
+    - The *section's* default variant: italic light-grey
+      "default variant" label next to the tab name.
+    - A *cell's* lack of a variant schedule: no header phrase, no
+      legend; only the in-timeline `main` segment label carries the
+      signal.
+    - A *pattern's* default variant: legend chips for non-default
+      segments only — the implicit-default segment doesn't get a chip.
+
+20. **Sub-range silence ≠ section-variant Silent.** Two distinct
+    override paths, two distinct visuals:
+    - **Section-variant Silent** (full activation): cell dimmed,
+      `silent*` state pill, "silenced in this variant" footer tag.
+      Realization params remain visible but inert. (Verse `stripped`:
+      bass + drums.)
+    - **Activation-schedule (BarRange, None)** (sub-range): dashed
+      slashed segment inside an otherwise-active timeline + italic
+      "silent" label inside the segment + dashed eye-off legend chip.
+      The cell is fully active; only that bar range is silent. (Verse
+      `stripped` → lead, bar 4.)
+
+21. **Add-affordances are phrased to disambiguate blast radius.**
+    "New variant" creates a `SectionVariantOverride` (this section
+    only); "New track to project" adds a `Track` global to the project;
+    "+ Loop range" adds a `(BarRange, ChordLoopRef)` to this section's
+    `chord_loops`. Same `+` glyph, different verb + noun.
+
+22. **`+ Loop range` lives in the field header, not inside the strip.**
+    Adding a range edits the section's chord-loop schedule, not the
+    loop's contents — placing the affordance inside the chord cells
+    suggested "add another chord," which is the chord-loop editor's
+    job in round 3.
+
+23. **Pinned-notes chip is promoted to a discrete affordance** —
+    pill-style with a warm accent (the only place identity-neutral
+    accent color appears on a cell). The chip carries the count, the
+    chevron, and acts as the round-3 entry point to the piano roll
+    filtered on this activation's `per_note_overrides`. Cells with
+    zero pins show a muted "no pinned notes" hint instead.
+
+24. **Inheritance tag shortens to `↳ role default`** (was `↳ role: X`).
+    The role itself is disclosed once in the cell header — repeating
+    it on every realization row was noise. The tooltip on the tag
+    spells out the relationship.
+
 ---
 
 ## Open round-2 questions
@@ -234,13 +288,29 @@ These are for the Rust/Rinch port:
   data, that range is **absent** — uncovered ranges play the pattern's
   `default_variant`. Don't introduce a phantom "default" entry in the
   binding; compute the default fill at render time.
-- **`voicingFromRole` / `octaveFromRole` are display-only flags** in the
-  fixture. The Rust binding doesn't need them — the component should
-  compare the activation's realization value against
-  `Project.tracks[ti].role`'s default. If they match, render the `↳
-  role:` tag; if not, render the override mark.
+- **Sub-range silences are `(BarRange, None)` entries** in the same
+  `Vec`, not a separate Vec. The mockup renders them as dashed slashed
+  segments; the data is just `variant: None`.
+- **`voicingFromRole` / `octaveFromRole` are fixture-only flags.** The
+  Rust binding must NOT replicate them as stored fields — two pieces of
+  state for one fact (the value itself vs. "the value matches the role
+  default") will drift on edit. Compute the indicator by comparing the
+  activation's realization value against
+  `Project.tracks[ti].role`'s entry in the role-defaults table. Same
+  rule applies to "↳ base" inheritance markers on section meta fields.
 - **Inheritance asterisks are computed, not stored.** Same rule as
   round-1's `inherit` state — it's a derived UI signal.
+- **Asterisk address-space caveat.** Today the same `*` glyph means
+  two different things by context: in the section meta bar it's
+  "differs from base" (variant-vs-base axis); in an activation cell's
+  realization row it's "differs from role default" (cell-vs-role axis).
+  Tooltips disambiguate. A future need to show a cell-field override
+  of base **at the same time** as a cell-field override of role (e.g.
+  "in `stripped`, the lead activation's voicing is also overridden")
+  would exhaust the single-asterisk channel. If/when that arises, the
+  cell would need a paired indicator (e.g. `*` for role, `°` or `↑`
+  for variant-of-base). Flagged here so the round-3 design doesn't
+  paint itself into the corner.
 - **Humanization seed is `u64` (per `realization.md`).** Display
   as a 5-6 digit decimal in the fixture for readability; engineering
   should expose the full `u64` or a base-36 short string in the real

@@ -8,18 +8,29 @@ const ActivationCell = ({ section, track, currentVariant = 'base' }) => {
   const t = window.RD.tokens;
   const RD = window.RD;
   const base = section.activations[track.name];
-  const ov = section.variantOverrides?.[currentVariant]?.activations?.[track.name];
+  const ov   = section.variantOverrides?.[currentVariant]?.activations?.[track.name];
 
-  // Effective state for this variant.
-  const variantSilent = ov === 'silent';
-  const eff = variantSilent
-    ? { ...base, state: 'silent', overridden: true }
-    : { ...base, overridden: false };
+  // Resolve effective activation entry per the merge semantics from
+  // section-variants.md. Three cases (the variant override map is sparse):
+  //   absent      → inherit from base (or render CellInherit if base is also absent)
+  //   'silent'    → silenced for the whole activation in this variant
+  //   { replace } → entirely replace the activation entry with this one
+  if (!base && !ov) return <CellInherit track={track} reason="no entry in base" />;
 
-  if (!base) return <CellInherit track={track} />;
+  let eff, sourceLabel;
+  if (ov === 'silent') {
+    eff = { ...base, state: 'silent', overridden: 'variant' };
+    sourceLabel = 'silenced in this variant';
+  } else if (ov && typeof ov === 'object' && ov.replace) {
+    eff = { ...ov.replace, overridden: 'variant' };
+    sourceLabel = 'replaced in this variant';
+  } else {
+    eff = { ...base, overridden: false };
+    sourceLabel = null;
+  }
 
   const pattern = RD.patterns[eff.pattern];
-  const accentColor = pattern.color;
+  const accentColor = pattern ? pattern.color : t.text2;
 
   return (
     <div style={{
@@ -30,14 +41,10 @@ const ActivationCell = ({ section, track, currentVariant = 'base' }) => {
       borderLeft: `3px solid ${accentColor}`,
       opacity: eff.state === 'silent' ? 0.78 : 1,
     }}>
-      {/* COL 1 — identity, pattern, state */}
       <CellIdentity track={track} pattern={pattern} eff={eff}
-        section={section} currentVariant={currentVariant} />
-
-      {/* COL 2 — realization */}
+        section={section} currentVariant={currentVariant}
+        sourceLabel={sourceLabel} />
       <CellRealization track={track} eff={eff} />
-
-      {/* COL 3 — variant schedule + per-note overrides */}
       <CellSchedule track={track} pattern={pattern} eff={eff}
         section={section} currentVariant={currentVariant} />
     </div>
@@ -45,17 +52,17 @@ const ActivationCell = ({ section, track, currentVariant = 'base' }) => {
 };
 
 // ─── Col 1: identity / pattern / state ────────────────────────────────────
-const CellIdentity = ({ track, pattern, eff, section, currentVariant }) => {
+const CellIdentity = ({ track, pattern, eff, section, currentVariant, sourceLabel }) => {
   const t = window.RD.tokens;
   return (
     <div style={{
       padding: '12px 14px',
       borderRight: `1px solid ${t.line}`,
       display: 'flex', flexDirection: 'column', gap: 10,
-      background: rgba(pattern.color, 0.04),
+      background: pattern ? rgba(pattern.color, 0.04) : 'transparent',
     }}>
       {/* Track row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Icon name={track.kind === 'Drum' ? 'pattern' : 'wave'} size={14} stroke={t.text1} />
         <span style={{ fontSize: 13.5, fontWeight: 600, color: t.text0, letterSpacing: -0.1 }}>
           {track.name}
@@ -69,66 +76,90 @@ const CellIdentity = ({ track, pattern, eff, section, currentVariant }) => {
           </Pill>
         )}
         <span style={{ flex: 1 }} />
-        <StatePill state={eff.state} overridden={eff.overridden} />
+        <StatePill state={eff.state} overridden={!!eff.overridden} />
       </div>
 
-      {/* Pattern row */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '6px 8px', borderRadius: 4,
-        background: t.bg0, border: `1px solid ${t.line}`,
-      }}>
-        <span style={{
-          width: 9, height: 9, borderRadius: 2,
-          background: pattern.color, flex: '0 0 auto',
-          border: `1px solid ${rgba(pattern.color, 0.6)}`,
-        }} />
-        <span style={{ fontSize: 12.5, color: t.text0, fontWeight: 500 }}>{pattern.name}</span>
-        <span style={{ fontSize: 11, color: t.text3 }}>· {pattern.kind}</span>
-        <span style={{ flex: 1 }} />
-        <button title="Open in pattern editor" style={iconBtn(t)}>
-          <Icon name="chevron-r" size={13} stroke={t.text2} />
-        </button>
-      </div>
-
-      {/* Footer hints */}
-      <div style={{
-        display: 'flex', gap: 12, marginTop: 'auto',
-        fontSize: 11, color: t.text2,
-        alignItems: 'center',
-      }}>
-        {(eff.perNoteOverrides ?? 0) > 0 && (
-          <button style={{
-            background: 'transparent', border: 0, padding: 0,
-            color: t.text1, cursor: 'pointer',
-            display: 'inline-flex', alignItems: 'center', gap: 4,
-            fontSize: 11,
-          }} title="open piano roll on pinned notes">
-            <Icon name="dot" size={8} stroke={t.text1} />
-            <span>{eff.perNoteOverrides} pinned</span>
-            <Icon name="chevron-r" size={11} stroke={t.text2} />
+      {/* Pattern row — present whenever a pattern is bound */}
+      {pattern && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '6px 8px', borderRadius: 4,
+          background: t.bg0, border: `1px solid ${t.line}`,
+        }}>
+          <span style={{
+            width: 9, height: 9, borderRadius: 2,
+            background: pattern.color, flex: '0 0 auto',
+            border: `1px solid ${rgba(pattern.color, 0.6)}`,
+          }} />
+          <span style={{ fontSize: 12.5, color: t.text0, fontWeight: 500 }}>{pattern.name}</span>
+          <span style={{ fontSize: 11, color: t.text3 }}>· {pattern.kind}</span>
+          <span style={{ flex: 1 }} />
+          <button title="Open in pattern editor (round 3)" style={iconBtn(t)}>
+            <Icon name="chevron-r" size={13} stroke={t.text2} />
           </button>
+        </div>
+      )}
+
+      {/* Footer: pinned badge OR variant-override hint */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        marginTop: 'auto',
+        fontSize: 11, color: t.text2,
+      }}>
+        {(eff.perNoteOverrides ?? 0) > 0 ? (
+          <button title="Open piano roll on pinned notes" style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            padding: '3px 8px', borderRadius: 11,
+            background: 'rgba(213,200,166,0.10)',
+            border: '1px solid rgba(213,200,166,0.35)',
+            color: '#D5C8A6', cursor: 'pointer',
+            fontSize: 11, fontWeight: 500,
+          }}>
+            <Icon name="dot" size={7} stroke="#D5C8A6" />
+            <span>{eff.perNoteOverrides} pinned</span>
+            <Icon name="chevron-r" size={11} stroke="#D5C8A6" />
+          </button>
+        ) : (
+          <span style={{ color: t.text3, fontStyle: 'italic' }}>no pinned notes</span>
         )}
-        {(eff.perNoteOverrides ?? 0) === 0 && (
-          <span style={{ color: t.text3 }}>no per-note overrides</span>
+        {sourceLabel && (
+          <span title="see Variants tab" style={{
+            marginLeft: 'auto', fontSize: 10.5, color: t.text2,
+            padding: '1px 6px', borderRadius: 2,
+            border: `1px solid ${t.lineSoft}`,
+            letterSpacing: 0.2,
+          }}>{sourceLabel}</span>
         )}
       </div>
     </div>
   );
 };
 
-const CellInherit = ({ track }) => {
+const CellInherit = ({ track, reason }) => {
   const t = window.RD.tokens;
   return (
     <div style={{
-      background: t.bg1, border: `1px dashed ${t.line}`,
-      borderRadius: 6, padding: '14px 16px',
-      display: 'flex', alignItems: 'center', gap: 10,
+      background: t.bg1,
+      border: `1px dashed ${t.line}`,
+      borderRadius: 6, padding: '14px 18px',
+      display: 'flex', alignItems: 'center', gap: 12,
       color: t.text2, fontSize: 12.5,
     }}>
       <Icon name="dot" size={8} stroke={t.text3} />
       <strong style={{ fontWeight: 600, color: t.text1 }}>{track.name}</strong>
-      <span>inherits from base · no entry in this variant</span>
+      <span style={{ color: t.text3, fontSize: 10, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+        {track.kind}
+      </span>
+      {track.role && (
+        <Pill style={{ height: 16, padding: '0 5px' }}>role: {track.role}</Pill>
+      )}
+      <span style={{ flex: 1 }} />
+      <span style={{ color: t.text3 }}>{reason}</span>
+      <button style={{
+        padding: '3px 10px', borderRadius: 3,
+        background: 'transparent', border: `1px solid ${t.line}`,
+        color: t.text1, cursor: 'pointer', fontSize: 11,
+      }}>+ Add activation</button>
     </div>
   );
 };
@@ -151,7 +182,7 @@ const CellRealization = ({ track, eff }) => {
         <DropdownRow
           label="Voicing"
           value={window.RD.voicingLabels[r.voicing] || '—'}
-          inheritedFrom={r.voicingFromRole ? `role: ${track.role}` : null}
+          inheritedFromRole={r.voicingFromRole}
           overridden={r.voicingFromRole === false}
         />
       )}
@@ -160,7 +191,7 @@ const CellRealization = ({ track, eff }) => {
         <DropdownRow
           label="Octave"
           value={window.RD.octaveLabels[r.octave] || '—'}
-          inheritedFrom={r.octaveFromRole ? `role: ${track.role}` : null}
+          inheritedFromRole={r.octaveFromRole}
           overridden={r.octaveFromRole === false}
         />
       )}
@@ -190,7 +221,7 @@ const SectionHeader = ({ children, action }) => {
   );
 };
 
-const DropdownRow = ({ label, value, inheritedFrom, overridden }) => {
+const DropdownRow = ({ label, value, inheritedFromRole, overridden }) => {
   const t = window.RD.tokens;
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '64px 1fr auto', gap: 8, alignItems: 'center' }}>
@@ -206,16 +237,16 @@ const DropdownRow = ({ label, value, inheritedFrom, overridden }) => {
         </span>
         <Icon name="chevron-d" size={11} stroke={t.text2} />
       </div>
-      <div style={{ minWidth: 90, fontSize: 10.5 }}>
-        {inheritedFrom && (
-          <span title={`inherited from ${inheritedFrom}`} style={{
+      <div style={{ minWidth: 92, fontSize: 10.5, display: 'flex', justifyContent: 'flex-end' }}>
+        {inheritedFromRole && (
+          <span title="value matches the track role's default" style={{
             display: 'inline-flex', alignItems: 'center', gap: 3,
             color: t.text3, cursor: 'help',
             padding: '1px 5px', borderRadius: 2,
             border: `1px solid ${t.lineSoft}`,
             letterSpacing: 0.2,
           }}>
-            ↳ {inheritedFrom}
+            ↳ role default
           </span>
         )}
         {overridden && <InheritMark kind="overridden" />}
@@ -307,59 +338,77 @@ const CellSchedule = ({ track, pattern, eff, section, currentVariant }) => {
   const schedule = eff.variantSchedule;
   const hasSchedule = !!(schedule && schedule.length);
 
-  // Build segments: if no schedule, the whole range is the pattern's default
-  // variant. Otherwise tile the schedule and fill gaps with the default.
+  // Default-variant ranges are absent in the data; compute them at render
+  // time to fill the gaps. Silenced sub-ranges (variant === null) render as
+  // a distinct visual state (slashed background).
+  const defaultVariantId = pattern?.defaultVariant ?? 'main';
   const segments = (() => {
     if (!hasSchedule) {
-      return [{ range: [0, totalBars], variant: pattern.variants && pattern.variants > 1 ? 'main' : 'main', isDefault: true }];
+      return [{ range: [0, totalBars], variant: defaultVariantId, isDefault: true }];
     }
-    return schedule.map(s => ({ ...s, isDefault: false }));
+    // Build segments from schedule entries + implicit default fills.
+    const out = [];
+    let cursor = 0;
+    [...schedule].sort((a, b) => a.range[0] - b.range[0]).forEach(s => {
+      if (s.range[0] > cursor) {
+        out.push({ range: [cursor, s.range[0]], variant: defaultVariantId, isDefault: true });
+      }
+      out.push({ ...s, isDefault: false });
+      cursor = s.range[1];
+    });
+    if (cursor < totalBars) {
+      out.push({ range: [cursor, totalBars], variant: defaultVariantId, isDefault: true });
+    }
+    return out;
   })();
 
-  // Note: pattern variants are conceptually distinct from "main" — show fill
-  // / build / etc as accent strokes within the pattern's identity color.
+  // Whether there are any non-default segments (variants OR silenced)
+  // determines if a legend is worth showing at all.
+  const hasNonDefault = segments.some(s => !s.isDefault);
+
   return (
     <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <SectionHeader
-        action={hasSchedule
-          ? <span style={{ fontSize: 10, color: t.text3, letterSpacing: 0.4 }}>
-              {segments.length} segment{segments.length === 1 ? '' : 's'}
-            </span>
-          : <span style={{ fontSize: 10, color: t.text3, letterSpacing: 0.4 }}>
-              default variant only
-            </span>}>
-        Variant schedule
-      </SectionHeader>
+      <SectionHeader>Variant schedule</SectionHeader>
 
-      {/* Timeline */}
       <ScheduleTimeline
         totalBars={totalBars}
         segments={segments}
-        color={pattern.color}
+        color={pattern ? pattern.color : t.text2}
         silent={eff.state === 'silent'}
       />
 
-      {/* Variant legend */}
-      <div style={{
-        display: 'flex', flexWrap: 'wrap', gap: 8,
-        fontSize: 10.5, color: t.text2, alignItems: 'center',
-      }}>
-        <LegendChip color={pattern.color} variant="main"  isDefault />
-        {hasSchedule && segments.filter(s => s.variant !== 'main').map((s, i) => (
-          <LegendChip key={i} color={pattern.color} variant={s.variant}
-            range={`bar ${s.range[0] + 1}–${s.range[1]}`} />
-        ))}
-        <span style={{ marginLeft: 'auto', color: t.text3, fontSize: 10 }}>
-          click a sub-range to assign a pattern variant
-        </span>
-      </div>
+      {/* Legend only when there's something non-default worth labelling. */}
+      {hasNonDefault && pattern && (
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', gap: 8,
+          fontSize: 10.5, color: t.text2, alignItems: 'center',
+        }}>
+          {segments.filter(s => !s.isDefault).map((s, i) => (
+            <LegendChip key={i}
+              color={pattern.color}
+              variant={s.variant === null ? 'silent' : s.variant}
+              range={formatBarRange(s.range)}
+              silenced={s.variant === null}
+            />
+          ))}
+          <span style={{ marginLeft: 'auto', color: t.text3, fontSize: 10 }}>
+            click a sub-range to assign / silence a pattern variant
+          </span>
+        </div>
+      )}
     </div>
   );
 };
 
+// "bar 8" for a single bar, "bar 1–3" for a range. Inclusive-start, exclusive-end.
+const formatBarRange = ([a, b]) =>
+  (b - a) === 1 ? `bar ${a + 1}` : `bar ${a + 1}–${b}`;
+
 const ScheduleTimeline = ({ totalBars, segments, color, silent }) => {
   const t = window.RD.tokens;
-  const H = 28;
+  const H = 36;                  // bumped from 28 to seat tick labels w/ proper baseline
+  const SEG_TOP = 3;
+  const SEG_BOT = 13;            // leaves ~10px lane at bottom for tick labels
   return (
     <div style={{
       position: 'relative', height: H,
@@ -381,36 +430,61 @@ const ScheduleTimeline = ({ totalBars, segments, color, silent }) => {
       {segments.map((s, i) => {
         const x = (s.range[0] / totalBars) * 100;
         const w = ((s.range[1] - s.range[0]) / totalBars) * 100;
-        const isFill = !s.isDefault;
+        const isSilenced = s.variant === null;
+        const isFill = !s.isDefault && !isSilenced;
+
+        // Silenced sub-range: muted background with diagonal slashes, no
+        // text. Variant fill: identity color + denser hatch.
+        // Default: identity color at low alpha.
+        let bg, border, image;
+        if (isSilenced) {
+          bg = 'rgba(232,234,238,0.04)';
+          border = `1px dashed ${t.line}`;
+          image = `repeating-linear-gradient(135deg,
+            transparent 0 5px,
+            rgba(232,234,238,0.10) 5px 6px)`;
+        } else if (silent) {
+          bg = 'rgba(232,234,238,0.05)';
+          border = `1px solid ${t.line}`;
+          image = 'none';
+        } else if (isFill) {
+          bg = rgba(color, 0.34);
+          border = `1px solid ${rgba(color, 0.7)}`;
+          image = `repeating-linear-gradient(135deg,
+            transparent 0 4px,
+            ${rgba(color, 0.18)} 4px 6px)`;
+        } else {
+          bg = rgba(color, 0.16);
+          border = `1px solid ${rgba(color, 0.35)}`;
+          image = 'none';
+        }
+
         return (
           <div key={i} style={{
             position: 'absolute',
-            left: `${x}%`, top: 3, bottom: 3,
+            left: `${x}%`,
+            top: SEG_TOP, height: H - SEG_TOP - SEG_BOT,
             width: `${w}%`,
-            background: silent
-              ? 'rgba(232,234,238,0.05)'
-              : rgba(color, isFill ? 0.34 : 0.16),
-            border: `1px solid ${rgba(color, isFill ? 0.7 : 0.35)}`,
-            borderRadius: 2,
+            background: bg, border, borderRadius: 2,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 10.5, color: 'rgba(232,234,238,0.86)',
+            fontSize: 10.5,
+            color: isSilenced ? t.text3 : 'rgba(232,234,238,0.86)',
             fontWeight: isFill ? 600 : 500,
             letterSpacing: 0.2,
-            backgroundImage: isFill
-              ? `repeating-linear-gradient(135deg, transparent 0 4px, ${rgba(color, 0.18)} 4px 6px)`
-              : 'none',
+            backgroundImage: image,
             cursor: 'pointer',
+            fontStyle: isSilenced ? 'italic' : 'normal',
           }}>
-            {s.variant}
+            {isSilenced ? 'silent' : s.variant}
           </div>
         );
       })}
 
-      {/* bar number ticks at bottom */}
+      {/* bar number ticks at bottom — own lane below the segments */}
       <svg width="100%" height={H} style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
         {Array.from({ length: totalBars }, (_, i) => (
           <text key={i}
-            x={`${((i + 0.5) / totalBars) * 100}%`} y={H - 2}
+            x={`${((i + 0.5) / totalBars) * 100}%`} y={H - 3}
             textAnchor="middle"
             fontSize="9" fill={t.text3}
             fontFamily={t.fontNum}
@@ -422,19 +496,20 @@ const ScheduleTimeline = ({ totalBars, segments, color, silent }) => {
   );
 };
 
-const LegendChip = ({ color, variant, range, isDefault }) => {
+const LegendChip = ({ color, variant, range, silenced }) => {
   const t = window.RD.tokens;
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 5,
       padding: '1px 6px 1px 4px', borderRadius: 2,
-      border: `1px solid ${rgba(color, 0.4)}`,
-      background: rgba(color, isDefault ? 0.10 : 0.20),
+      border: silenced ? `1px dashed ${t.line}` : `1px solid ${rgba(color, 0.4)}`,
+      background: silenced ? 'transparent' : rgba(color, 0.20),
       fontSize: 10.5, color: t.text1,
     }}>
-      <span style={{ width: 7, height: 7, borderRadius: 1.5, background: color, flex: '0 0 auto' }} />
-      <span>{variant}</span>
-      {isDefault && <span style={{ color: t.text3, fontSize: 9.5, letterSpacing: 0.3, textTransform: 'uppercase' }}>default</span>}
+      {silenced
+        ? <Icon name="eye-off" size={10} stroke={t.text2} />
+        : <span style={{ width: 7, height: 7, borderRadius: 1.5, background: color, flex: '0 0 auto' }} />}
+      <span style={{ fontStyle: silenced ? 'italic' : 'normal' }}>{variant}</span>
       {range && <span style={{ color: t.text3, fontSize: 9.5 }}>{range}</span>}
     </span>
   );

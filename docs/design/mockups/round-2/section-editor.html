@@ -112,43 +112,46 @@
 
         <Anno x={1612} y={150} n={2}>
           <strong>Variant tabs are first-class</strong> (principle 4) —
-          <code>base</code> + <code>stripped</code> here. Click a tab to
-          show that variant's effective view; fields that inherit from base
-          carry the same <code>↳ base</code> tag used in round-1's
-          inspector.
+          <code>base</code> + <code>stripped</code> here. The italic
+          <em> default variant</em> label is distinct from the
+          <code> pattern default</code> chip and the
+          <code> ↳ base</code> meta-tag — three different model concepts,
+          three different treatments.
         </Anno>
 
-        <Anno x={1612} y={260} n={3}>
-          <strong>Section meta</strong> sits in its own bar above the
-          activations — duration, scale override, chord-loop schedule. The
-          chord-loop strip tiles the loop across the section's bars (4
-          chords here · 1 loop · auto-repeated to fill).
+        <Anno x={1612} y={278} n={3}>
+          <strong>Section meta</strong> sits in its own bar. The
+          <strong> + Loop range</strong> affordance lives in the field
+          header, not inside the chord cells — adding a chord-loop range
+          modifies <code>section.chord_loops</code>, not the loop itself.
         </Anno>
 
-        <Anno x={1612} y={388} n={4}>
-          <strong>Activation cells</strong> stack one per track. Each
-          cell is split: identity / pattern / state on the left, realization
-          params in the middle, variant schedule on the right.
+        <Anno x={1612} y={406} n={4}>
+          <strong>Activation cells</strong> stack one per track. Each is
+          split: identity / pattern / state · realization · variant
+          schedule. The cell's left stripe inherits the
+          <em> pattern's</em> identity color.
         </Anno>
 
         <Anno x={1612} y={518} n={5}>
-          <strong>Role-inherited indicator.</strong> Voicing &amp; OctaveSpec
-          show <code>↳ role: bass</code> when the activation hasn't overridden
-          the role default. Click to override (turns the marker into a
-          plain asterisk).
+          <strong>↳ role default</strong> tag = "value matches the track
+          role's default" (the role itself is disclosed two lines up, in
+          the cell header — no need to repeat it). Click the dropdown to
+          override; the tag becomes an asterisk.
         </Anno>
 
-        <Anno x={1612} y={628} n={6}>
+        <Anno x={1612} y={620} n={6}>
           <strong>Octave overridden</strong> on the lead activation — pinned
-          to <code>Anchored · 4</code> instead of the role's <code>Nearest</code>.
-          Asterisk + tooltip is the unified signal across cells (carried over
-          from round-1).
+          to <code>Anchored · 4</code> instead of the role's
+          <code> Nearest</code>. Asterisk + tooltip is the unified signal,
+          carried over from round-1.
         </Anno>
 
-        <Anno x={1612} y={742} n={7}>
-          <strong>Drum activations</strong> hide voicing &amp; octave (not
-          meaningful — drums are pitch-symbolic). Realization on drums is
-          just humanization + variant schedule.
+        <Anno x={1612} y={732} n={7}>
+          <strong>pad inherits</strong> — no entry in <code>verse.activations</code>
+          for the pad track, so the cell renders as a dashed-border
+          placeholder. Click <em>+ Add activation</em> to materialize an
+          entry in this section's base.
         </Anno>
       </div>
     );
@@ -159,44 +162,90 @@
         <Shell><SectionEditor sectionKey="chorus" currentVariant="base" /></Shell>
 
         <Anno x={1612} y={50} n="A">
-          <strong>Chorus · 8 bars · single variant.</strong> The variant tab
-          strip still shows the <code>+ variant</code> affordance — variants
-          are cheap and the section model encourages creating one rather
-          than per-instance overrides.
+          <strong>Chorus · 8 bars · single variant.</strong> The
+          <em> + New variant</em> button is phrased to disambiguate from
+          <em> + New track to project</em> — different blast radius.
         </Anno>
 
         <Anno x={1612} y={188} n="B">
-          <strong>Chord-loop strip</strong> at 8 bars: <code>chorus-progression</code>
-          (vi IV I V) auto-loops to fill — 2 iterations. Each loop's first cell
-          carries the chord-loop's identity-color stripe (olive); subsequent
-          cells inherit color, so the loop boundary is visible at a glance.
+          <strong>Chord-loop strip</strong> at 8 bars:
+          <code> chorus-progression</code> (vi IV I V) auto-loops twice.
+          The first cell of each iteration carries the loop's identity-color
+          stripe (olive); subsequent cells inherit it.
         </Anno>
 
-        <Anno x={1612} y={420} n="C">
-          <strong>Variant schedule timeline</strong> per activation — drums
-          here pin <code>main</code> for bars 1–7 and <code>fill</code> for
-          bar 8 (the diagonal hatch). Click any sub-range to assign a
-          pattern variant; click the right edge to drag a new split.
+        <Anno x={1612} y={400} n="C">
+          <strong>Variant schedule timeline</strong> — drums pin
+          <code> main</code> for bars 1–7 and <code>fill</code> for bar 8
+          (the diagonal hatch). The bar 1–7 segment is the implicit default
+          fill; the data only stores the <code>fill</code> entry.
         </Anno>
 
-        <Anno x={1612} y={580} n="D">
-          <strong>Voicing overridden.</strong> Pad's voicing is set to
-          <code>drop2</code> overriding role <code>pad</code>'s default
-          <code>triad-open</code>; the asterisk says "this differs from the
+        <Anno x={1612} y={520} n="D">
+          <strong>Voicing overridden.</strong> Pad's voicing is
+          <code> drop2</code>, overriding role <code>pad</code>'s default
+          <code> triad-open</code>. The asterisk says "differs from the
           role default in this activation."
         </Anno>
 
-        <Anno x={1612} y={690} n="E">
+        <Anno x={1612} y={640} n="E">
           <strong>Humanization seed</strong> is editable + has a re-roll
           button. Determinism rule (realization.md): same seed → same
           jitter; the seed lives on the activation entry, so two activations
           using the same pattern can humanize differently.
         </Anno>
 
-        <Anno x={1612} y={810} n="F">
-          <strong>Per-note overrides</strong> show as a small badge with a
-          count. Click jumps to the piano roll filtered to pinned notes for
-          this activation — round-3 territory; the affordance lives here.
+        <Anno x={1612} y={770} n="F">
+          <strong>Pinned-notes chip</strong> is promoted to a discrete
+          affordance with count + chevron. Click jumps to the piano roll
+          filtered to this activation's <code>per_note_overrides</code> —
+          round-3 territory; the entry-point lives here.
+        </Anno>
+      </div>
+    );
+
+    // Artboard C — verse @ stripped. Exercises section-variant overrides
+    // (bass + drums Silent) AND a sub-range silence inside lead.
+    const ArtboardVerseStripped = () => (
+      <div style={{ position: 'relative', width: 1600, height: 900 }}>
+        <Shell><SectionEditor sectionKey="verse" currentVariant="stripped" /></Shell>
+
+        <Anno x={1612} y={50} n="i">
+          <strong>Stripped variant active.</strong> The variant tab
+          <code> stripped</code> is selected; <em>default variant</em>
+          label sits on <code>base</code> to keep the section's default
+          visible.
+        </Anno>
+
+        <Anno x={1612} y={150} n="ii">
+          <strong>↳ base on every meta field.</strong> Duration / Scale /
+          Chord loops all inherit from base in this variant — the variant
+          only overrides activations. Click an inherited tag to break the
+          inheritance and replace the field for this variant.
+        </Anno>
+
+        <Anno x={1612} y={420} n="iii">
+          <strong>Section-variant Silent</strong> on bass + drums — the
+          full activation is silenced for this variant. Cell is dimmed,
+          state pill reads <code>silent*</code>, and a small
+          <em> "silenced in this variant"</em> tag sits in the footer.
+          Realization params are preserved (visible but inert).
+        </Anno>
+
+        <Anno x={1612} y={580} n="iv">
+          <strong>Sub-range silence</strong> on lead — variant schedule
+          plays <code>main</code> bars 1–3 then drops out in bar 4
+          (slashed segment, italic "silent" label). Distinct from the
+          section-variant Silent above: this is
+          <code> (BarRange, None)</code> inside an active activation's
+          schedule. Both visual languages coexist; the legend chip uses
+          a dashed border + eye-off icon for the silenced range.
+        </Anno>
+
+        <Anno x={1612} y={760} n="v">
+          <strong>pad inherits</strong> just like in <code>base</code> —
+          the variant override map doesn't add an entry for pad either, so
+          the dashed-placeholder treatment is consistent across variants.
         </Anno>
       </div>
     );
@@ -212,6 +261,9 @@
           </DCArtboard>
           <DCArtboard id="chorus-base" label="B · Chorus / base · drum-fill schedule + voicing override" width={1900} height={900}>
             <ArtboardChorus />
+          </DCArtboard>
+          <DCArtboard id="verse-stripped" label="C · Verse / stripped · section-variant Silent + sub-range silence" width={1900} height={900}>
+            <ArtboardVerseStripped />
           </DCArtboard>
         </DCSection>
       </DesignCanvas>

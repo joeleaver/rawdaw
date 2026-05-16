@@ -25,16 +25,18 @@ const SectionEditor = ({ sectionKey, currentVariant = 'base' }) => {
             fontSize: 10.5, letterSpacing: 0.6, textTransform: 'uppercase',
             color: t.text2, fontWeight: 600,
           }}>Activations</span>
-          <span style={{ fontSize: 11, color: t.text3 }}>· {RD.tracks.length} tracks</span>
+          <span style={{ fontSize: 11, color: t.text3 }}>
+            · {RD.tracks.length} project tracks
+          </span>
           <span style={{ flex: 1 }} />
           <button style={{
             display: 'inline-flex', alignItems: 'center', gap: 4,
             padding: '4px 8px', borderRadius: 3,
             background: 'transparent', border: `1px solid ${t.line}`,
             color: t.text1, cursor: 'pointer', fontSize: 11,
-          }}>
+          }} title="Adds a track to the project (visible in every section)">
             <Icon name="plus" size={11} stroke={t.text1} />
-            <span>add track</span>
+            <span>New track to project</span>
           </button>
         </div>
 
@@ -119,8 +121,8 @@ const SectionEditorHeader = ({ section, currentVariant }) => {
             }}>
               {v.name}
               {v.id === section.defaultVariant && (
-                <span style={{ marginLeft: 8, fontSize: 9.5, color: t.text3, letterSpacing: 0.4, textTransform: 'uppercase' }}>
-                  default
+                <span style={{ marginLeft: 8, fontSize: 9.5, color: t.text3, letterSpacing: 0.4, fontStyle: 'italic' }}>
+                  default variant
                 </span>
               )}
             </button>
@@ -131,8 +133,8 @@ const SectionEditorHeader = ({ section, currentVariant }) => {
           background: 'transparent', color: t.text2, cursor: 'pointer',
           display: 'inline-flex', alignItems: 'center', gap: 4,
           marginLeft: 4, fontSize: 11.5, alignSelf: 'center',
-        }}>
-          <Icon name="plus" size={11} stroke={t.text2} /> variant
+        }} title="Create a new sparse-override variant of this section">
+          <Icon name="plus" size={11} stroke={t.text2} /> New variant
         </button>
       </div>
     </div>
@@ -176,14 +178,26 @@ const SectionMetaBar = ({ section, currentVariant }) => {
       </MetaField>
 
       {/* Chord loops */}
-      <MetaField label="Chord loops" inherited={chordLoopInherited}>
+      <MetaField label="Chord loops" inherited={chordLoopInherited}
+        action={
+          <button title="Add another (BarRange, ChordLoopRef) to this section" style={{
+            padding: '1px 6px', borderRadius: 2,
+            background: 'transparent', border: `1px solid ${t.lineSoft}`,
+            color: t.text2, cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 3,
+            fontSize: 10.5, letterSpacing: 0.2, textTransform: 'none',
+            height: 16,
+          }}>
+            <Icon name="plus" size={10} stroke={t.text2} /> Loop range
+          </button>
+        }>
         <ChordLoopBar dur={dur} loop={loop} />
       </MetaField>
     </div>
   );
 };
 
-const MetaField = ({ label, inherited, children }) => {
+const MetaField = ({ label, inherited, action, children }) => {
   const t = window.RD.tokens;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -200,6 +214,7 @@ const MetaField = ({ label, inherited, children }) => {
             borderRadius: 2, letterSpacing: 0.2, textTransform: 'none',
           }}>↳ base</span>
         )}
+        {action && <span style={{ marginLeft: 'auto' }}>{action}</span>}
       </div>
       {children}
     </div>
@@ -294,15 +309,6 @@ const ChordLoopBar = ({ dur, loop }) => {
           }}>{c.absolute}</span>
         </div>
       ))}
-      <button title="Add chord-loop range" style={{
-        ...iconBtn(t),
-        width: 22, height: '100%',
-        borderRadius: 2, alignSelf: 'stretch',
-        border: `1px dashed ${t.line}`,
-        marginLeft: 2,
-      }}>
-        <Icon name="plus" size={11} stroke={t.text2} />
-      </button>
     </div>
   );
 };
