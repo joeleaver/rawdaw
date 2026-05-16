@@ -1,9 +1,11 @@
 //! rawdaw — desktop entry point.
 //!
-//! Round-1 status: the app launches a window that mirrors
-//! `docs/design/mockups/round-1/main-window.html`. The engine is not yet
-//! wired in; the view is driven from a static Rust fixture
-//! (`fixture::round1`) that mirrors the JS round-1 fixture.
+//! Round-1 shipped the main window mirroring
+//! `docs/design/mockups/round-1/main-window.html`. Round 2 adds the
+//! section editor (`docs/design/mockups/round-2/`); both surfaces share
+//! the top bar and toggle below it via `state::EditorMode`. The engine
+//! is not yet wired in; the view is driven from a static Rust fixture
+//! (`fixture::round1`).
 //!
 //! Architecture:
 //!
@@ -11,15 +13,20 @@
 //! - `fixture` — Rust mirror of the round-1 JS fixture; will be
 //!   replaced with a real `rawdaw_model::Project` once the engine is
 //!   wired through.
+//! - `state` — `EditorMode` + `AppState` shared via a Rinch store.
 //! - `parts` — shared visual primitives (`rgba`, `Icon`).
-//! - `regions` — `TopBar`, `Library`, `Arrangement`, `Inspector`,
-//!   `BottomStrip`.
-//! - `app` — the `MainWindow` composition + selection state.
+//! - `regions` — round-1 panes: `TopBar`, `Library`, `Arrangement`,
+//!   `Inspector`, `BottomStrip`.
+//! - `section_editor` — round-2 surface; replaces the regions row when
+//!   `EditorMode::SectionEditor` is active.
+//! - `app` — the `MainWindow` composition + mode switch.
 
 mod app;
 mod fixture;
 mod parts;
 mod regions;
+mod section_editor;
+mod state;
 mod theme;
 
 fn main() {

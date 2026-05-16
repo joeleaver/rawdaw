@@ -9,7 +9,7 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{self, ActivationState};
+use crate::fixture::{self, ActivationOverride, ActivationState};
 use crate::theme;
 
 #[component]
@@ -52,6 +52,12 @@ pub fn ActivationTable(section_name_key: String, variant_id: String) -> NodeHand
 
 /// Effective state for `track_id` in the named section under `variant_id`.
 /// Returns `(pattern_name, state, overridden_from_base)`.
+///
+/// Variant overrides are walked first so a `Silent` or `Replace` entry
+/// wins over the base; absence of an override means "inherit base"; a
+/// missing base entry means "track has no activation in this section"
+/// and renders as `Inherit` (the round-1 inspector treats this as a
+/// quiet third pill).
 fn effective_state(
     section_name_key: &str,
     variant_id: &str,
@@ -61,6 +67,31 @@ fn effective_state(
     let Some(section) = fixture::section_by_key(&r, section_name_key) else {
         return (None, ActivationState::Inherit, false);
     };
+
+    // Variant override takes precedence over base. The override list is
+    // sparse — absence means "inherit base."
+    for (vid, ov) in section.variant_overrides.iter() {
+        if *vid != variant_id {
+            continue;
+        }
+        for (tid, entry) in ov.iter() {
+            if *tid != track_id {
+                continue;
+            }
+            return match entry {
+                ActivationOverride::Silent => {
+                    let pat = section
+                        .activations
+                        .iter()
+                        .find(|(t, _)| *t == track_id)
+                        .map(|(_, a)| a.pattern);
+                    (pat, ActivationState::Silent, true)
+                }
+                ActivationOverride::Replace(act) => (Some(act.pattern), act.state, true),
+            };
+        }
+    }
+
     let Some(base) = section
         .activations
         .iter()
@@ -69,16 +100,6 @@ fn effective_state(
     else {
         return (None, ActivationState::Inherit, false);
     };
-    for (vid, ov) in section.variant_overrides.iter() {
-        if *vid != variant_id {
-            continue;
-        }
-        for (tid, new_state) in ov.iter() {
-            if *tid == track_id {
-                return (Some(base.pattern), *new_state, true);
-            }
-        }
-    }
     (Some(base.pattern), base.state, false)
 }
 

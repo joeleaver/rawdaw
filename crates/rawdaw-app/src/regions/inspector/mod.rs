@@ -20,6 +20,7 @@ use rinch::prelude::*;
 
 use crate::fixture;
 use crate::parts::{rgba, Icon};
+use crate::state::AppState;
 use crate::theme;
 
 use activation_table::ActivationTable;
@@ -122,12 +123,15 @@ fn SelectedInspector(idx: usize) -> NodeHandle {
             }
             InspectorBody {
                 section_name_key: section.name.to_string(),
-                variant_id: variant_id,
+                variant_id: variant_id.clone(),
                 base_duration_bars: base_duration_bars,
                 chord_loop_name: chord_loop_name,
                 chord_loop_color: chord_loop_color,
             }
-            InspectorFooter { }
+            InspectorFooter {
+                section_key: section.name.to_string(),
+                variant_id: variant_id,
+            }
         }
     }
 }
@@ -495,23 +499,35 @@ fn AddRow(label: String) -> NodeHandle {
 // ─── Footer ───────────────────────────────────────────────────────────────
 
 #[component]
-fn InspectorFooter() -> NodeHandle {
+fn InspectorFooter(section_key: String, variant_id: String) -> NodeHandle {
+    let app = use_store::<AppState>();
     let footer_style = format!(
         "flex: 0 0 auto; padding: 10px 14px; \
          border-top: 1px solid {line}; \
          display: flex; gap: 6px;",
         line = theme::LINE,
     );
+
+    // Move clones into the open-editor closure so it can be `Fn`. The
+    // closure is invoked on every click — never consume the captured
+    // strings, only borrow them.
+    let open_section = section_key.clone();
+    let open_variant = variant_id.clone();
+
     rsx! {
         div { style: {footer_style.clone()},
-            FooterBtn { label: "Duplicate placement", primary: false }
-            FooterBtn { label: "Open in editor",     primary: true  }
+            FooterBtn { label: "Duplicate placement", primary: false, onclick: move || {} }
+            FooterBtn {
+                label: "Open in editor",
+                primary: true,
+                onclick: move || app.open_section_editor(open_section.clone(), open_variant.clone()),
+            }
         }
     }
 }
 
 #[component]
-fn FooterBtn(label: String, primary: bool) -> NodeHandle {
+fn FooterBtn(label: String, primary: bool, onclick: Callback) -> NodeHandle {
     let bg = if primary { theme::BG3 } else { theme::BG2 };
     let fg = if primary {
         "rgba(232,234,238,0.96)"
@@ -528,6 +544,7 @@ fn FooterBtn(label: String, primary: bool) -> NodeHandle {
         button {
             r#type: "button",
             style: {style.clone()},
+            onclick: move || onclick.invoke(),
             {label.clone()}
         }
     }

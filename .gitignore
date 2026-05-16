@@ -6,3 +6,6 @@
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Tool session artifacts (rinch MCP / Playwright screenshot output)
+.playwright-mcp/
