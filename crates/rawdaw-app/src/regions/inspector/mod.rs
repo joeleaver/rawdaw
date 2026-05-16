@@ -19,7 +19,7 @@ mod activation_table;
 use rinch::prelude::*;
 
 use crate::fixture;
-use crate::parts::{rgba, Icon};
+use crate::parts::{rgba, Icon, StripePaper};
 use crate::state::AppState;
 use crate::theme;
 
@@ -148,13 +148,13 @@ fn InspectorHeader(
     start_bar: u32,
     bars: u32,
 ) -> NodeHandle {
+    // The header uses `StripePaper` for its left-stripe + tinted-body
+    // chrome. The bottom border (which the primitive doesn't carry,
+    // since it's not a structural concern of the stripe pattern)
+    // continues to come from the parent's container — see the
+    // `border-bottom` on the inspector frame itself. Phase 4 of the
+    // round-2 port introduced this primitive.
     let bg = rgba(section_color.as_str(), 0.06);
-    let header_style = format!(
-        "padding: 12px 14px; border-bottom: 1px solid {line}; \
-         display: flex; flex-direction: column; gap: 6px; \
-         background: {bg}; border-left: 3px solid {col};",
-        line = theme::LINE, col = section_color,
-    );
     let title_style = "font-size: 15px; font-weight: 600; \
          color: rgba(232,234,238,0.96); letter-spacing: -0.2px;";
     let meta_style = "font-size: 11px; color: rgba(232,234,238,0.42); \
@@ -168,23 +168,38 @@ fn InspectorHeader(
     let bar_range = format!("bar {}–{}", start_bar + 1, start_bar + bars);
     let show_variant = variant_id != default_variant;
 
+    // Wrap StripePaper in an outer div that owns the bottom border —
+    // StripePaper is a self-contained card primitive; the divider
+    // between header and the rest of the inspector is a parent
+    // concern.
+    let wrapper_style = format!("border-bottom: 1px solid {line};", line = theme::LINE);
+    let radius = 0.0_f32;
+
     rsx! {
-        div { style: {header_style.clone()},
-            div { style: "display: flex; align-items: center; gap: 8px;",
-                div { style: {title_style.to_string()}, {section_name.clone()} }
-                if show_variant {
-                    VariantChip {
-                        variant: variant_id.clone(),
-                        color: section_color.clone(),
+        div { style: {wrapper_style.clone()},
+            StripePaper {
+                stripe_color: section_color.clone(),
+                background: bg,
+                padding: "12px 14px".to_string(),
+                radius: radius,
+                div { style: "display: flex; flex-direction: column; gap: 6px;",
+                    div { style: "display: flex; align-items: center; gap: 8px;",
+                        div { style: {title_style.to_string()}, {section_name.clone()} }
+                        if show_variant {
+                            VariantChip {
+                                variant: variant_id.clone(),
+                                color: section_color.clone(),
+                            }
+                        }
                     }
-                }
-            }
-            div { style: {meta_style.to_string()},
-                span { {instances_label.clone()} }
-                span { style: "color: rgba(232,234,238,0.28);", "·" }
-                span {
-                    style: "font-feature-settings: \"tnum\" 1;",
-                    {bar_range.clone()}
+                    div { style: {meta_style.to_string()},
+                        span { {instances_label.clone()} }
+                        span { style: "color: rgba(232,234,238,0.28);", "·" }
+                        span {
+                            style: "font-feature-settings: \"tnum\" 1;",
+                            {bar_range.clone()}
+                        }
+                    }
                 }
             }
         }

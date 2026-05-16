@@ -95,3 +95,44 @@ pub fn Icon(glyph: String, size: f32, stroke: String, stroke_width: f32) -> Node
         }
     }
 }
+
+/// Paper with a colored left-edge stripe.
+///
+/// Generalizes the bespoke "border-left: Npx solid color + tinted body"
+/// pattern that round-1's inspector header and round-2's activation cell
+/// both want. The 3px stripe-width and `theme::LINE` outer border are
+/// baked in because every use site shares them; add props later if a
+/// caller needs to vary either.
+///
+/// Props:
+/// - `stripe_color`: hex string for the left stripe.
+/// - `background`: body background — typically `theme::BG1` for a
+///   neutral card or `rgba(stripe_color, 0.06)` for a tinted header.
+/// - `padding`: CSS padding shorthand, e.g. `"12px 14px"`.
+/// - `radius`: border-radius in px. `0.0` for full-width headers, `6.0`
+///   for free-floating cells.
+/// - `children`: rsx children rendered inside the padded body.
+#[component]
+pub fn StripePaper(
+    stripe_color: String,
+    background: String,
+    padding: String,
+    radius: f32,
+    children: &[NodeHandle],
+) -> NodeHandle {
+    let style = format!(
+        "background: {bg}; border: 1px solid {bc}; \
+         border-left: 3px solid {col}; \
+         border-radius: {r}px; padding: {pad}; \
+         box-sizing: border-box; overflow: hidden;",
+        bg = background,
+        bc = crate::theme::LINE,
+        col = stripe_color,
+        r = radius,
+        pad = padding,
+    );
+    let _ = children; // children are auto-appended by the rsx macro
+    rsx! {
+        div { style: {style.clone()} }
+    }
+}
