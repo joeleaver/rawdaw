@@ -157,7 +157,7 @@ yet. Switching to `stripped` swaps the `↳ base` markers in.
 
 ---
 
-## Phase 3 — ChordLoopBar (small custom SVG)
+## Phase 3 — ChordLoopBar (small custom SVG) ✅ done
 
 **Goal.** The lighter of the two custom-SVG pieces. Reuse where
 possible.
@@ -175,6 +175,43 @@ possible.
 
 **Done when.** verse meta bar shows `I V vi IV` with the first-cell
 stripe; chorus shows `vi IV I V | vi IV I V` with two stripes.
+
+**Deviations from the original plan.**
+- **No SVG.** The plan billed this as a "small custom SVG" piece, but
+  the mockup's `ChordLoopBar` is plain flex divs with a `border-left`
+  toggling between 1px-soft and 2px-full for the first cell of each
+  loop iteration. Mirroring the mockup is simpler and avoids the
+  Roman-numeral-in-SVG glyph-positioning question. The phase-name
+  "custom SVG" framing now only applies to Phase 6's `ScheduleTimeline`.
+- **No `Roman` primitive needed.** Round-1 never extracted a `Roman`
+  component (the arrangement's ribbon inlines the styling, see
+  `regions/arrangement.rs::RibbonCell`). The strip-cell does the same:
+  case-preservation falls out for free because the fixture stores
+  canonical case (`I`, `vi`, …) and the cell renders the string
+  verbatim with no `text-transform`. If a third site ever needs the
+  same Roman styling, factor a primitive then.
+- **`for` source must be a `Fn() -> Vec<T>`, not a captured Vec.** The
+  rsx `for` macro wraps the source expression in a `Fn` closure that
+  re-runs on each tracked tick; a pre-computed `Vec<ChordCellData>`
+  triggers `cannot move out of value, a captured variable in an Fn
+  closure`. Refactored to a free helper `build_cells_by_name(loop_name,
+  duration)` called inside the for, matching the round-1 ChordRibbon
+  pattern (`for cell in build_ribbon_cells()`). Cheap (linear scan of
+  CHORD_LOOPS) and idiomatic.
+- **`ChordLoopsField` no longer takes `loop_color`.** The placeholder
+  threaded the loop's hex color in for its swatch; the bar derives
+  the color from `chord_loop_by_name` itself, keeping cell-level color
+  responsibilities cohesive. The placeholder component was deleted.
+- **Five unit tests added.** `chord_loop_bar::tests` pins
+  `build_cells`: one iteration yields one first-of-loop stripe at bar 0
+  for 4-bar duration, two iterations yield stripes at bars 0 and 4 for
+  8-bar duration, partial iteration truncates correctly, empty
+  loop/zero duration short-circuit, and case is preserved. The
+  two-iteration test directly covers chorus's "Done when" criterion.
+- **No live-app chorus screenshot.** The Rinch MCP server disconnected
+  mid-verify after the verse render was visually confirmed; chorus is
+  covered by the unit test above plus identity of code path with
+  verse. Captured for next session's MCP-attached run.
 
 ---
 

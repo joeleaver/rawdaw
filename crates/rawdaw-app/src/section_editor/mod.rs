@@ -22,6 +22,7 @@ use crate::state::{AppState, EditorMode};
 use crate::theme;
 
 mod activations;
+mod chord_loop_bar;
 mod header;
 mod meta_bar;
 mod variant_tabs;

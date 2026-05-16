@@ -23,6 +23,7 @@ use rinch::prelude::*;
 
 use crate::fixture;
 use crate::parts::Icon;
+use crate::section_editor::chord_loop_bar::ChordLoopBar;
 use crate::state::{AppState, EditorMode};
 use crate::theme;
 
@@ -39,9 +40,6 @@ pub fn SectionMetaBar(section_name_key: String) -> NodeHandle {
     let default_variant = section.default_variant.to_string();
     let duration = section.base_duration_bars;
     let loop_name = section.chord_loops.first().copied().unwrap_or("").to_string();
-    let loop_color = fixture::chord_loop_by_name(&r, loop_name.as_str())
-        .map(|c| c.color.to_string())
-        .unwrap_or_else(|| theme::PAL_TERRA.to_string());
 
     let bar_style = format!(
         "flex: 0 0 auto; padding: 12px 20px; \
@@ -57,7 +55,7 @@ pub fn SectionMetaBar(section_name_key: String) -> NodeHandle {
             ScaleField     { default_variant: default_variant.clone() }
             ChordLoopsField { default_variant: default_variant.clone(),
                               loop_name: loop_name,
-                              loop_color: loop_color }
+                              duration_bars: duration }
         }
     }
 }
@@ -99,14 +97,14 @@ fn ScaleField(default_variant: String) -> NodeHandle {
 fn ChordLoopsField(
     default_variant: String,
     loop_name: String,
-    loop_color: String,
+    duration_bars: u32,
 ) -> NodeHandle {
     rsx! {
         div { style: "display: flex; flex-direction: column; gap: 5px;",
             FieldLabelRow { label: "Chord loops",
                             default_variant: default_variant,
                             action_label: "Loop range" }
-            ChordLoopPlaceholder { loop_name: loop_name, color: loop_color }
+            ChordLoopBar { loop_name: loop_name, duration_bars: duration_bars }
         }
     }
 }
@@ -251,34 +249,3 @@ fn PseudoSelect(value: String) -> NodeHandle {
     }
 }
 
-/// Placeholder rendering for the chord-loop strip. Phase 3 of the
-/// port plan replaces this with the real bar-tiled `ChordLoopBar`
-/// (custom SVG). For now we render a single muted row that names the
-/// loop, so the meta bar's grid is the right size.
-#[component]
-fn ChordLoopPlaceholder(loop_name: String, color: String) -> NodeHandle {
-    let row_style = format!(
-        "display: flex; align-items: center; gap: 8px; \
-         padding: 8px 10px; border-radius: 4px; height: 38px; box-sizing: border-box; \
-         background: {bg0}; border: 1px solid {line};",
-        bg0 = theme::BG0,
-        line = theme::LINE,
-    );
-    let swatch_style = format!(
-        "width: 8px; height: 8px; border-radius: 2px; \
-         background: {col}; flex: 0 0 auto;",
-        col = color,
-    );
-    let name_style = format!("font-size: 12px; color: {text0};", text0 = theme::TEXT0);
-    let hint_style = format!(
-        "margin-left: auto; font-size: 10.5px; color: {text3}; font-style: italic;",
-        text3 = theme::TEXT3,
-    );
-    rsx! {
-        div { style: {row_style.clone()},
-            span { style: {swatch_style.clone()} }
-            span { style: {name_style.clone()}, {loop_name.clone()} }
-            span { style: {hint_style.clone()}, "(strip in phase 3)" }
-        }
-    }
-}
