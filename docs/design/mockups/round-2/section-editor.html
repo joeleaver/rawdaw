@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>rawdaw — section editor · round 2</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #efece6; }
+    body {
+      font-family: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    #root { min-height: 100%; }
+
+    .anno-pin {
+      position: absolute;
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 8px 4px 4px;
+      background: #fef4a8;
+      color: #5a4a2a;
+      border-radius: 12px;
+      font-size: 11.5px;
+      font-family: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12),
+                  0 0 0 1px rgba(0,0,0,0.05);
+      z-index: 5;
+      max-width: 280px;
+      line-height: 1.35;
+    }
+    .anno-num {
+      flex: 0 0 auto;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #c96442;
+      color: #fff;
+      font-weight: 700;
+      font-size: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .anno-text { padding-right: 4px; }
+    .anno-text code {
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 10.5px;
+      padding: 0 3px;
+      border-radius: 2px;
+      background: rgba(0,0,0,0.06);
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script src="components/data.js"></script>
+
+  <script type="text/babel" src="components/design-canvas.jsx"></script>
+  <script type="text/babel" src="components/parts.jsx"></script>
+  <script type="text/babel" src="components/topbar.jsx"></script>
+  <script type="text/babel" src="components/inspector.jsx"></script>
+  <script type="text/babel" src="components/activation-cell.jsx"></script>
+  <script type="text/babel" src="components/section-editor.jsx"></script>
+
+  <script type="text/babel">
+    const { TopBar, SectionEditor, DesignCanvas, DCSection, DCArtboard } = window;
+
+    const Anno = ({ x, y, n, children, w = 260 }) => (
+      <div className="anno-pin" style={{ left: x, top: y, width: w }}>
+        <span className="anno-num">{n}</span>
+        <span className="anno-text">{children}</span>
+      </div>
+    );
+
+    // Reusable shell — top bar + section editor, sized to 1600x900.
+    const Shell = ({ children }) => {
+      const t = window.RD.tokens;
+      return (
+        <div style={{
+          width: 1600, height: 900,
+          background: t.bg0, color: t.text0,
+          fontFamily: t.fontSans, fontSize: 13,
+          display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+          boxShadow: '0 0 0 1px rgba(0,0,0,0.5)',
+          borderRadius: 6,
+        }}>
+          <TopBar />
+          {children}
+        </div>
+      );
+    };
+
+    // Artboard A — verse @ base. Clean baseline, variant tabs visible.
+    const ArtboardVerseBase = () => (
+      <div style={{ position: 'relative', width: 1600, height: 900 }}>
+        <Shell><SectionEditor sectionKey="verse" currentVariant="base" /></Shell>
+
+        <Anno x={1612} y={50} n={1}>
+          <strong>Section editor</strong> opens when the user drills into a
+          block from the arrangement (or double-clicks one in the library).
+          Replaces the inspector when entered; "Done" returns to the
+          arrangement.
+        </Anno>
+
+        <Anno x={1612} y={150} n={2}>
+          <strong>Variant tabs are first-class</strong> (principle 4) —
+          <code>base</code> + <code>stripped</code> here. Click a tab to
+          show that variant's effective view; fields that inherit from base
+          carry the same <code>↳ base</code> tag used in round-1's
+          inspector.
+        </Anno>
+
+        <Anno x={1612} y={260} n={3}>
+          <strong>Section meta</strong> sits in its own bar above the
+          activations — duration, scale override, chord-loop schedule. The
+          chord-loop strip tiles the loop across the section's bars (4
+          chords here · 1 loop · auto-repeated to fill).
+        </Anno>
+
+        <Anno x={1612} y={388} n={4}>
+          <strong>Activation cells</strong> stack one per track. Each
+          cell is split: identity / pattern / state on the left, realization
+          params in the middle, variant schedule on the right.
+        </Anno>
+
+        <Anno x={1612} y={518} n={5}>
+          <strong>Role-inherited indicator.</strong> Voicing &amp; OctaveSpec
+          show <code>↳ role: bass</code> when the activation hasn't overridden
+          the role default. Click to override (turns the marker into a
+          plain asterisk).
+        </Anno>
+
+        <Anno x={1612} y={628} n={6}>
+          <strong>Octave overridden</strong> on the lead activation — pinned
+          to <code>Anchored · 4</code> instead of the role's <code>Nearest</code>.
+          Asterisk + tooltip is the unified signal across cells (carried over
+          from round-1).
+        </Anno>
+
+        <Anno x={1612} y={742} n={7}>
+          <strong>Drum activations</strong> hide voicing &amp; octave (not
+          meaningful — drums are pitch-symbolic). Realization on drums is
+          just humanization + variant schedule.
+        </Anno>
+      </div>
+    );
+
+    // Artboard B — chorus @ base. Shows variant schedule + voicing override.
+    const ArtboardChorus = () => (
+      <div style={{ position: 'relative', width: 1600, height: 900 }}>
+        <Shell><SectionEditor sectionKey="chorus" currentVariant="base" /></Shell>
+
+        <Anno x={1612} y={50} n="A">
+          <strong>Chorus · 8 bars · single variant.</strong> The variant tab
+          strip still shows the <code>+ variant</code> affordance — variants
+          are cheap and the section model encourages creating one rather
+          than per-instance overrides.
+        </Anno>
+
+        <Anno x={1612} y={188} n="B">
+          <strong>Chord-loop strip</strong> at 8 bars: <code>chorus-progression</code>
+          (vi IV I V) auto-loops to fill — 2 iterations. Each loop's first cell
+          carries the chord-loop's identity-color stripe (olive); subsequent
+          cells inherit color, so the loop boundary is visible at a glance.
+        </Anno>
+
+        <Anno x={1612} y={420} n="C">
+          <strong>Variant schedule timeline</strong> per activation — drums
+          here pin <code>main</code> for bars 1–7 and <code>fill</code> for
+          bar 8 (the diagonal hatch). Click any sub-range to assign a
+          pattern variant; click the right edge to drag a new split.
+        </Anno>
+
+        <Anno x={1612} y={580} n="D">
+          <strong>Voicing overridden.</strong> Pad's voicing is set to
+          <code>drop2</code> overriding role <code>pad</code>'s default
+          <code>triad-open</code>; the asterisk says "this differs from the
+          role default in this activation."
+        </Anno>
+
+        <Anno x={1612} y={690} n="E">
+          <strong>Humanization seed</strong> is editable + has a re-roll
+          button. Determinism rule (realization.md): same seed → same
+          jitter; the seed lives on the activation entry, so two activations
+          using the same pattern can humanize differently.
+        </Anno>
+
+        <Anno x={1612} y={810} n="F">
+          <strong>Per-note overrides</strong> show as a small badge with a
+          count. Click jumps to the piano roll filtered to pinned notes for
+          this activation — round-3 territory; the affordance lives here.
+        </Anno>
+      </div>
+    );
+
+    const App = () => (
+      <DesignCanvas>
+        <DCSection
+          id="section-editor"
+          title="rawdaw · section editor"
+          subtitle="round 2 — activation cell anatomy (voicing · OctaveSpec · humanization · variant schedule)">
+          <DCArtboard id="verse-base" label="A · Verse / base" width={1900} height={900}>
+            <ArtboardVerseBase />
+          </DCArtboard>
+          <DCArtboard id="chorus-base" label="B · Chorus / base · drum-fill schedule + voicing override" width={1900} height={900}>
+            <ArtboardChorus />
+          </DCArtboard>
+        </DCSection>
+      </DesignCanvas>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

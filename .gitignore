@@ -1,0 +1,8 @@
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# OS noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "rinch": {
+      "command": "rinch-mcp-server"
+    }
+  }
+}

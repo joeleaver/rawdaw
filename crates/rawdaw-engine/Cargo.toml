@@ -1,0 +1,25 @@
+[package]
+name = "rawdaw-engine"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Enables the cpal-based real-time audio driver. Off by default so the engine
+# crate compiles and tests on systems without audio hardware or system audio
+# development packages.
+cpal-driver = ["dep:cpal"]
+
+[dependencies]
+rawdaw-model = { path = "../rawdaw-model" }
+# Lock-free single-producer single-consumer ring buffers. The engine uses
+# these for host → audio command / event flow and the audio → host garbage
+# return path, replacing the iteration-1 VecDeques.
+rtrb = "0.3"
+cpal = { version = "0.16", optional = true }

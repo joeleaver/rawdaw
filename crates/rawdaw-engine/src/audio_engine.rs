@@ -1,0 +1,371 @@
+//! The audio side of the engine: drives the graph through blocks, drains
+//! the host → audio command and event queues, runs each node in topo
+//! order, and writes the master output.
+//!
+//! `AudioEngine` is the type the cpal callback owns. It exposes
+//! `process_block` (the real-time entry point) and `render_offline` (the
+//! same loop minus the driver, used as the engine's primary test surface).
+//!
+//! All queue access is lock-free: commands/events come in over rtrb SPSC
+//! ring buffers; the audio side never blocks, never allocates per block
+//! (input scratch + event partition Vecs are reused across blocks), and
+//! never frees memory (removed nodes go out through the garbage SPSC for
+//! the host to drop).
+
+use std::collections::BTreeMap;
+
+use rtrb::{Consumer, Producer};
+
+use rawdaw_model::{MusicalTime, SampleTime};
+
+use crate::buffer::BufferMut;
+use crate::command::{apply_command, GraphCommand};
+use crate::context::ProcessContext;
+use crate::event::{BlockEvent, BlockEventInBlock, EventBlock};
+use crate::graph::{Graph, NodeId};
+use crate::node::{AudioNode, PortAccess};
+
+/// Engine-side maximum input ports per node. Used to size the input
+/// scratch once at construction so it doesn't reallocate during
+/// processing.
+///
+/// Realistic node graphs in rawdaw shouldn't exceed this for a long time
+/// (a complex mixer node might want a dozen sidechains; we leave headroom).
+const MAX_INPUT_PORTS_PER_NODE: usize = 16;
+
+/// The audio side of the engine.
+///
+/// Owns the graph, the command/event consumer ends, and the garbage
+/// producer end. Designed to live on the audio thread for the cpal
+/// driver case; also usable from a single thread via `render_offline`.
+pub struct AudioEngine {
+    graph: Graph,
+    command_rx: Consumer<GraphCommand>,
+    event_rx: Consumer<BlockEvent>,
+    garbage_tx: Producer<Box<dyn AudioNode>>,
+
+    /// Preallocated input scratch. `input_scratch[port]` is a flat planar
+    /// buffer sized to `max_channels * max_block_size`. Reused every
+    /// block; never reallocated during processing.
+    input_scratch: Vec<Vec<f32>>,
+    /// Per-port channel counts for `input_scratch`, used to construct
+    /// `BufferRef` views. Mirrored from the currently-processing node.
+    input_channel_counts: Vec<u8>,
+
+    /// Per-block event partition: events targeting each node, in offset
+    /// order. Cleared every block; keys stay (Vec capacity persists).
+    event_partition: BTreeMap<NodeId, Vec<BlockEventInBlock>>,
+
+    /// Per-block snapshot of the graph's topo order, used to walk nodes
+    /// without holding a borrow on `self.graph`. Grows monotonically to
+    /// the graph's node count, so once warm it never reallocates.
+    topo_scratch: Vec<NodeId>,
+}
+
+impl AudioEngine {
+    pub(crate) fn new(
+        sample_rate: u32,
+        max_block_size: usize,
+        command_rx: Consumer<GraphCommand>,
+        event_rx: Consumer<BlockEvent>,
+        garbage_tx: Producer<Box<dyn AudioNode>>,
+    ) -> Self {
+        let max_channels = 2;
+        let mut input_scratch = Vec::with_capacity(MAX_INPUT_PORTS_PER_NODE);
+        for _ in 0..MAX_INPUT_PORTS_PER_NODE {
+            input_scratch.push(vec![0.0; max_channels * max_block_size]);
+        }
+        Self {
+            graph: Graph::new(sample_rate, max_block_size),
+            command_rx,
+            event_rx,
+            garbage_tx,
+            input_scratch,
+            input_channel_counts: vec![0u8; MAX_INPUT_PORTS_PER_NODE],
+            event_partition: BTreeMap::new(),
+            topo_scratch: Vec::new(),
+        }
+    }
+
+    pub fn graph(&self) -> &Graph {
+        &self.graph
+    }
+
+    /// Process one block. Writes the master node's output into `output`.
+    ///
+    /// Must be RT-safe. The command and event queues are drained as
+    /// `Consumer::pop()` (lock-free, no allocation). Node processing is
+    /// single-threaded in topo order.
+    pub fn process_block(
+        &mut self,
+        master: NodeId,
+        mut output: BufferMut<'_>,
+        ctx: ProcessContext,
+    ) {
+        // 1. Drain commands and recompute topo if needed.
+        while let Ok(cmd) = self.command_rx.pop() {
+            apply_command(&mut self.graph, cmd, &mut self.garbage_tx);
+        }
+        if self.graph.topology_is_dirty() {
+            self.graph.recompute_topology();
+        }
+
+        // 2. Partition events for this block.
+        self.partition_events_for_block(&ctx);
+
+        // 3. Process every node in topo order.
+        //
+        // Snapshot the topo order into `topo_scratch` so we can iterate
+        // without holding a borrow on `self.graph` (each node needs
+        // `&mut self.graph` via `process_node`). The scratch is reused
+        // across blocks; only the first few blocks (until it's large
+        // enough) cause an allocation.
+        self.topo_scratch.clear();
+        self.topo_scratch.extend_from_slice(self.graph.topo_order());
+        for i in 0..self.topo_scratch.len() {
+            let node_id = self.topo_scratch[i];
+            self.process_node(node_id, &ctx);
+        }
+
+        // 4. Copy master output to the host's output buffer.
+        Self::copy_master_to_output(&self.graph, master, &mut output, ctx.block_size);
+    }
+
+    /// Render the graph offline for a fixed duration, returning planar L/R
+    /// sample buffers. The master node must produce a stereo output port
+    /// at index 0.
+    ///
+    /// `block_size` is the working block size for each `process_block`
+    /// call. The last block may be shorter if `duration_samples` isn't a
+    /// multiple.
+    pub fn render_offline(
+        &mut self,
+        master: NodeId,
+        duration_samples: SampleTime,
+        block_size: usize,
+    ) -> RenderResult {
+        assert!(
+            block_size <= self.graph.max_block_size(),
+            "block_size ({}) cannot exceed engine max_block_size ({})",
+            block_size,
+            self.graph.max_block_size()
+        );
+
+        let total = duration_samples.as_samples() as usize;
+        let stride = self.graph.max_block_size();
+        let mut left = Vec::with_capacity(total);
+        let mut right = Vec::with_capacity(total);
+        // Buffer sized for the engine's stride, not the per-call block_size.
+        // The BufferMut handed to `process_block` uses the same stride, so
+        // the slot↔output copy matches.
+        let mut block_buf = vec![0.0_f32; 2 * stride];
+
+        let mut produced: u64 = 0;
+        while (produced as usize) < total {
+            let remaining = total - produced as usize;
+            let this_block = remaining.min(block_size);
+
+            // Reset the active portion of both channels.
+            for ch in 0..2 {
+                let start = ch * stride;
+                for s in block_buf[start..start + this_block].iter_mut() {
+                    *s = 0.0;
+                }
+            }
+            let output = BufferMut::new(&mut block_buf, 2, this_block, stride);
+
+            let ctx = ProcessContext {
+                sample_rate: self.graph.sample_rate(),
+                block_size: this_block,
+                absolute_time_samples: produced,
+                musical_time: MusicalTime::ZERO, // tempo conversion is host's job for v1
+                bpm: 120.0,
+                playing: true,
+            };
+
+            self.process_block(master, output, ctx);
+
+            // Append the block's active L/R samples.
+            left.extend_from_slice(&block_buf[..this_block]);
+            right.extend_from_slice(&block_buf[stride..stride + this_block]);
+
+            produced += this_block as u64;
+        }
+
+        RenderResult {
+            left,
+            right,
+            sample_rate: self.graph.sample_rate(),
+        }
+    }
+
+    // ---------- Internal helpers ----------
+
+    fn partition_events_for_block(&mut self, ctx: &ProcessContext) {
+        // Clear existing partitions but keep their Vec capacity.
+        for events in self.event_partition.values_mut() {
+            events.clear();
+        }
+
+        let block_end = ctx.absolute_time_samples + ctx.block_size as u64;
+        // Drain only events whose `time` falls in this block's window.
+        // rtrb's `peek` lets us look at the next event without consuming;
+        // the queue is FIFO, and the host is expected to push events in
+        // time-sorted order (which `realize()` already guarantees). When
+        // we see an event past the window, we stop and leave it queued
+        // for a later block.
+        //
+        // `.map(|ev| ev.time.as_samples())` extracts the timestamp as a
+        // Copy value so the peek borrow is dropped before the matching
+        // `pop()`, satisfying the borrow checker without a workaround.
+        while let Ok(time) = self.event_rx.peek().map(|ev| ev.time.as_samples()) {
+            if time >= block_end {
+                break;
+            }
+            let ev = self.event_rx.pop().expect("just peeked successfully");
+            let abs = ev.time.as_samples();
+            let offset = abs.saturating_sub(ctx.absolute_time_samples) as u32;
+            self.event_partition
+                .entry(ev.target)
+                .or_default()
+                .push(BlockEventInBlock {
+                    offset_in_block: offset,
+                    message: ev.message,
+                });
+        }
+    }
+
+    fn process_node(&mut self, node_id: NodeId, ctx: &ProcessContext) {
+        let n_inputs = match self.graph.slot(node_id) {
+            Some(slot) => slot.input_channel_counts.len(),
+            None => return,
+        };
+        if n_inputs > MAX_INPUT_PORTS_PER_NODE {
+            panic!(
+                "node has {} inputs; engine MAX_INPUT_PORTS_PER_NODE is {}",
+                n_inputs, MAX_INPUT_PORTS_PER_NODE
+            );
+        }
+
+        Self::copy_inputs_to_scratch(
+            &self.graph,
+            &mut self.input_scratch,
+            &mut self.input_channel_counts,
+            node_id,
+            n_inputs,
+            ctx,
+        );
+
+        let empty_events = Vec::new();
+        let node_events = self
+            .event_partition
+            .get(&node_id)
+            .unwrap_or(&empty_events);
+        let events = EventBlock::new(node_events);
+
+        let stride = self.graph.max_block_size();
+
+        let Some(slot) = self.graph.slot_mut(node_id) else {
+            return;
+        };
+        let mut ports = PortAccess::new(
+            &self.input_scratch[..n_inputs],
+            &self.input_channel_counts[..n_inputs],
+            &mut slot.output_buffers,
+            &slot.output_channel_counts,
+            ctx.block_size,
+            stride,
+        );
+        slot.node.process(&mut ports, &events, ctx);
+    }
+
+    fn copy_inputs_to_scratch(
+        graph: &Graph,
+        input_scratch: &mut [Vec<f32>],
+        input_channel_counts: &mut [u8],
+        node_id: NodeId,
+        n_inputs: usize,
+        ctx: &ProcessContext,
+    ) {
+        let stride = graph.max_block_size();
+        let Some(slot) = graph.slot(node_id) else {
+            return;
+        };
+        for in_idx in 0..n_inputs {
+            let in_channels = slot.input_channel_counts[in_idx];
+            input_channel_counts[in_idx] = in_channels;
+            let scratch = &mut input_scratch[in_idx];
+            for ch in 0..in_channels as usize {
+                let start = ch * stride;
+                let end = start + ctx.block_size;
+                let scratch_end = end.min(scratch.len());
+                for s in scratch[start..scratch_end].iter_mut() {
+                    *s = 0.0;
+                }
+            }
+            for edge in graph.edges() {
+                if edge.to.node == node_id && edge.to.port as usize == in_idx {
+                    if let Some(from_slot) = graph.slot(edge.from.node)
+                        && let Some(from_buffer) =
+                            from_slot.output_buffers.get(edge.from.port as usize)
+                    {
+                        for ch in 0..in_channels as usize {
+                            let start = ch * stride;
+                            let end = start + ctx.block_size;
+                            let copy_end = end.min(from_buffer.len()).min(scratch.len());
+                            scratch[start..copy_end]
+                                .copy_from_slice(&from_buffer[start..copy_end]);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    fn copy_master_to_output(
+        graph: &Graph,
+        master: NodeId,
+        output: &mut BufferMut<'_>,
+        block_size: usize,
+    ) {
+        let stride = graph.max_block_size();
+        let Some(slot) = graph.slot(master) else {
+            output.clear();
+            return;
+        };
+        let Some(master_buffer) = slot.output_buffers.first() else {
+            output.clear();
+            return;
+        };
+        let master_channels = slot.output_channel_counts.first().copied().unwrap_or(0) as usize;
+        let out_channels = output.channels();
+        let n_channels = master_channels.min(out_channels);
+        for ch in 0..n_channels {
+            let src_start = ch * stride;
+            let src_end = src_start + block_size;
+            let src = &master_buffer[src_start..src_end.min(master_buffer.len())];
+            let dst = output.channel_mut(ch);
+            let n = block_size.min(src.len()).min(dst.len());
+            dst[..n].copy_from_slice(&src[..n]);
+        }
+        for ch in n_channels..out_channels {
+            output.channel_mut(ch).fill(0.0);
+        }
+    }
+}
+
+/// The result of an offline render: planar L/R sample buffers plus the
+/// sample rate they were rendered at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderResult {
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+    pub sample_rate: u32,
+}
+
+impl RenderResult {
+    pub fn frames(&self) -> usize {
+        self.left.len()
+    }
+}

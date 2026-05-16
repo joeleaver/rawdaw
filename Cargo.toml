@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rawdaw-app",
+    "crates/rawdaw-engine",
+    "crates/rawdaw-model",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Rinch lives as a sibling clone (../rinch). Joe maintains it; we pin
+# against the working tree until upstream stabilizes a release. If you
+# clone rawdaw elsewhere, either symlink ../rinch or override this path
+# in your local .cargo/config.toml.
+rinch = { path = "../rinch/crates/rinch", default-features = false }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

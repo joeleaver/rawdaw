@@ -1,0 +1,19 @@
+[package]
+name = "rawdaw-app"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "rawdaw"
+path = "src/main.rs"
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }
+rawdaw-engine = { path = "../rawdaw-engine" }
+rawdaw-model = { path = "../rawdaw-model" }
