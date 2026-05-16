@@ -31,8 +31,9 @@ pub struct Project {
     pub playhead_beat: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum TrackKind {
+    #[default]
     Pitched,
     Drum,
 }

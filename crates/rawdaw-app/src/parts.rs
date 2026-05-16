@@ -14,6 +14,8 @@
 
 use rinch::prelude::*;
 
+use crate::fixture::ActivationState;
+
 /// Convert a `#RRGGBB` literal to an `rgba(r,g,b,a)` CSS string.
 ///
 /// Panics in debug if `hex` is not a 7-char `#RRGGBB` value. The design
@@ -134,5 +136,53 @@ pub fn StripePaper(
     let _ = children; // children are auto-appended by the rsx macro
     rsx! {
         div { style: {style.clone()} }
+    }
+}
+
+/// Small state badge for an activation row / cell: `active` / `silent` /
+/// `inherit`, with an optional `*` mark when the value differs from
+/// base (variant-overridden). Shared by the round-1 inspector's
+/// activation table and the round-2 section editor's activation cell —
+/// both pages want the same visual.
+#[component]
+pub fn StatePill(state: ActivationState, overridden: bool) -> NodeHandle {
+    let (bg, fg, border, label) = match state {
+        ActivationState::Active => (
+            "rgba(127,168,138,0.18)",
+            "#A8C9B0",
+            "rgba(127,168,138,0.40)",
+            "active",
+        ),
+        ActivationState::Silent => (
+            "rgba(232,234,238,0.06)",
+            "rgba(232,234,238,0.42)",
+            "rgba(232,234,238,0.14)",
+            "silent",
+        ),
+        ActivationState::Inherit => (
+            "transparent",
+            "rgba(232,234,238,0.28)",
+            "rgba(232,234,238,0.14)",
+            "inherit",
+        ),
+    };
+    let style = format!(
+        "display: inline-flex; align-items: center; gap: 4px; \
+         padding: 1px 6px; border-radius: 3px; \
+         font-size: 10px; font-weight: 500; letter-spacing: 0.3px; \
+         background: {bg}; color: {fg}; border: 1px solid {border};",
+    );
+    let label_owned = label.to_string();
+    rsx! {
+        span { style: {style.clone()},
+            {label_owned.clone()}
+            if overridden {
+                span {
+                    style: "opacity: 0.6; cursor: help;",
+                    title: "overridden in this variant from base",
+                    "*"
+                }
+            }
+        }
     }
 }

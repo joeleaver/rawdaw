@@ -215,7 +215,7 @@ stripe; chorus shows `vi IV I V | vi IV I V` with two stripes.
 
 ---
 
-## Phase 4 — Activation cell container + identity column
+## Phase 4 — Activation cell container + identity column ✅ done
 
 **Goal.** Build the 3-column cell shell and the leftmost column.
 Generalize the "Paper with left-edge color stripe" into a reusable
@@ -243,6 +243,49 @@ primitive (Rinch port priority #4).
 cells (bass / lead / drums) and one dashed pad-inherit placeholder.
 Realization and schedule columns are empty placeholders. Linked-highlight
 from the arrangement view still works.
+
+**Deviations from the original plan.**
+- **Primitive lives in `parts.rs`, not `components/`.** The plan
+  proposed `app::components::stripe_paper`. We already have a
+  shared-primitives module at `crate::parts` (rgba, Icon). Adding
+  `StripePaper` and `StatePill` there matches existing convention and
+  avoids a parallel module hierarchy. If `parts.rs` approaches the
+  ~700-line cap (currently ~160 after Phase 4), split into a
+  `components/` directory then.
+- **Shipped in two commits.** One small commit for the StripePaper
+  primitive + inspector-header refactor; one larger commit for the
+  Phase-4 cell scaffolding. Matches the plan's "separate small commit"
+  guidance for the inspector refactor.
+- **`StatePill` moved from `activation_table.rs` to `parts.rs`.** Both
+  the round-1 activation table and the round-2 identity column want
+  the same pill; pulled to a shared location instead of duplicating.
+- **`TrackKind` now derives `Default` (`Pitched` default).** The
+  `#[component]` macro generates a `Default` impl for the props
+  struct; every prop type must itself be `Default`. Pitched is the
+  reasonable default for an unconfigured track. No semantic change
+  for existing code.
+- **`ResolvedVariant` ships with a manual `impl Default`.** Rustc only
+  accepts `#[default]` on *unit* enum variants, so the Inherit case
+  (which is the natural empty state) gets a hand-written
+  `Default::default() = Inherit { reason: "" }` impl. Caught at first
+  compile attempt; called out so the next phase doesn't repeat it.
+- **Numeric prop literals trigger `Option<T>` auto-wrap.** Writing
+  `radius: 0.0_f32` or `pinned: 0u32` inline in rsx causes the macro
+  to wrap the value as `Some(...)`, then mismatch the bare `f32` / `u32`
+  field type. Workaround (matches the existing `Icon { size: sz }`
+  callers): bind to a local `let radius = 0.0_f32` first and pass the
+  binding. Documented in `cell/identity_column.rs::IdentityColumn` so
+  future readers see the pattern in context.
+- **Realization (col 2) and Schedule (col 3) are explicit
+  placeholders.** Each shows a small italic "filled in phase 5/6"
+  caption rather than rendering nothing — keeps the 3-column grid's
+  proportions honest during phase-4 visual inspection.
+- **`CellList` resolves into a `Vec<CellSlot>` re-built on each rsx
+  for-source tick.** Same `Fn() -> Vec<T>` constraint as Phase 3 —
+  the iterator source can't move a pre-computed Vec. Helper:
+  `resolve_cells(section_key, variant)`. Four unit tests pin the
+  override-merge semantics (pad-inherit, bass-silent override,
+  lead-replace override, drums-active no-override).
 
 ---
 

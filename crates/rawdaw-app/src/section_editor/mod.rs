@@ -22,12 +22,14 @@ use crate::state::{AppState, EditorMode};
 use crate::theme;
 
 mod activations;
+mod cell;
 mod chord_loop_bar;
 mod header;
 mod meta_bar;
 mod variant_tabs;
 
 use activations::ActivationsHeader;
+use cell::CellList;
 use header::SectionEditorHeader;
 use meta_bar::SectionMetaBar;
 use variant_tabs::VariantTabs;
@@ -91,6 +93,7 @@ pub fn SectionEditor() -> NodeHandle {
                 section_name_key: section_key,
             }
             ActivationsHeader { }
+            CellList { }
         }
     }
 }
