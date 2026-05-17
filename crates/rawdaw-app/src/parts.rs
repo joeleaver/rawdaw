@@ -139,6 +139,225 @@ pub fn StripePaper(
     }
 }
 
+// ─── Schedule timeline primitive ─────────────────────────────────────────
+//
+// One activation cell's variant-schedule strip. Round-2 mockup defines a
+// per-cell timeline scoped to the section's duration; round-3 will reuse
+// the same primitive for sub-range editing. Built as `#[component]` here
+// rather than under `components/` per Phase 4's convention — `parts.rs`
+// is rawdaw-app's shared-primitives bucket until it crosses the 700-line
+// cap.
+
+/// Visual mode for one schedule segment. Drives fill, border, and label.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum ScheduleSegmentStyle {
+    /// Default-variant fill — flat low-alpha block in the pattern's
+    /// identity color. The implicit-fill segments produced by the
+    /// schedule builder use this mode.
+    #[default]
+    DefaultFill,
+    /// Non-default named variant — higher alpha + diagonal hatch.
+    NonDefault,
+    /// Silenced sub-range — dashed border + slashed pattern + italic
+    /// "silent" label. Surfaces when an entry's `variant` is `None`.
+    Silent,
+}
+
+/// One segment in the schedule timeline. `start_bar` is inclusive,
+/// `end_bar` exclusive (matching the engine-side `BarRange`
+/// convention). `label` shows on the segment when present and the
+/// segment is wide enough to display it (`NonDefault` variant ids,
+/// the literal "silent" label).
+#[derive(Clone, PartialEq, Eq, Default, Debug)]
+pub struct ScheduleSegment {
+    pub start_bar: u32,
+    pub end_bar: u32,
+    pub style: ScheduleSegmentStyle,
+    pub label: String,
+}
+
+/// One activation's variant-schedule strip. Stateless render —
+/// segments are pre-computed by the caller via a schedule builder
+/// that gap-fills implicit-default ranges. The primitive itself
+/// knows nothing about the data model.
+///
+/// Layout: `H=36`. Segment band occupies `y=3..23` (h=20); tick lane
+/// `y=23..36` (h=13). Per-bar grid lines run vertically through the
+/// whole height in `theme::LINE_SOFT` at low opacity.
+///
+/// `silent` (whole-cell) is honored independently of any per-segment
+/// `Silent` style — when the entire activation is silenced (state ==
+/// Silent in the cell), the whole timeline is rendered at reduced
+/// opacity so it doesn't compete visually with the active cells in
+/// the same view.
+#[component]
+pub fn ScheduleTimeline(
+    total_bars: u32,
+    segments: Vec<ScheduleSegment>,
+    pattern_color: String,
+    silent: bool,
+) -> NodeHandle {
+    let outer_opacity = if silent { 0.55 } else { 1.0 };
+    let outer_style = format!(
+        "position: relative; width: 100%; height: 36px; \
+         background: {bg0}; border: 1px solid {line}; \
+         border-radius: 4px; overflow: hidden; opacity: {opacity};",
+        bg0 = crate::theme::BG0,
+        line = crate::theme::LINE,
+        opacity = outer_opacity,
+    );
+
+    let safe_total = total_bars.max(1);
+    let unit_pct = 100.0_f32 / safe_total as f32;
+
+    // rsx `for` wraps the iterator source in a `Fn() -> Vec<T>` closure
+    // — a pre-computed Vec captured by name moves on each invocation
+    // (`cannot move out of value, captured variable`). `.clone()`
+    // inside the for source rebuilds a fresh Vec from the borrowed
+    // capture, keeping the closure `Fn`. Same trick is used by the
+    // chord-loop bar and the cell list (see those modules).
+    rsx! {
+        div { style: {outer_style.clone()},
+            for tick in (1..safe_total).collect::<Vec<u32>>() {
+                ScheduleGridLine { bar: tick, total_bars: safe_total }
+            }
+            for seg in segments.clone() {
+                ScheduleSegmentBlock {
+                    key: seg.start_bar,
+                    seg: seg,
+                    pattern_color: pattern_color.clone(),
+                    unit_pct: unit_pct,
+                }
+            }
+            for label_bar in (0..safe_total).collect::<Vec<u32>>() {
+                ScheduleTickLabel { bar: label_bar, total_bars: safe_total }
+            }
+        }
+    }
+}
+
+#[component]
+fn ScheduleGridLine(bar: u32, total_bars: u32) -> NodeHandle {
+    let left_pct = bar as f32 / total_bars as f32 * 100.0;
+    let style = format!(
+        "position: absolute; left: {l}%; top: 0; bottom: 0; \
+         width: 1px; background: {line_soft}; opacity: 0.6; \
+         pointer-events: none;",
+        l = left_pct,
+        line_soft = crate::theme::LINE_SOFT,
+    );
+    rsx! { div { style: {style.clone()} } }
+}
+
+#[component]
+fn ScheduleTickLabel(bar: u32, total_bars: u32) -> NodeHandle {
+    // Render every bar's left-edge label inside its own bar slot so
+    // labels stay aligned even when bars are narrow. `top` puts the
+    // label inside the tick lane (y=23..36).
+    let left_pct = bar as f32 / total_bars as f32 * 100.0;
+    let width_pct = 100.0_f32 / total_bars as f32;
+    let style = format!(
+        "position: absolute; left: {l}%; top: 23px; \
+         width: {w}%; height: 13px; \
+         font-size: 9px; line-height: 13px; \
+         color: {text3}; font-feature-settings: \"tnum\" 1; \
+         text-align: left; padding-left: 3px; \
+         pointer-events: none; box-sizing: border-box;",
+        l = left_pct,
+        w = width_pct,
+        text3 = crate::theme::TEXT3,
+    );
+    let label = (bar + 1).to_string();
+    rsx! { div { style: {style.clone()}, {label.clone()} } }
+}
+
+#[component]
+fn ScheduleSegmentBlock(
+    seg: ScheduleSegment,
+    pattern_color: String,
+    unit_pct: f32,
+) -> NodeHandle {
+    let span = seg.end_bar.saturating_sub(seg.start_bar).max(1);
+    let left = seg.start_bar as f32 * unit_pct;
+    let width = span as f32 * unit_pct;
+    let label = seg.label.clone();
+    let style = segment_style_css(seg.style, pattern_color.as_str(), left, width);
+    let show_label = !label.is_empty() && width > 3.0;
+    // Always emit the label span; toggle via `display`. Wrapping a
+    // captured `label_style: String` in an rsx `if` block forces the
+    // generated `Fn` closure to consume the capture, which fails to
+    // compile. (Same hazard as the meta-bar's `↳ base` chip — see
+    // `section_editor/meta_bar.rs`.) Bundling display + content style
+    // into a single computed string side-steps it.
+    let label_style = format!(
+        "{base} display: {disp};",
+        base = segment_label_css(seg.style),
+        disp = if show_label { "inline" } else { "none" },
+    );
+    rsx! {
+        div { style: {style.clone()},
+            span { style: {label_style.clone()}, {label.clone()} }
+        }
+    }
+}
+
+fn segment_style_css(
+    style: ScheduleSegmentStyle,
+    pattern_color: &str,
+    left_pct: f32,
+    width_pct: f32,
+) -> String {
+    let common = format!(
+        "position: absolute; left: {l}%; width: {w}%; top: 3px; height: 20px; \
+         border-radius: 2px; box-sizing: border-box; \
+         display: flex; align-items: center; justify-content: center; \
+         pointer-events: none;",
+        l = left_pct,
+        w = width_pct,
+    );
+    match style {
+        ScheduleSegmentStyle::DefaultFill => format!(
+            "{common} \
+             background: {bg}; border: 1px solid {border};",
+            bg = rgba(pattern_color, 0.14),
+            border = rgba(pattern_color, 0.30),
+        ),
+        ScheduleSegmentStyle::NonDefault => format!(
+            "{common} \
+             background: \
+                repeating-linear-gradient(45deg, \
+                  {hatch_strong} 0, {hatch_strong} 3px, \
+                  {hatch_weak} 3px, {hatch_weak} 6px); \
+             border: 1px solid {border};",
+            hatch_strong = rgba(pattern_color, 0.40),
+            hatch_weak = rgba(pattern_color, 0.18),
+            border = rgba(pattern_color, 0.55),
+        ),
+        ScheduleSegmentStyle::Silent => format!(
+            "{common} \
+             background: \
+                repeating-linear-gradient(45deg, \
+                  rgba(232,234,238,0.06) 0, rgba(232,234,238,0.06) 3px, \
+                  transparent 3px, transparent 6px); \
+             border: 1px dashed {border};",
+            border = crate::theme::TEXT3,
+        ),
+    }
+}
+
+fn segment_label_css(style: ScheduleSegmentStyle) -> String {
+    let base = "font-size: 9.5px; letter-spacing: 0.3px; \
+         font-feature-settings: \"tnum\" 1; pointer-events: none; \
+         text-transform: lowercase;";
+    match style {
+        ScheduleSegmentStyle::Silent => format!(
+            "{base} color: {text2}; font-style: italic;",
+            text2 = crate::theme::TEXT2,
+        ),
+        _ => format!("{base} color: {text0};", text0 = crate::theme::TEXT0),
+    }
+}
+
 /// Where an inherited value came from. Drives the [`InheritanceTag`]
 /// label and tooltip text. Default is `RoleDefault` because that's
 /// the only kind of inheritance the round-2 cell renders today —

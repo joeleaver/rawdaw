@@ -356,7 +356,7 @@ shows `drop2` + `*` (overrides role's `triad-open`).
 
 ---
 
-## Phase 6 — Variant-schedule timeline (the centerpiece)
+## Phase 6 — Variant-schedule timeline (the centerpiece) ✅ done
 
 **Goal.** The Rinch port priority #1 piece. Build it as a standalone
 reusable widget — round 3 will need the same primitive for sub-range
@@ -393,6 +393,50 @@ editing.
   legend chip with eye-off.
 - verse base cells: plain `main` across the full duration with no
   legend.
+
+**Deviations from the original plan.**
+- **`ScheduleTimeline` lives in `parts.rs`, not `components/`.** Same
+  rationale as the previous phases. `parts.rs` is approaching ~500
+  lines after Phase 6; still well under the 700-line cap. A split
+  becomes warranted around Phase 8 if the primitive set keeps
+  growing.
+- **Pure CSS/HTML rendering, no SVG.** The mockup uses CSS
+  `repeating-linear-gradient` for the diagonal hatch and dashed
+  borders for the silenced state; the segment band is just
+  absolutely-positioned divs. No SVG needed, which sidesteps the
+  rinch SVG paint's preserveAspectRatio quirks entirely. (The rinch
+  `fix(svg)` commit `24e0f68` is still load-bearing for the
+  arrangement gridlines.)
+- **Eye-off icon stand-in.** The plan called for an "eye-off" glyph
+  on silent legend chips; the round-1 icon set doesn't include one.
+  Using `minus` as a placeholder until a real glyph is added to
+  `parts::Icon::glyph`. The dashed-border styling already makes the
+  intent legible.
+- **`.clone()` inside rsx `for` source.** A captured `Vec<T>` local
+  fails rsx's `Fn() -> Vec<T>` bound (`cannot move out of value,
+  captured variable`). Three call sites in Phase 6 use
+  `for x in vec.clone()` to rebuild a fresh Vec each tick. Cheaper
+  than refactoring through a free helper for these in-component
+  iterations, and the comment in `ScheduleTimeline` documents the
+  pattern so the next phase doesn't re-discover it.
+- **`if`-block label rendering toggled via `display:`, not omitted.**
+  Wrapping a label-style String capture inside an rsx `if` arm
+  forces the macro's generated closure into `FnOnce`. Workaround
+  (same as the round-1 stripped chip): always emit the span and
+  switch `display: inline / none` in a single computed style string.
+  Documented in `ScheduleSegmentBlock`'s body.
+- **Seven new unit tests pin the segment builder.** Cover no-entries
+  default-only, the two fixture cases (chorus drums fill at bar 7,
+  stripped lead silent at bar 3), entries naming the default
+  variant rendering as default, out-of-range entries clamped to
+  `total_bars`, and legend filtering (defaults excluded; silent
+  entries carry the literal "silent" label).
+- **`pattern_default_variant` plumbed onto `ResolvedVariant::Active`.**
+  Phase 5 added `realization` plumbing; Phase 6 follows the same
+  shape for `pattern_default_variant` and `total_bars` (the latter
+  rides on `CellSlot` since it's section-level, not per-cell). The
+  variant_schedule slice is converted to an owned `Vec<ScheduleEntry>`
+  at the resolver boundary so the cell's props stay owned.
 
 ---
 

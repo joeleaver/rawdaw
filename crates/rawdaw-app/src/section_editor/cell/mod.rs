@@ -37,6 +37,7 @@ mod activation_cell;
 mod cell_inherit;
 mod identity_column;
 mod realization_column;
+mod schedule_column;
 
 use activation_cell::ActivationCell;
 use cell_inherit::CellInherit;
@@ -95,6 +96,11 @@ pub struct CellSlot {
     pub track_name: String,
     pub track_kind: TrackKind,
     pub track_role: String,
+    /// Section duration in bars — copied onto each slot because all
+    /// cells in a render share the same section, and the schedule
+    /// column needs it to draw the timeline. Cheaper than threading a
+    /// parent prop down through CellRow / ActivationCell.
+    pub total_bars: u32,
     pub variant: ResolvedVariant,
 }
 
@@ -105,6 +111,11 @@ pub enum ResolvedVariant {
         pattern_name: String,
         pattern_color: String,
         pattern_kind: String,
+        /// `Pattern.default_variant` — the variant id that plays for
+        /// any bar range not covered by an entry in the
+        /// `Activation.variant_schedule`. The Phase 6 schedule
+        /// builder uses this at render time.
+        pattern_default_variant: String,
         state: ActivationState,
         /// True when the variant override is the source of this entry
         /// (drives the `*` mark on the state pill and the source label
@@ -141,6 +152,7 @@ fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
         return Vec::new();
     };
 
+    let total_bars = section.base_duration_bars;
     r.tracks
         .iter()
         .map(|track| {
@@ -150,6 +162,7 @@ fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
                 track_name: track.name.to_string(),
                 track_kind: track.kind,
                 track_role: track.role.to_string(),
+                total_bars,
                 variant,
             }
         })
@@ -205,6 +218,9 @@ fn activation_to_variant(
 ) -> ResolvedVariant {
     let r = fixture::round1();
     let pat = fixture::pattern_by_name(&r, act.pattern);
+    let pattern_default_variant = pat
+        .map(|p| p.default_variant.to_string())
+        .unwrap_or_default();
     let (pattern_color, pattern_kind) = pat
         .map(|p| (p.color.to_string(), p.kind.to_string()))
         .unwrap_or_else(|| (theme::TEXT2.to_string(), String::new()));
@@ -212,6 +228,7 @@ fn activation_to_variant(
         pattern_name: act.pattern.to_string(),
         pattern_color,
         pattern_kind,
+        pattern_default_variant,
         state: act.state,
         overridden_by_variant,
         source_label,
@@ -228,6 +245,7 @@ fn CellRow(slot: CellSlot) -> NodeHandle {
             pattern_name,
             pattern_color,
             pattern_kind,
+            pattern_default_variant,
             state,
             overridden_by_variant,
             source_label,
@@ -236,10 +254,15 @@ fn CellRow(slot: CellSlot) -> NodeHandle {
             // The realization parameters travel into the cell so Phase 5's
             // RealizationColumn can compare them against the track role's
             // defaults (`fixture::role_defaults`) and surface
-            // `↳ role default` vs `*` overrides per field. The schedule
-            // column (Phase 6) will read `activation.variant_schedule`
-            // similarly.
+            // `↳ role default` vs `*` overrides per field. Phase 6 reads
+            // `activation.variant_schedule` similarly. Converting the
+            // sparse `&'static [ScheduleEntry]` into an owned
+            // `Vec<ScheduleEntry>` keeps `ScheduleColumn`'s prop owned
+            // (the `#[component]` macro requires owned param types).
             let realization = activation.realization;
+            let schedule: Vec<crate::fixture::ScheduleEntry> =
+                activation.variant_schedule.to_vec();
+            let total_bars = slot.total_bars;
             rsx! {
                 ActivationCell {
                     track_name: slot.track_name,
@@ -248,10 +271,13 @@ fn CellRow(slot: CellSlot) -> NodeHandle {
                     pattern_name: pattern_name,
                     pattern_color: pattern_color,
                     pattern_kind: pattern_kind,
+                    pattern_default_variant: pattern_default_variant,
                     state: state,
                     overridden_by_variant: overridden_by_variant,
                     source_label: source_label.unwrap_or_default(),
                     realization: realization,
+                    schedule: schedule,
+                    total_bars: total_bars,
                 }
             }
         }

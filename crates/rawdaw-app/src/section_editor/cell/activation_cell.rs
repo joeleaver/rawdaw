@@ -15,10 +15,11 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{ActivationState, Realization, TrackKind};
+use crate::fixture::{ActivationState, Realization, ScheduleEntry, TrackKind};
 use crate::parts::StripePaper;
 use crate::section_editor::cell::identity_column::IdentityColumn;
 use crate::section_editor::cell::realization_column::RealizationColumn;
+use crate::section_editor::cell::schedule_column::ScheduleColumn;
 use crate::theme;
 
 #[component]
@@ -29,6 +30,7 @@ pub fn ActivationCell(
     pattern_name: String,
     pattern_color: String,
     pattern_kind: String,
+    pattern_default_variant: String,
     state: ActivationState,
     overridden_by_variant: bool,
     /// Empty string when no source label applies; non-empty produces
@@ -39,6 +41,12 @@ pub fn ActivationCell(
     /// fixture rows still go through this component for now). Phases
     /// 5 reads this in `RealizationColumn`.
     realization: Option<Realization>,
+    /// Sparse variant schedule. Phase 6 gap-fills implicit-default
+    /// segments at render time inside `ScheduleColumn`; never store a
+    /// phantom default entry here.
+    schedule: Vec<ScheduleEntry>,
+    /// Section duration in bars — drives the schedule timeline width.
+    total_bars: u32,
 ) -> NodeHandle {
     let opacity = if matches!(state, ActivationState::Silent) {
         "0.78"
@@ -52,7 +60,9 @@ pub fn ActivationCell(
     let bg = theme::BG1.to_string();
     let radius = 6.0_f32;
     let stripe_color_for_identity = pattern_color.clone();
+    let pattern_color_for_schedule = pattern_color.clone();
     let realization_track_role = track_role.clone();
+    let silent_for_schedule = matches!(state, ActivationState::Silent);
 
     rsx! {
         div { style: {wrap_style.clone()},
@@ -78,31 +88,15 @@ pub fn ActivationCell(
                         track_kind: track_kind,
                         track_role: realization_track_role,
                     }
-                    SchedulePlaceholder { }
+                    ScheduleColumn {
+                        schedule: schedule,
+                        total_bars: total_bars,
+                        pattern_color: pattern_color_for_schedule,
+                        pattern_default_variant: pattern_default_variant,
+                        silent: silent_for_schedule,
+                    }
                 }
             }
-        }
-    }
-}
-
-#[component]
-fn SchedulePlaceholder() -> NodeHandle {
-    let style = format!(
-        "padding: 12px 14px; \
-         display: flex; flex-direction: column; gap: 6px; \
-         font-size: 11px; color: {text3}; font-style: italic;",
-        text3 = theme::TEXT3,
-    );
-    rsx! {
-        div { style: {style.clone()},
-            div {
-                style: "font-size: 10.5px; letter-spacing: 0.6px; \
-                        text-transform: uppercase; color: rgba(232,234,238,0.42); \
-                        font-weight: 600; font-style: normal;",
-                "Variant schedule"
-            }
-            div { "per-bar variant timeline + legend" }
-            div { "(filled in phase 6)" }
         }
     }
 }
