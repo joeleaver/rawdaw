@@ -25,3 +25,7 @@ rawdaw-engine = { path = "../rawdaw-engine", features = ["cpal-driver"] }
 # data ships in the binary at runtime — release builds still get the
 # round-1 mockup data until project-file I/O lands.
 rawdaw-model = { path = "../rawdaw-model", features = ["fixtures"] }
+# The v0 wavetable/FM synth. The Melodic-role track in `configure_graph`
+# uses this instead of the sine placeholder; bass / drums / pad still
+# get the sine until their domain-specific synths land.
+rawdaw-synth-wavetable = { path = "../rawdaw-synth-wavetable" }

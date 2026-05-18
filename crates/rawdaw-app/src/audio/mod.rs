@@ -75,6 +75,7 @@ use rinch::prelude::Signal;
 use poller::PlayheadPoller;
 
 use rawdaw_engine::cpal_driver::{CpalDriver, StreamError};
+use rawdaw_engine::node::AudioNode;
 use rawdaw_engine::{
     translate_events, BlockEvent, Edge, Engine, EngineHandle, GraphCommand, MixerNode, NodeId,
     NodePort, SineNode, TrackRouting, Transport, TransportHandle,
@@ -83,6 +84,8 @@ use rawdaw_model::fixtures::build_round1_project;
 use rawdaw_model::project::Project;
 use rawdaw_model::realize::realize;
 use rawdaw_model::tempo::TempoMap;
+use rawdaw_model::track::{Role, TrackKind};
+use rawdaw_synth_wavetable::WavetableSynthNode;
 
 /// Fallback engine sample rate used when no cpal output device can be
 /// probed. Matches the engine-side render tests so unit tests that
@@ -400,27 +403,36 @@ fn configure_graph(
     let master_id = NodeId::new(0);
     let mut routing = TrackRouting::new();
 
-    // One master + one sine per track + one Connect per track,
+    // One master + one instrument per track + one Connect per track,
     // batched so the engine recomputes topo order once after the
     // whole reconfiguration.
+    //
+    // Per-track instrument picking is a stub for the round-3 instrument
+    // assignment work: for now, the Melodic role gets the v0 wavetable
+    // synth; everything else stays on the sine placeholder. As more
+    // synths land (physical / drum / synth-v0 polish), the match grows.
     let mut commands: Vec<GraphCommand> = Vec::with_capacity(2 * track_count + 1);
     commands.push(GraphCommand::AddNode {
         id: master_id,
         node: Box::new(MixerNode::new(track_count)),
     });
     for (i, track) in project.tracks.iter().enumerate() {
-        let sine_id = NodeId::new((i + 1) as u32);
+        let instrument_id = NodeId::new((i + 1) as u32);
+        let node: Box<dyn AudioNode> = match &track.kind {
+            TrackKind::Pitched { role: Role::Melodic } => Box::new(WavetableSynthNode::new()),
+            _ => Box::new(SineNode::new()),
+        };
         commands.push(GraphCommand::AddNode {
-            id: sine_id,
-            node: Box::new(SineNode::new()),
+            id: instrument_id,
+            node,
         });
         commands.push(GraphCommand::Connect {
             edge: Edge {
-                from: NodePort::new(sine_id, 0),
+                from: NodePort::new(instrument_id, 0),
                 to: NodePort::new(master_id, i as u8),
             },
         });
-        routing.insert(track.id, sine_id);
+        routing.insert(track.id, instrument_id);
     }
     engine.push_command(GraphCommand::Batch(commands));
 
