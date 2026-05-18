@@ -24,7 +24,7 @@ use rawdaw_model::{Midi2Message, MidiNote, U16Velocity};
 
 use crate::buffer::ChannelCount;
 use crate::context::ProcessContext;
-use crate::event::EventBlock;
+use crate::event::{BlockMessage, EventBlock};
 use crate::node::{AudioNode, OutputDescriptor, PortAccess};
 
 /// Maximum simultaneous voices. Chosen for v1; the voice manager design
@@ -117,10 +117,22 @@ impl SineNode {
         }
     }
 
-    fn apply_event(&mut self, message: &Midi2Message) {
+    fn apply_event(&mut self, message: &BlockMessage) {
         match message {
-            Midi2Message::NoteOn { note, velocity, .. } => self.note_on(*note, *velocity),
-            Midi2Message::NoteOff { note, .. } => self.note_off(*note),
+            BlockMessage::Midi(Midi2Message::NoteOn { note, velocity, .. }) => {
+                self.note_on(*note, *velocity)
+            }
+            BlockMessage::Midi(Midi2Message::NoteOff { note, .. }) => self.note_off(*note),
+            BlockMessage::Param(_) => {
+                // SineNode has no parameters. U1 ships the event
+                // channel; a Param event arriving here is a host-side
+                // routing bug.
+                debug_assert!(
+                    false,
+                    "SineNode received a Param event; node has no parameter \
+                     surface",
+                );
+            }
         }
     }
 }
@@ -219,20 +231,20 @@ mod tests {
         node
     }
 
-    fn note_on(n: u8, vel: U16Velocity) -> Midi2Message {
-        Midi2Message::NoteOn {
+    fn note_on(n: u8, vel: U16Velocity) -> BlockMessage {
+        BlockMessage::Midi(Midi2Message::NoteOn {
             channel: MidiChannel::default(),
             note: MidiNote::new(n).unwrap(),
             velocity: vel,
-        }
+        })
     }
 
-    fn note_off(n: u8) -> Midi2Message {
-        Midi2Message::NoteOff {
+    fn note_off(n: u8) -> BlockMessage {
+        BlockMessage::Midi(Midi2Message::NoteOff {
             channel: MidiChannel::default(),
             note: MidiNote::new(n).unwrap(),
             velocity: U16Velocity::MIN,
-        }
+        })
     }
 
     fn ctx() -> ProcessContext {

@@ -38,7 +38,7 @@ pub use engine::{
     Engine, QueueCapacities, DEFAULT_COMMAND_QUEUE_CAPACITY, DEFAULT_EVENT_QUEUE_CAPACITY,
     DEFAULT_GARBAGE_QUEUE_CAPACITY,
 };
-pub use event::{BlockEvent, BlockEventInBlock, EventBlock};
+pub use event::{BlockEvent, BlockEventInBlock, BlockMessage, EventBlock, ParamEvent};
 pub use graph::{Edge, Graph, NodeId, NodePort};
 pub use handle::EngineHandle;
 pub use node::{AudioNode, InputDescriptor, OutputDescriptor, PortAccess, PortInputs, PortOutputs};

@@ -7,7 +7,7 @@ use rawdaw_model::Midi2Message;
 
 use crate::buffer::ChannelCount;
 use crate::context::ProcessContext;
-use crate::event::EventBlock;
+use crate::event::{BlockMessage, EventBlock};
 use crate::node::{AudioNode, OutputDescriptor, PortAccess};
 
 pub struct ImpulseNode;
@@ -38,7 +38,10 @@ impl AudioNode for ImpulseNode {
         out.clear();
         let (l, r) = out.stereo_mut();
         for ev in events.iter() {
-            if !matches!(ev.message, Midi2Message::NoteOn { .. }) {
+            if !matches!(
+                ev.message,
+                BlockMessage::Midi(Midi2Message::NoteOn { .. })
+            ) {
                 continue;
             }
             let offset = ev.offset_in_block as usize;

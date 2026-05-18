@@ -29,7 +29,7 @@ use rawdaw_dsp::{
 };
 use rawdaw_engine::buffer::ChannelCount;
 use rawdaw_engine::context::ProcessContext;
-use rawdaw_engine::event::EventBlock;
+use rawdaw_engine::event::{BlockMessage, EventBlock};
 use rawdaw_engine::node::{AudioNode, OutputDescriptor, PortAccess};
 use rawdaw_model::{Midi2Message, U16Velocity};
 
@@ -439,14 +439,25 @@ impl WavetableSynthNode {
         }
     }
 
-    fn apply_event(&mut self, message: &Midi2Message) {
+    fn apply_event(&mut self, message: &BlockMessage) {
         match message {
-            Midi2Message::NoteOn { note, velocity, .. } => {
+            BlockMessage::Midi(Midi2Message::NoteOn { note, velocity, .. }) => {
                 let amp = u16_velocity_to_amplitude(*velocity);
                 self.voices.note_on(note.get(), amp);
             }
-            Midi2Message::NoteOff { note, .. } => {
+            BlockMessage::Midi(Midi2Message::NoteOff { note, .. }) => {
                 self.voices.note_off(note.get());
+            }
+            BlockMessage::Param(_) => {
+                // U1 ships the event channel; U3 wires the wavetable
+                // synth's parameter decoder onto this arm. Until then
+                // a Param event arriving here is a host-side bug — flag
+                // it in debug, no-op in release.
+                debug_assert!(
+                    false,
+                    "WavetableSynthNode received a Param event before U3; \
+                     host should not be pushing params yet",
+                );
             }
         }
     }
@@ -599,20 +610,20 @@ mod tests {
         node
     }
 
-    fn note_on(n: u8, vel: U16Velocity) -> Midi2Message {
-        Midi2Message::NoteOn {
+    fn note_on(n: u8, vel: U16Velocity) -> BlockMessage {
+        BlockMessage::Midi(Midi2Message::NoteOn {
             channel: MidiChannel::default(),
             note: MidiNote::new(n).unwrap(),
             velocity: vel,
-        }
+        })
     }
 
-    fn note_off(n: u8) -> Midi2Message {
-        Midi2Message::NoteOff {
+    fn note_off(n: u8) -> BlockMessage {
+        BlockMessage::Midi(Midi2Message::NoteOff {
             channel: MidiChannel::default(),
             note: MidiNote::new(n).unwrap(),
             velocity: U16Velocity::MIN,
-        }
+        })
     }
 
     fn ctx() -> ProcessContext {

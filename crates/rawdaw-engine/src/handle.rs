@@ -11,8 +11,11 @@
 
 use rtrb::{Consumer, Producer, PushError};
 
+use rawdaw_model::{Midi2Message, SampleTime};
+
 use crate::command::GraphCommand;
-use crate::event::BlockEvent;
+use crate::event::{BlockEvent, BlockMessage, ParamEvent};
+use crate::graph::NodeId;
 use crate::node::AudioNode;
 
 pub struct EngineHandle {
@@ -32,11 +35,49 @@ impl EngineHandle {
         self.command_tx.push(cmd)
     }
 
-    /// Enqueue a MIDI event for some target node. Events delivered for a
-    /// block's window are partitioned by target and passed to each node's
-    /// `process()`. Returns `Err(PushError::Full(event))` on overflow.
+    /// Enqueue any [`BlockEvent`]. Events delivered for a block's window
+    /// are partitioned by target and passed to each node's `process()`.
+    /// Returns `Err(PushError::Full(event))` on overflow.
+    ///
+    /// Prefer [`Self::push_midi`] / [`Self::push_param`] for the common
+    /// cases — they assemble the `BlockEvent` for you. This raw method
+    /// stays for translation paths that already have a `BlockEvent` in
+    /// hand (e.g. `translate_events`'s output).
     pub fn push_event(&mut self, event: BlockEvent) -> Result<(), PushError<BlockEvent>> {
         self.event_tx.push(event)
+    }
+
+    /// Enqueue a MIDI message at `time` aimed at `target`.
+    pub fn push_midi(
+        &mut self,
+        time: SampleTime,
+        target: NodeId,
+        message: Midi2Message,
+    ) -> Result<(), PushError<BlockEvent>> {
+        self.push_event(BlockEvent {
+            time,
+            target,
+            message: BlockMessage::Midi(message),
+        })
+    }
+
+    /// Enqueue a parameter change at `time` aimed at `target`.
+    ///
+    /// `path` is an opaque, synth-defined 8-byte address — see the
+    /// [`ParamEvent`](crate::event::ParamEvent) docs. The engine never
+    /// inspects it; the receiving node decodes its own `ParamPath`.
+    pub fn push_param(
+        &mut self,
+        time: SampleTime,
+        target: NodeId,
+        path: [u8; 8],
+        value: f32,
+    ) -> Result<(), PushError<BlockEvent>> {
+        self.push_event(BlockEvent {
+            time,
+            target,
+            message: BlockMessage::Param(ParamEvent { path, value }),
+        })
     }
 
     /// Drain every removed node sitting in the audio → host garbage queue

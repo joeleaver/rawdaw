@@ -29,7 +29,7 @@ mod voices;
 use rawdaw_dsp::{NoiseSource, VoicePool};
 use rawdaw_engine::buffer::ChannelCount;
 use rawdaw_engine::context::ProcessContext;
-use rawdaw_engine::event::EventBlock;
+use rawdaw_engine::event::{BlockMessage, EventBlock};
 use rawdaw_engine::node::{AudioNode, OutputDescriptor, PortAccess};
 use rawdaw_model::{Midi2Message, U16Velocity};
 
@@ -79,9 +79,9 @@ impl DrumSynthNode {
         }
     }
 
-    fn apply_event(&mut self, message: &Midi2Message) {
+    fn apply_event(&mut self, message: &BlockMessage) {
         match message {
-            Midi2Message::NoteOn { note, velocity, .. } => {
+            BlockMessage::Midi(Midi2Message::NoteOn { note, velocity, .. }) => {
                 let Some(kind) = classify(note.get()) else {
                     return;
                 };
@@ -107,7 +107,7 @@ impl DrumSynthNode {
                     }
                 }
             }
-            Midi2Message::NoteOff { note, .. } => {
+            BlockMessage::Midi(Midi2Message::NoteOff { note, .. }) => {
                 // Drums are one-shot — they ignore NoteOff. We still
                 // dispatch so the Voice trait contract is respected.
                 let Some(kind) = classify(note.get()) else {
@@ -118,6 +118,17 @@ impl DrumSynthNode {
                     DrumKind::Snare => self.snares.note_off(note.get()),
                     DrumKind::Hat(_) => self.hats.note_off(note.get()),
                 }
+            }
+            BlockMessage::Param(_) => {
+                // U1 ships the event channel; U3 wires the drum synth's
+                // parameter decoder onto this arm. Until then a Param
+                // event arriving here is a host-side bug — flag it in
+                // debug, no-op in release.
+                debug_assert!(
+                    false,
+                    "DrumSynthNode received a Param event before U3; \
+                     host should not be pushing params yet",
+                );
             }
         }
     }
@@ -235,12 +246,12 @@ mod tests {
         node
     }
 
-    fn note_on(n: u8, vel: U16Velocity) -> Midi2Message {
-        Midi2Message::NoteOn {
+    fn note_on(n: u8, vel: U16Velocity) -> BlockMessage {
+        BlockMessage::Midi(Midi2Message::NoteOn {
             channel: MidiChannel::default(),
             note: MidiNote::new(n).unwrap(),
             velocity: vel,
-        }
+        })
     }
 
     fn ctx() -> ProcessContext {

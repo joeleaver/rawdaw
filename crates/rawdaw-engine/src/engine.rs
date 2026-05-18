@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use rtrb::RingBuffer;
 
-use rawdaw_model::SampleTime;
+use rawdaw_model::{Midi2Message, SampleTime};
 
 use crate::audio_engine::{AudioEngine, RenderResult};
 use crate::buffer::BufferMut;
@@ -130,6 +130,20 @@ impl Engine {
     pub fn push_event(&mut self, event: BlockEvent) {
         self.host
             .push_event(event)
+            .expect("engine event queue overflowed; increase QueueCapacities.events");
+    }
+
+    /// Single-thread convenience for [`EngineHandle::push_midi`].
+    pub fn push_midi(&mut self, time: SampleTime, target: NodeId, message: Midi2Message) {
+        self.host
+            .push_midi(time, target, message)
+            .expect("engine event queue overflowed; increase QueueCapacities.events");
+    }
+
+    /// Single-thread convenience for [`EngineHandle::push_param`].
+    pub fn push_param(&mut self, time: SampleTime, target: NodeId, path: [u8; 8], value: f32) {
+        self.host
+            .push_param(time, target, path, value)
             .expect("engine event queue overflowed; increase QueueCapacities.events");
     }
 

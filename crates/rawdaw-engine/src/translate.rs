@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use rawdaw_model::{TimedEvent, TrackId};
 
-use crate::event::BlockEvent;
+use crate::event::{BlockEvent, BlockMessage};
 use crate::graph::NodeId;
 
 /// Map from each model-layer track to the engine-layer instrument node
@@ -78,7 +78,7 @@ pub fn translate_events(
         out.push(BlockEvent {
             time: ev.time,
             target,
-            message: ev.message.clone(),
+            message: BlockMessage::Midi(ev.message.clone()),
         });
     }
     Ok(out)
@@ -128,7 +128,10 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].time, SampleTime::samples(100));
         assert_eq!(out[0].target, node);
-        assert!(matches!(out[0].message, Midi2Message::NoteOn { .. }));
+        assert!(matches!(
+            out[0].message,
+            BlockMessage::Midi(Midi2Message::NoteOn { .. })
+        ));
     }
 
     #[test]

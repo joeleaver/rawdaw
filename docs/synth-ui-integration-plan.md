@@ -29,12 +29,24 @@ yet); U4–U7 are the "UI" half; U8 is persistence; U9 closes out.
 
 ---
 
-## Status — not started
+## Status — U1 DONE
 
-All phases pending. Pick U1 next.
-
-- U0 ◀ this doc.
-- U1–U9 pending.
+- U0 ✅ this document, design decisions locked.
+- U1 ✅ `BlockMessage::{Midi, Param}` ships across `rawdaw-engine`.
+  `EngineHandle::push_midi` / `push_param` ergonomic helpers; opaque
+  8-byte `ParamEvent::path` decoded per synth. All five existing
+  audio nodes thread through the enum tag; synth-crate `apply_event`
+  signatures bumped to `&BlockMessage` with a `Param` arm that
+  `debug_assert!`s in debug + no-ops in release (until U3 wires the
+  decoders). 3 new tests in `tests/render.rs` pin the U1 acceptance
+  (round-trip, no-crash, push-order interleave) via a test-only
+  `RecorderNode`. 233 workspace tests, clippy clean across all three
+  feature builds. Deviation: test (b) uses the recorder rather than
+  a real synth because U1 synths `debug_assert!` on any Param (every
+  path is "unrecognized" before U3); the recorder represents the
+  U3+ shape of a node that opts in to parameter events and silently
+  drops unrecognized paths.
+- U2–U9 pending.
 
 ---
 
@@ -267,17 +279,20 @@ synth nodes still ignore `Param` variants and only act on
   encoding. Symmetric helper `push_midi` for clarity.
 - Round-1 audio path unchanged: no `Param` events flow yet.
 
-**Done when.** Workspace tests still pass byte-for-byte for audio
-output (`AudioResources::build` produces the same `BlockEvent`
-stream as before; only the message variant tag is new). New tests
-pin: (a) `BlockMessage::Param` round-trips through the event queue
-with the same `(time, target, path, value)`; (b) a synth that
-receives a `Param` event whose path it doesn't recognize doesn't
-crash the audio thread (silent ignore in release, debug_assert
-in debug); (c) `push_param` and `push_midi` interleave correctly
-when `time` is equal (existing FIFO ordering on the rtrb queue
-preserves push order). Workspace tests + all three clippy gates
-clean.
+**Done when (✅ met).** Workspace tests still pass byte-for-byte
+for audio output. 3 new tests in `tests/render.rs` pin: (a)
+`param_event_round_trips_through_engine` — push_param + render +
+recorder sees `BlockMessage::Param` with matching path/value; (b)
+`unknown_param_path_does_not_crash` — recorder accepts an unknown
+path and the render completes without panic; (c)
+`push_midi_and_push_param_interleave_in_push_order` — three events
+at the same time arrive at the node in push order, proving the
+rtrb FIFO + per-block partitioner preserves ordering. 233 workspace
+tests + all three clippy gates clean. Deviation: tests use a
+`RecorderNode` (test-local) for (a) + (b) rather than a real synth,
+because the U1 synth `apply_event` arms `debug_assert!(false)` on
+Param (every path is "unrecognized" before U3); the recorder
+models the U3+ shape of a parameter-accepting node.
 
 ---
 

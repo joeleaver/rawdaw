@@ -2,22 +2,24 @@
 //! assert on output samples.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use rawdaw_engine::{
-    translate_events, AudioEngine, BlockEvent, Engine, EngineHandle, GraphCommand, ImpulseNode,
-    NodeId, QueueCapacities, SilenceNode, SineNode, TrackRouting,
+    translate_events, AudioEngine, AudioNode, BlockEvent, BlockMessage, Engine, EngineHandle,
+    EventBlock, GraphCommand, ImpulseNode, NodeId, OutputDescriptor, PortAccess, ProcessContext,
+    QueueCapacities, SilenceNode, SineNode, TrackRouting,
 };
 use rawdaw_model::*;
 
 const SAMPLE_RATE: u32 = 48_000;
 const MAX_BLOCK: usize = 256;
 
-fn note_on() -> Midi2Message {
-    Midi2Message::NoteOn {
+fn note_on() -> BlockMessage {
+    BlockMessage::Midi(Midi2Message::NoteOn {
         channel: MidiChannel::default(),
         note: MidiNote::new(60).unwrap(),
         velocity: U16Velocity::HALF,
-    }
+    })
 }
 
 #[test]
@@ -194,20 +196,20 @@ fn sine_renders_audio_during_note_pair_and_silence_after() {
     engine.push_event(BlockEvent {
         time: SampleTime::samples(0),
         target: master,
-        message: Midi2Message::NoteOn {
+        message: BlockMessage::Midi(Midi2Message::NoteOn {
             channel,
             note,
             velocity: U16Velocity::HALF,
-        },
+        }),
     });
     engine.push_event(BlockEvent {
         time: SampleTime::samples(1024),
         target: master,
-        message: Midi2Message::NoteOff {
+        message: BlockMessage::Midi(Midi2Message::NoteOff {
             channel,
             note,
             velocity: U16Velocity::MIN,
-        },
+        }),
     });
 
     let result = engine.render_offline(master, SampleTime::samples(2048), MAX_BLOCK);
@@ -367,11 +369,11 @@ fn split_engine_round_trip_across_threads() {
             .push_event(BlockEvent {
                 time: SampleTime::samples(0),
                 target: sine_id,
-                message: Midi2Message::NoteOn {
+                message: BlockMessage::Midi(Midi2Message::NoteOn {
                     channel: MidiChannel::default(),
                     note: MidiNote::new(60).unwrap(),
                     velocity: U16Velocity::HALF,
-                },
+                }),
             })
             .expect("event queue had room");
         handle
@@ -665,4 +667,152 @@ fn stopped_drains_pending_events() {
         impulses.is_empty(),
         "Stopped should have drained the event queue; saw impulses at {impulses:?}",
     );
+}
+
+// ── U1 parameter event protocol tests ─────────────────────────────────────
+//
+// The three pins from the U1 plan: (a) Param round-trips through the event
+// queue with the same (time, target, path, value); (b) a node that
+// silently ignores Param doesn't crash; (c) push_midi and push_param
+// preserve push order when their time is equal.
+//
+// All three use a tiny `RecorderNode` that records every BlockMessage it
+// sees into a shared buffer. The recorder ignores Param silently — that's
+// the U3+ shape any node opting in to parameter events will eventually
+// take, and it lets the same node prove both the round-trip pin and the
+// "doesn't crash on unrecognized Param" pin in one fixture.
+
+/// Records every event it receives during `process`. Order preserved.
+#[derive(Clone)]
+struct RecorderNode {
+    received: Arc<Mutex<Vec<(u32, BlockMessage)>>>,
+}
+
+impl RecorderNode {
+    fn new() -> Self {
+        Self {
+            received: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl AudioNode for RecorderNode {
+    fn process(
+        &mut self,
+        _ports: &mut PortAccess<'_>,
+        events: &EventBlock<'_>,
+        _ctx: &ProcessContext,
+    ) {
+        let mut recv = self.received.lock().expect("recorder mutex");
+        for ev in events.iter() {
+            recv.push((ev.offset_in_block, ev.message.clone()));
+        }
+    }
+
+    fn output_descriptors(&self) -> &[OutputDescriptor] {
+        const DESCRIPTORS: &[OutputDescriptor] = &[OutputDescriptor {
+            name: "main",
+            channels: rawdaw_engine::ChannelCount::Stereo,
+        }];
+        DESCRIPTORS
+    }
+
+    fn prepare(&mut self, _sample_rate: u32, _max_block_size: usize) {}
+}
+
+#[test]
+fn param_event_round_trips_through_engine() {
+    // (a) push_param → audio thread → node sees BlockMessage::Param with
+    //     the same path bytes and value.
+    let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let target = NodeId::new(0);
+    let recorder = RecorderNode::new();
+    let received = Arc::clone(&recorder.received);
+    engine.push_command(GraphCommand::AddNode {
+        id: target,
+        node: Box::new(recorder),
+    });
+
+    let path = [7u8, 42, 0, 0, 0, 0, 0, 0];
+    let value = -0.625_f32;
+    engine.push_param(SampleTime::samples(0), target, path, value);
+
+    let _ = engine.render_offline(target, SampleTime::samples(64), 64);
+
+    let recv = received.lock().expect("recorder mutex");
+    assert_eq!(recv.len(), 1, "exactly one event should have been recorded");
+    let (offset, message) = &recv[0];
+    assert_eq!(*offset, 0);
+    let BlockMessage::Param(p) = message else {
+        panic!("expected Param variant, got Midi");
+    };
+    assert_eq!(p.path, path);
+    assert_eq!(p.value, value);
+}
+
+#[test]
+fn unknown_param_path_does_not_crash() {
+    // (b) A node that doesn't recognize the param path silently ignores
+    //     it. The recorder is a stand-in for any node that opts in to the
+    //     parameter event channel; it represents the U3+ steady-state
+    //     shape (synth crates' apply_event will silently ignore
+    //     unrecognized paths in release builds; debug_assert flags them).
+    let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let target = NodeId::new(0);
+    let recorder = RecorderNode::new();
+    engine.push_command(GraphCommand::AddNode {
+        id: target,
+        node: Box::new(recorder),
+    });
+
+    // Bytes that don't correspond to any real synth's encoding.
+    engine.push_param(SampleTime::samples(0), target, [0xFF; 8], 999.0);
+
+    // No panic means the queue + dispatch path handled the unknown path
+    // gracefully; the render is the load-bearing observation.
+    let result = engine.render_offline(target, SampleTime::samples(64), 64);
+    assert!(result.left.iter().all(|s| *s == 0.0));
+}
+
+#[test]
+fn push_midi_and_push_param_interleave_in_push_order() {
+    // (c) push_param and push_midi at the same time arrive at the node in
+    //     push order. rtrb is FIFO; the engine's per-block partitioner
+    //     iterates the queue once and pushes into the per-target Vec in
+    //     order, so push order ≡ delivery order at the same target.
+    let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let target = NodeId::new(0);
+    let recorder = RecorderNode::new();
+    let received = Arc::clone(&recorder.received);
+    engine.push_command(GraphCommand::AddNode {
+        id: target,
+        node: Box::new(recorder),
+    });
+
+    // All three at sample 0 — interleaved order tests the FIFO contract.
+    engine.push_param(SampleTime::samples(0), target, [1; 8], 0.1);
+    engine.push_midi(
+        SampleTime::samples(0),
+        target,
+        Midi2Message::NoteOn {
+            channel: MidiChannel::default(),
+            note: MidiNote::new(60).unwrap(),
+            velocity: U16Velocity::HALF,
+        },
+    );
+    engine.push_param(SampleTime::samples(0), target, [2; 8], 0.2);
+
+    let _ = engine.render_offline(target, SampleTime::samples(64), 64);
+
+    let recv = received.lock().expect("recorder mutex");
+    assert_eq!(recv.len(), 3);
+    assert!(matches!(recv[0].1, BlockMessage::Param(_)));
+    assert!(matches!(recv[1].1, BlockMessage::Midi(_)));
+    assert!(matches!(recv[2].1, BlockMessage::Param(_)));
+    if let BlockMessage::Param(p) = &recv[0].1 {
+        assert_eq!(p.path[0], 1);
+    }
+    if let BlockMessage::Param(p) = &recv[2].1 {
+        assert_eq!(p.path[0], 2);
+    }
 }
