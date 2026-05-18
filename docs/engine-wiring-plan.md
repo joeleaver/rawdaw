@@ -55,7 +55,7 @@ The public-module-with-feature-gate path:
 
 ---
 
-## Phase E1 — Move existing fixture + add `build_round1_project()`
+## Phase E1 — Move existing fixture + add `build_round1_project()` ✅ done
 
 **Goal.** Land the cross-crate fixture sharing decided in E0. Build the
 real `Project` equivalent of the rawdaw-app UI fixture.
@@ -89,6 +89,35 @@ real `Project` equivalent of the rawdaw-app UI fixture.
   without-feature builds).
 - rawdaw-app still compiles and renders the same UI (still using its own
   static fixture — E2 wires the real one through).
+
+**Deviations from the original plan.**
+- **Returned `(Project, Round1Keys)` tuple.** Plan said
+  `build_round1_project() -> Project`; the actual signature exposes a
+  `Round1Keys` bundle of every named id (tracks / patterns / sections /
+  chord-loops / drum-kit) so downstream callers don't have to re-scan
+  by name. The engine routing in Phase E3 needs `TrackId`s by name —
+  this avoids a parallel lookup table.
+- **`tests/common/mod.rs` kept as a re-export shim**, not deleted —
+  the existing test imports (`mod common; common::build_tiny_project()`)
+  keep working without touching `smoke.rs` / `roundtrip.rs`. Removing
+  it would have been spec-pure but would have meant a parallel test
+  rename.
+- **Two-variant bass pattern.** The UI library lists `bass-main` as
+  `Pitched · 2 variants`; the model's pattern body now carries `main`
+  and `alt` (identical content) to match. Round-2 schedule UI doesn't
+  exercise the `alt` variant — it's just there for the library count.
+- **Pattern bodies are illustrative, not musical.** Each variant has
+  1–4 events — enough for realize() to produce events Phase E3 can
+  count, but deliberately not composition decisions. Real bass /
+  melody / drum content will land when the round-3 pattern editor
+  lets us *make* it.
+- **`VariantId::new("__silent__")` placeholder for the silent
+  sub-range.** The current model treats every `(BarRange, VariantId)`
+  schedule entry as naming a real variant; the UI fixture's
+  `(3..4, None)` shape (sub-range silence) doesn't yet have a
+  first-class model representation. Using a sentinel variant id is
+  the smallest viable stand-in; revisit when sub-range silences get
+  a proper model type (likely round 3 alongside the schedule editor).
 
 ---
 
