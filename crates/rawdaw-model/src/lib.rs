@@ -11,6 +11,7 @@ pub mod chord;
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
 pub mod id;
+pub mod patch;
 pub mod pattern;
 pub mod pitch;
 pub mod project;
@@ -24,6 +25,7 @@ pub mod track;
 pub use activation::*;
 pub use chord::*;
 pub use id::*;
+pub use patch::SynthAssignment;
 pub use pattern::*;
 pub use pitch::*;
 pub use project::*;

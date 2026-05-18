@@ -256,29 +256,29 @@ pub fn build_tiny_project() -> Project {
     let bass_track_id = alloc.alloc_track();
     let melody_track_id = alloc.alloc_track();
     let drum_track_id = alloc.alloc_track();
-    project.tracks.push(Track {
-        id: bass_track_id,
-        name: "Bass".into(),
-        kind: TrackKind::Pitched { role: Role::Bass },
-        instrument: InstrumentId::new(0),
-        mixer: MixerPlacement { display_index: 0 },
-    });
-    project.tracks.push(Track {
-        id: melody_track_id,
-        name: "Lead".into(),
-        kind: TrackKind::Pitched {
+    project.tracks.push(Track::new(
+        bass_track_id,
+        "Bass".into(),
+        TrackKind::Pitched { role: Role::Bass },
+        InstrumentId::new(0),
+        MixerPlacement { display_index: 0 },
+    ));
+    project.tracks.push(Track::new(
+        melody_track_id,
+        "Lead".into(),
+        TrackKind::Pitched {
             role: Role::Melodic,
         },
-        instrument: InstrumentId::new(1),
-        mixer: MixerPlacement { display_index: 1 },
-    });
-    project.tracks.push(Track {
-        id: drum_track_id,
-        name: "Drums".into(),
-        kind: TrackKind::Drum { kit: drum_kit_id },
-        instrument: InstrumentId::new(2),
-        mixer: MixerPlacement { display_index: 2 },
-    });
+        InstrumentId::new(1),
+        MixerPlacement { display_index: 1 },
+    ));
+    project.tracks.push(Track::new(
+        drum_track_id,
+        "Drums".into(),
+        TrackKind::Drum { kit: drum_kit_id },
+        InstrumentId::new(2),
+        MixerPlacement { display_index: 2 },
+    ));
 
     // ---------- Verse section with all three tracks activated ----------
     let verse_section_id = alloc.alloc_section();

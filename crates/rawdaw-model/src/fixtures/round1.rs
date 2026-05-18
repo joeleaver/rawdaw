@@ -410,13 +410,13 @@ fn push_track(
     let id = alloc.alloc_track();
     let display_index = out.len() as u32;
     let instrument = InstrumentId::new(display_index as u64);
-    out.push(Track {
+    out.push(Track::new(
         id,
-        name: name.into(),
+        name.into(),
         kind,
         instrument,
-        mixer: MixerPlacement { display_index },
-    });
+        MixerPlacement { display_index },
+    ));
     id
 }
 

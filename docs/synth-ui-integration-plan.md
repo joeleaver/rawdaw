@@ -29,24 +29,32 @@ yet); U4–U7 are the "UI" half; U8 is persistence; U9 closes out.
 
 ---
 
-## Status — U1 DONE
+## Status — U2 DONE
 
 - U0 ✅ this document, design decisions locked.
-- U1 ✅ `BlockMessage::{Midi, Param}` ships across `rawdaw-engine`.
-  `EngineHandle::push_midi` / `push_param` ergonomic helpers; opaque
-  8-byte `ParamEvent::path` decoded per synth. All five existing
-  audio nodes thread through the enum tag; synth-crate `apply_event`
-  signatures bumped to `&BlockMessage` with a `Param` arm that
-  `debug_assert!`s in debug + no-ops in release (until U3 wires the
-  decoders). 3 new tests in `tests/render.rs` pin the U1 acceptance
-  (round-trip, no-crash, push-order interleave) via a test-only
-  `RecorderNode`. 233 workspace tests, clippy clean across all three
-  feature builds. Deviation: test (b) uses the recorder rather than
-  a real synth because U1 synths `debug_assert!` on any Param (every
-  path is "unrecognized" before U3); the recorder represents the
-  U3+ shape of a node that opts in to parameter events and silently
-  drops unrecognized paths.
-- U2–U9 pending.
+- U1 ✅ `BlockMessage::{Midi, Param}` + `ParamEvent { path: [u8; 8],
+  value: f32 }` ship across `rawdaw-engine`. `EngineHandle::push_midi`
+  / `push_param` ergonomic helpers; opaque 8-byte path decoded per
+  synth. Five audio nodes thread through the enum tag; synth-crate
+  `apply_event` arms `debug_assert!` on Param pending U3's decoders.
+  3 new tests via a test-only `RecorderNode` pin round-trip,
+  unknown-path-no-crash, and push-order interleave. Deviation: tests
+  use the recorder instead of real synth crates because U1 synths
+  debug_assert on every Param path (all are "unrecognized" before U3).
+- U2 ✅ `rawdaw-model::patch` ships serialized patch types:
+  `WavetablePatchData`, `DrumPatchData`, `SynthAssignment`, and the
+  per-synth mirror enums (`ModSourceData`, `ModDestinationData`,
+  `AdsrParamsData`, `WavetableOscParamsData`, `ModSlotData`,
+  `KickPatchData`, `SnarePatchData`, `HatPatchData`). No
+  `rawdaw-dsp` dep — model stays leaf-domain. `Track` gains
+  `synth: SynthAssignment` plus a `new` constructor that defaults
+  from `kind` via `SynthAssignment::default_for_kind`. The
+  (kind, synth) invariant is checked via `Track::kind_matches_synth`
+  and `debug_assert!`ed in `configure_graph`. Four direct
+  `Track { … }` construction sites migrated. 15 new tests (workspace
+  233 → 248); ron round-trip + default-value pins on every patch
+  type. Audio unchanged — defaults sit unused until U3.
+- U3–U9 pending.
 
 ---
 
@@ -231,16 +239,13 @@ deferred until measurement shows it's needed.
 
 ### Patch persistence: factory presets in U8; full save/load deferred
 
-U2 lands `WavetablePatchData::default()` mirroring the current M5
-patch. U8 ships a **factory preset bank** — JSON patch files in
-`assets/presets/wavetable/*.json` loaded into a preset dropdown
-above the editor; picking a preset overwrites the current track's
-patch. No save-as-preset in U8 (small follow-up).
-
-Full project save/load (write a `Project` JSON, open it back) is
-deferred to its own plan — separate concerns: file dialog, format
-migration, undo/redo restoration, unsaved-changes indicator.
-Bundling here would push scope past 9 phases.
+U2 lands `WavetablePatchData::default()` mirroring the M5 patch.
+U8 ships a factory preset bank (JSON patches in
+`assets/presets/wavetable/*.json`, a dropdown to pick one,
+overwrites the current track's patch). No save-as-preset in U8.
+Full project save/load is deferred to its own plan — file dialog,
+format migration, undo/redo, unsaved-changes indicator are
+separate concerns.
 
 ---
 
@@ -279,20 +284,15 @@ synth nodes still ignore `Param` variants and only act on
   encoding. Symmetric helper `push_midi` for clarity.
 - Round-1 audio path unchanged: no `Param` events flow yet.
 
-**Done when (✅ met).** Workspace tests still pass byte-for-byte
-for audio output. 3 new tests in `tests/render.rs` pin: (a)
-`param_event_round_trips_through_engine` — push_param + render +
-recorder sees `BlockMessage::Param` with matching path/value; (b)
-`unknown_param_path_does_not_crash` — recorder accepts an unknown
-path and the render completes without panic; (c)
-`push_midi_and_push_param_interleave_in_push_order` — three events
-at the same time arrive at the node in push order, proving the
-rtrb FIFO + per-block partitioner preserves ordering. 233 workspace
-tests + all three clippy gates clean. Deviation: tests use a
-`RecorderNode` (test-local) for (a) + (b) rather than a real synth,
-because the U1 synth `apply_event` arms `debug_assert!(false)` on
-Param (every path is "unrecognized" before U3); the recorder
-models the U3+ shape of a parameter-accepting node.
+**Done when (✅ met).** Audio output unchanged. 3 new
+`tests/render.rs` tests pin: (a) push_param + render → recorder
+sees `BlockMessage::Param` with matching path/value; (b) unknown
+path doesn't crash the audio thread; (c) push_midi + push_param
+at the same time arrive at the node in push order (rtrb FIFO +
+per-block partitioner preserve it). 233 workspace tests; clippy
+clean. Deviation: tests use a `RecorderNode` rather than a real
+synth — U1 synths debug_assert on every Param, so they couldn't
+themselves prove the no-crash pin.
 
 ---
 
@@ -341,14 +341,19 @@ constants byte-for-byte.
 - All `serde` derives gated on the existing `serde` feature (no
   new optional dep).
 
-**Done when.** Round-1 fixture produces the same audio
-byte-for-byte (the lifted constants match the hardcoded values).
-Workspace tests pass. New tests pin: (a) `WavetablePatchData::
-default()` matches what `WavetableSynthNode::new`-equivalent reads
-post-U3; (b) `SynthAssignment::Wavetable(_)` paired with
-`TrackKind::Drum` panics in `Track::new_*` (debug) or fails the
-`debug_assert` in realize; (c) `serde_json::to_string` /
-`from_str` round-trips a round-1 track + its patch.
+**Done when (✅ met).** Round-1 audio unchanged (synth crates
+still read their own constants; U3 wires the consumption). 15 new
+tests (workspace 233 → 248) pin: (a) default-patch numeric values
+match the synth-crate constants — drift in either side breaks the
+test; (b) `Track::new` always produces `kind_matches_synth()`, a
+hand-mutated mismatch fails (drives the `debug_assert!` in
+`configure_graph`); (c) ron round-trip preserves every patch type
++ the full `Track`. Deviation: single `Track::new(id, name, kind,
+instrument, mixer)` constructor + pub `synth` field over separate
+`new_pitched` / `new_drum` — picks the right default from `kind`
+via `SynthAssignment::default_for_kind`, same invariant guarantee.
+Used ron rather than serde_json since `rawdaw-model` already
+depends on ron for `Project::save_ron`.
 
 ---
 

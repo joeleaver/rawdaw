@@ -241,15 +241,15 @@ fn realized_events_drive_sine_through_translator() {
     let section_id = project.id_allocators.alloc_section();
     let note_id = project.id_allocators.alloc_note();
 
-    project.tracks.push(Track {
-        id: track_id,
-        name: "Lead".into(),
-        kind: TrackKind::Pitched {
+    project.tracks.push(Track::new(
+        track_id,
+        "Lead".into(),
+        TrackKind::Pitched {
             role: Role::Melodic,
         },
-        instrument: InstrumentId::new(0),
-        mixer: MixerPlacement::default(),
-    });
+        InstrumentId::new(0),
+        MixerPlacement::default(),
+    ));
 
     let main_variant = VariantId::main();
     let mut variants = BTreeMap::new();

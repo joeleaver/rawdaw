@@ -435,6 +435,18 @@ fn configure_graph(
         node: Box::new(MixerNode::new(track_count)),
     });
     for (i, track) in project.tracks.iter().enumerate() {
+        // (kind, synth) is paired correctly by Track::new; this
+        // asserts the invariant at the audio-graph boundary so any
+        // hand-mutated track surfaces in debug builds (release does
+        // nothing — U3 will read track.synth here regardless of the
+        // invariant; configure_graph trusts the track's `kind` as the
+        // source of truth for node selection).
+        debug_assert!(
+            track.kind_matches_synth(),
+            "track {:?} has kind/synth mismatch (kind = {:?})",
+            track.id,
+            track.kind,
+        );
         let instrument_id = NodeId::new((i + 1) as u32);
         let node: Box<dyn AudioNode> = match &track.kind {
             TrackKind::Pitched { .. } => Box::new(WavetableSynthNode::new()),
