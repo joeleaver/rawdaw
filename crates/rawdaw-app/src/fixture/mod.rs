@@ -1,31 +1,34 @@
 //! Round-1 fixture data + round-2 extensions. Stand-in for
 //! `rawdaw_model::Project` until the engine is wired through.
 //!
-//! The shapes line up with `composition-model.md` so swapping in a real
-//! project is mostly a matter of building the view from `Project` fields
-//! instead of these statics.
+//! Phase E2 type-flip: the fixture types now hold owned `String` and
+//! `Vec` data so a follow-on commit can populate them from
+//! `rawdaw_model::fixtures::build_round1_project()` (which returns owned
+//! strings). `round1()` returns `&'static Round1` backed by a
+//! `std::sync::OnceLock`, so every component still pulls the same
+//! reference for the cost of a one-time init.
 //!
 //! ## Module layout
 //!
 //! - `mod.rs` (this file) — types + lookup helpers + the public
 //!   `round1()` entry point. Stays under the ~700-line cap.
-//! - `data` — the bulky static tables (tracks / patterns / chord loops /
-//!   activations / variant overrides / sections / arrangement) and the
-//!   round-2 fixture invariant tests.
+//! - `data` — the round-1 build function (the bulky construction lives
+//!   there so neither file approaches the cap) and the round-2 fixture
+//!   invariant tests.
 
 #![allow(dead_code)] // fixture fields accrete with the UI; not all are read yet
 
-mod data;
+use std::sync::OnceLock;
 
-pub use data::round1;
+mod data;
 
 // ─── Project / track / pattern types ──────────────────────────────────────
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Project {
-    pub name: &'static str,
-    pub key: &'static str,
-    pub time_sig: &'static str,
+    pub name: String,
+    pub key: String,
+    pub time_sig: String,
     pub tempo: u32,
     pub playhead_bar: u32,
     pub playhead_beat: u32,
@@ -40,26 +43,26 @@ pub enum TrackKind {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Track {
-    pub id: &'static str,
-    pub name: &'static str,
+    pub id: String,
+    pub name: String,
     pub kind: TrackKind,
-    pub role: &'static str,
+    pub role: String,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Pattern {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub color: &'static str,
-    pub kind: &'static str, // "Pitched" | "Drum"
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub kind: String, // "Pitched" | "Drum"
     pub variants: u32,
     /// Variant id that plays for any bar range not covered by an explicit
     /// entry in an `Activation::variant_schedule`. Mirrors
     /// `Pattern.default_variant` in `composition-model.md`. The schedule
     /// builder uses this at render time — there must be NO phantom default
     /// entry in `variant_schedule`.
-    pub default_variant: &'static str,
-    pub meta: &'static str,
+    pub default_variant: String,
+    pub meta: String,
 }
 
 // ─── Realization model (round-2 additions) ────────────────────────────────
@@ -227,27 +230,27 @@ pub fn role_defaults(role: &str) -> Option<RoleDefaults> {
 /// pattern's `default_variant`. The render-time schedule builder fills
 /// implicit-default gaps; there must never be a phantom default entry in
 /// the data.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ScheduleEntry {
     pub start_bar: u32,
     pub end_bar: u32,
-    pub variant: Option<&'static str>,
+    pub variant: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ChordEvent {
-    pub roman: &'static str,
-    pub quality: &'static str, // empty for the default quality of the case
-    pub absolute: &'static str,
+    pub roman: String,
+    pub quality: String, // empty for the default quality of the case
+    pub absolute: String,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ChordLoop {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub color: &'static str,
+    pub id: String,
+    pub name: String,
+    pub color: String,
     pub length_bars: u32,
-    pub events: &'static [ChordEvent],
+    pub events: Vec<ChordEvent>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -262,10 +265,10 @@ pub enum ActivationState {
     Inherit,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Activation {
     /// Pattern name, or empty when state is `Inherit`.
-    pub pattern: &'static str,
+    pub pattern: String,
     pub state: ActivationState,
     /// True when this variant of the section silences a base-active
     /// activation. Drives the "*" mark next to the state pill.
@@ -279,7 +282,7 @@ pub struct Activation {
     /// means "default variant plays the entire activation." Implicit-
     /// default fills are computed at render time — never store a
     /// phantom default entry here.
-    pub variant_schedule: &'static [ScheduleEntry],
+    pub variant_schedule: Vec<ScheduleEntry>,
     /// Count of pinned per-note overrides (round-3 drill-in target).
     /// Drives the "N pinned" / "no pinned notes" footer in the cell.
     pub per_note_overrides: u32,
@@ -287,8 +290,8 @@ pub struct Activation {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Variant {
-    pub id: &'static str,
-    pub name: &'static str,
+    pub id: String,
+    pub name: String,
 }
 
 /// How a variant overrides a single track's activation. Mirrors
@@ -302,14 +305,14 @@ pub struct Variant {
 ///   last bar via a sub-range silence).
 ///
 /// "Inherit" is implicit by absence from the variant's override list.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum ActivationOverride {
     Silent,
     Replace(Activation),
 }
 
 /// Sparse per-variant override list: pairs of (track id, override).
-pub type VariantOverride = &'static [(&'static str, ActivationOverride)];
+pub type VariantOverride = Vec<(String, ActivationOverride)>;
 
 /// `Section` only derives `PartialEq` (not `Eq`) because it transitively
 /// contains `Humanization`'s `f32` fields. Identity-by-id is the right
@@ -317,37 +320,47 @@ pub type VariantOverride = &'static [(&'static str, ActivationOverride)];
 /// equality including humanization values.
 #[derive(Clone, PartialEq)]
 pub struct Section {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub color: &'static str,
-    pub variants: &'static [Variant],
-    pub default_variant: &'static str,
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub variants: Vec<Variant>,
+    pub default_variant: String,
     pub base_duration_bars: u32,
     /// Chord-loop names attached to this section, in order.
-    pub chord_loops: &'static [&'static str],
+    pub chord_loops: Vec<String>,
     /// Activations keyed by track id.
-    pub activations: &'static [(&'static str, Activation)],
+    pub activations: Vec<(String, Activation)>,
     /// Sparse variant overrides keyed by variant id.
-    pub variant_overrides: &'static [(&'static str, VariantOverride)],
+    pub variant_overrides: Vec<(String, VariantOverride)>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct SectionRef {
     pub idx: usize,
-    pub section_key: &'static str,
-    pub variant: &'static str,
+    pub section_key: String,
+    pub variant: String,
     pub start_bar: u32,
     pub bars: u32,
 }
 
 pub struct Round1 {
     pub project: Project,
-    pub tracks: &'static [Track],
-    pub patterns: &'static [Pattern],
-    pub chord_loops: &'static [ChordLoop],
-    pub sections: &'static [Section],
-    pub arrangement: &'static [SectionRef],
+    pub tracks: Vec<Track>,
+    pub patterns: Vec<Pattern>,
+    pub chord_loops: Vec<ChordLoop>,
+    pub sections: Vec<Section>,
+    pub arrangement: Vec<SectionRef>,
     pub total_bars: u32,
+}
+
+// ─── Round-1 singleton ────────────────────────────────────────────────────
+
+static ROUND1: OnceLock<Round1> = OnceLock::new();
+
+/// Returns the round-1 fixture. Built once on first call; every caller
+/// shares the same `&'static Round1`.
+pub fn round1() -> &'static Round1 {
+    ROUND1.get_or_init(data::build_round1)
 }
 
 // ─── Lookup helpers ───────────────────────────────────────────────────────
@@ -381,25 +394,25 @@ pub fn base_activation<'a>(section: &'a Section, track_id: &str) -> Option<&'a A
     section
         .activations
         .iter()
-        .find(|(tid, _)| *tid == track_id)
+        .find(|(tid, _)| tid == track_id)
         .map(|(_, a)| a)
 }
 
 /// Look up the override for a track under a given variant. Returns
 /// `None` when the variant doesn't override that track (the implicit
 /// "inherit from base" case per `section-variants.md`).
-pub fn variant_override(
-    section: &Section,
+pub fn variant_override<'a>(
+    section: &'a Section,
     variant_id: &str,
     track_id: &str,
-) -> Option<ActivationOverride> {
+) -> Option<&'a ActivationOverride> {
     for (vid, ov) in section.variant_overrides.iter() {
-        if *vid != variant_id {
+        if vid != variant_id {
             continue;
         }
         for (tid, entry) in ov.iter() {
-            if *tid == track_id {
-                return Some(*entry);
+            if tid == track_id {
+                return Some(entry);
             }
         }
     }

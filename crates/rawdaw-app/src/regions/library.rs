@@ -120,7 +120,11 @@ fn ChordLoopsGroup() -> NodeHandle {
                         meta: format!(
                             "{} bars · {}",
                             cl.length_bars,
-                            cl.events.iter().map(|e| e.roman).collect::<Vec<_>>().join(" "),
+                            cl.events
+                                .iter()
+                                .map(|e| e.roman.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" "),
                         ),
                         highlighted: false,
                     }

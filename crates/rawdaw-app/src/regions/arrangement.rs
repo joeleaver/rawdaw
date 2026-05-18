@@ -18,7 +18,7 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{self, ChordEvent};
+use crate::fixture;
 use crate::parts::rgba;
 use crate::state::AppState;
 use crate::theme;
@@ -174,10 +174,10 @@ fn ChordRibbon(total_bars: u32) -> NodeHandle {
 #[derive(Clone, PartialEq, Eq)]
 struct RibbonCellData {
     bar: u32,
-    roman: &'static str,
-    absolute: &'static str,
-    color: &'static str,
-    section_key: &'static str,
+    roman: String,
+    absolute: String,
+    color: String,
+    section_key: String,
     is_first_of_loop: bool,
 }
 
@@ -185,9 +185,9 @@ fn build_ribbon_cells() -> Vec<RibbonCellData> {
     let r = fixture::round1();
     let mut cells = Vec::new();
     for block in r.arrangement.iter() {
-        let Some(section) = fixture::section_by_key(&r, block.section_key) else { continue; };
-        let Some(loop_name) = section.chord_loops.first().copied() else { continue; };
-        let Some(loop_data) = fixture::chord_loop_by_name(&r, loop_name) else { continue; };
+        let Some(section) = fixture::section_by_key(r, block.section_key.as_str()) else { continue; };
+        let Some(loop_name) = section.chord_loops.first() else { continue; };
+        let Some(loop_data) = fixture::chord_loop_by_name(r, loop_name.as_str()) else { continue; };
 
         // Tile the loop across the block, 1 chord per bar (round-1 fixture).
         let mut bar = block.start_bar;
@@ -199,10 +199,10 @@ fn build_ribbon_cells() -> Vec<RibbonCellData> {
                 }
                 cells.push(RibbonCellData {
                     bar,
-                    roman: ev.roman,
-                    absolute: ev.absolute,
-                    color: loop_data.color,
-                    section_key: block.section_key,
+                    roman: ev.roman.clone(),
+                    absolute: ev.absolute.clone(),
+                    color: loop_data.color.clone(),
+                    section_key: block.section_key.clone(),
                     is_first_of_loop: ei == 0,
                 });
                 bar += 1;
@@ -211,8 +211,6 @@ fn build_ribbon_cells() -> Vec<RibbonCellData> {
                 break;
             }
         }
-        // Suppress unused-var warning when no looping happens.
-        let _ = ChordEvent { roman: "", quality: "", absolute: "" };
     }
     cells
 }
@@ -383,7 +381,7 @@ fn SectionBlock(
 ) -> NodeHandle {
     let app = use_store::<AppState>();
     let r = fixture::round1();
-    let Some(section) = fixture::section_by_key(&r, section_key.as_str()) else {
+    let Some(section) = fixture::section_by_key(r, section_key.as_str()) else {
         return rsx! { span {} };
     };
     let color = section.color.to_string();

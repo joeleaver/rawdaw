@@ -14,7 +14,7 @@ use crate::theme;
 #[component]
 pub fn TopBar() -> NodeHandle {
     let r = fixture::round1();
-    let p = r.project;
+    let p = &r.project;
 
     let bar_style = format!(
         "height: {h}px; flex: 0 0 {h}px; \

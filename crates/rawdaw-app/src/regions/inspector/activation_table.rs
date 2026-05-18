@@ -39,11 +39,11 @@ pub fn ActivationTable(section_name_key: String, variant_id: String) -> NodeHand
             }
             for track in r.tracks.iter().cloned() {
                 ActivationRow {
-                    key: track.id,
+                    key: track.id.clone(),
                     section_name_key: section_name_key.clone(),
                     variant_id: variant_id.clone(),
-                    track_id: track.id.to_string(),
-                    track_name: track.name.to_string(),
+                    track_id: track.id,
+                    track_name: track.name,
                     track_is_drum: track.kind == fixture::TrackKind::Drum,
                 }
             }
@@ -65,18 +65,20 @@ fn effective_state(
     track_id: &str,
 ) -> (Option<&'static str>, ActivationState, bool) {
     let r = fixture::round1();
-    let Some(section) = fixture::section_by_key(&r, section_name_key) else {
+    let Some(section) = fixture::section_by_key(r, section_name_key) else {
         return (None, ActivationState::Inherit, false);
     };
 
     // Variant override takes precedence over base. The override list is
-    // sparse — absence means "inherit base."
+    // sparse — absence means "inherit base." The pattern strings borrow
+    // into the `'static Round1` returned by `fixture::round1()`, so
+    // `Option<&'static str>` is honest.
     for (vid, ov) in section.variant_overrides.iter() {
-        if *vid != variant_id {
+        if vid != variant_id {
             continue;
         }
         for (tid, entry) in ov.iter() {
-            if *tid != track_id {
+            if tid != track_id {
                 continue;
             }
             return match entry {
@@ -84,11 +86,11 @@ fn effective_state(
                     let pat = section
                         .activations
                         .iter()
-                        .find(|(t, _)| *t == track_id)
-                        .map(|(_, a)| a.pattern);
+                        .find(|(t, _)| t == track_id)
+                        .map(|(_, a)| a.pattern.as_str());
                     (pat, ActivationState::Silent, true)
                 }
-                ActivationOverride::Replace(act) => (Some(act.pattern), act.state, true),
+                ActivationOverride::Replace(act) => (Some(act.pattern.as_str()), act.state, true),
             };
         }
     }
@@ -96,12 +98,12 @@ fn effective_state(
     let Some(base) = section
         .activations
         .iter()
-        .find(|(tid, _)| *tid == track_id)
+        .find(|(tid, _)| tid == track_id)
         .map(|(_, a)| a)
     else {
         return (None, ActivationState::Inherit, false);
     };
-    (Some(base.pattern), base.state, false)
+    (Some(base.pattern.as_str()), base.state, false)
 }
 
 #[component]
@@ -135,7 +137,7 @@ fn ActivationRow(
 
     let r = fixture::round1();
     let pat_swatch_color = pat_name_opt
-        .and_then(|n| fixture::pattern_by_name(&r, n))
+        .and_then(|n| fixture::pattern_by_name(r, n))
         .map(|p| p.color.to_string())
         .unwrap_or_default();
     let has_swatch = !pat_swatch_color.is_empty();

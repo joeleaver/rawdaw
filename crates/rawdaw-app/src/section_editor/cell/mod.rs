@@ -104,6 +104,14 @@ pub struct CellSlot {
     pub variant: ResolvedVariant,
 }
 
+// `Active` carries a fully-resolved Activation (with its variant_schedule
+// Vec and pattern String) so it's substantially bigger than `Inherit`.
+// ResolvedVariant lives briefly inside per-render `Vec<CellSlot>` — at
+// most one entry per project track per cell render — so boxing the
+// Active payload to equalize variant sizes would trade a meaningful
+// allocation for negligible memory savings. Suppress the warning here
+// rather than introduce that indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq)]
 pub enum ResolvedVariant {
     /// Track has an effective activation in this section/variant.
@@ -148,7 +156,7 @@ impl Default for ResolvedVariant {
 
 fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
     let r = fixture::round1();
-    let Some(section) = fixture::section_by_key(&r, section_key.as_str()) else {
+    let Some(section) = fixture::section_by_key(r, section_key.as_str()) else {
         return Vec::new();
     };
 
@@ -156,12 +164,12 @@ fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
     r.tracks
         .iter()
         .map(|track| {
-            let variant = resolve_one(section, variant.as_str(), track.id);
+            let variant = resolve_one(section, variant.as_str(), track.id.as_str());
             CellSlot {
-                track_id: track.id.to_string(),
-                track_name: track.name.to_string(),
+                track_id: track.id.clone(),
+                track_name: track.name.clone(),
                 track_kind: track.kind,
-                track_role: track.role.to_string(),
+                track_role: track.role.clone(),
                 total_bars,
                 variant,
             }
@@ -175,15 +183,15 @@ fn resolve_one(section: &Section, variant_id: &str, track_id: &str) -> ResolvedV
     let override_entry = section
         .variant_overrides
         .iter()
-        .find(|(vid, _)| *vid == variant_id)
-        .and_then(|(_, list)| list.iter().find(|(tid, _)| *tid == track_id))
+        .find(|(vid, _)| vid == variant_id)
+        .and_then(|(_, list)| list.iter().find(|(tid, _)| tid == track_id))
         .map(|(_, ov)| ov);
 
     let base = section
         .activations
         .iter()
-        .find(|(tid, _)| *tid == track_id)
-        .map(|(_, a)| *a);
+        .find(|(tid, _)| tid == track_id)
+        .map(|(_, a)| a.clone());
 
     match (override_entry, base) {
         (None, None) => ResolvedVariant::Inherit {
@@ -204,7 +212,7 @@ fn resolve_one(section: &Section, variant_id: &str, track_id: &str) -> ResolvedV
             reason: "silent override without base",
         },
         (Some(ActivationOverride::Replace(act)), _) => {
-            let mut act = *act;
+            let mut act = act.clone();
             act.overridden = true;
             activation_to_variant(act, true, Some("replaced in this variant".to_string()))
         }
@@ -217,15 +225,15 @@ fn activation_to_variant(
     source_label: Option<String>,
 ) -> ResolvedVariant {
     let r = fixture::round1();
-    let pat = fixture::pattern_by_name(&r, act.pattern);
+    let pat = fixture::pattern_by_name(r, act.pattern.as_str());
     let pattern_default_variant = pat
-        .map(|p| p.default_variant.to_string())
+        .map(|p| p.default_variant.clone())
         .unwrap_or_default();
     let (pattern_color, pattern_kind) = pat
-        .map(|p| (p.color.to_string(), p.kind.to_string()))
+        .map(|p| (p.color.clone(), p.kind.clone()))
         .unwrap_or_else(|| (theme::TEXT2.to_string(), String::new()));
     ResolvedVariant::Active {
-        pattern_name: act.pattern.to_string(),
+        pattern_name: act.pattern.clone(),
         pattern_color,
         pattern_kind,
         pattern_default_variant,
@@ -300,7 +308,7 @@ mod tests {
     fn pad_in_verse_base_resolves_to_inherit() {
         // Per fixture: verse@base has no pad entry (decision 14).
         let r = fixture::round1();
-        let section = fixture::section_by_key(&r, "verse").expect("verse exists");
+        let section = fixture::section_by_key(r, "verse").expect("verse exists");
         let resolved = resolve_one(section, "base", "t_pad");
         match resolved {
             ResolvedVariant::Inherit { reason } => {
@@ -314,7 +322,7 @@ mod tests {
     fn bass_in_verse_stripped_resolves_to_silent_variant_override() {
         // Per fixture: verse-stripped overrides bass with Silent.
         let r = fixture::round1();
-        let section = fixture::section_by_key(&r, "verse").expect("verse exists");
+        let section = fixture::section_by_key(r, "verse").expect("verse exists");
         let resolved = resolve_one(section, "stripped", "t_bass");
         match resolved {
             ResolvedVariant::Active {
@@ -334,7 +342,7 @@ mod tests {
     #[test]
     fn lead_in_verse_stripped_resolves_to_replace_override() {
         let r = fixture::round1();
-        let section = fixture::section_by_key(&r, "verse").expect("verse exists");
+        let section = fixture::section_by_key(r, "verse").expect("verse exists");
         let resolved = resolve_one(section, "stripped", "t_lead");
         match resolved {
             ResolvedVariant::Active {
@@ -352,7 +360,7 @@ mod tests {
     #[test]
     fn drums_in_verse_base_resolves_to_active_no_override() {
         let r = fixture::round1();
-        let section = fixture::section_by_key(&r, "verse").expect("verse exists");
+        let section = fixture::section_by_key(r, "verse").expect("verse exists");
         let resolved = resolve_one(section, "base", "t_drums");
         match resolved {
             ResolvedVariant::Active {

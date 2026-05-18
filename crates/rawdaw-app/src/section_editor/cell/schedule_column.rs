@@ -241,7 +241,11 @@ mod tests {
     use super::*;
 
     fn entry(start: u32, end: u32, variant: Option<&'static str>) -> ScheduleEntry {
-        ScheduleEntry { start_bar: start, end_bar: end, variant }
+        ScheduleEntry {
+            start_bar: start,
+            end_bar: end,
+            variant: variant.map(|s| s.to_string()),
+        }
     }
 
     #[test]

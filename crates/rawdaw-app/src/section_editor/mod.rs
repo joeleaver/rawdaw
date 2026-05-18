@@ -55,7 +55,7 @@ pub fn SectionEditor() -> NodeHandle {
     };
 
     let r = fixture::round1();
-    let section = fixture::section_by_key(&r, section_key.as_str());
+    let section = fixture::section_by_key(r, section_key.as_str());
     let (section_name, section_color, default_variant) = match section {
         Some(s) => (
             s.name.to_string(),

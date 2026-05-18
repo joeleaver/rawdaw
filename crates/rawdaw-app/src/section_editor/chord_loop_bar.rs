@@ -67,7 +67,7 @@ pub fn ChordLoopBar(loop_name: String, duration_bars: u32) -> NodeHandle {
 
 fn build_cells_by_name(loop_name: String, duration_bars: u32) -> Vec<ChordCellData> {
     let r = fixture::round1();
-    match fixture::chord_loop_by_name(&r, loop_name.as_str()) {
+    match fixture::chord_loop_by_name(r, loop_name.as_str()) {
         Some(loop_data) => build_cells(loop_data, duration_bars),
         None => Vec::new(),
     }
@@ -171,26 +171,29 @@ fn ChordCell(
 mod tests {
     use super::*;
 
-    fn fake_loop(events: &'static [fixture::ChordEvent], color: &'static str) -> fixture::ChordLoop {
+    fn fake_loop(events: Vec<fixture::ChordEvent>, color: &str) -> fixture::ChordLoop {
+        let len = events.len() as u32;
         fixture::ChordLoop {
-            id: "test",
-            name: "test",
-            color,
-            length_bars: events.len() as u32,
+            id: "test".into(),
+            name: "test".into(),
+            color: color.into(),
+            length_bars: len,
             events,
         }
     }
 
-    static FOUR_EVENTS: &[fixture::ChordEvent] = &[
-        fixture::ChordEvent { roman: "I",  quality: "", absolute: "C"  },
-        fixture::ChordEvent { roman: "V",  quality: "", absolute: "G"  },
-        fixture::ChordEvent { roman: "vi", quality: "", absolute: "Am" },
-        fixture::ChordEvent { roman: "IV", quality: "", absolute: "F"  },
-    ];
+    fn four_events() -> Vec<fixture::ChordEvent> {
+        vec![
+            fixture::ChordEvent { roman: "I".into(),  quality: "".into(), absolute: "C".into()  },
+            fixture::ChordEvent { roman: "V".into(),  quality: "".into(), absolute: "G".into()  },
+            fixture::ChordEvent { roman: "vi".into(), quality: "".into(), absolute: "Am".into() },
+            fixture::ChordEvent { roman: "IV".into(), quality: "".into(), absolute: "F".into()  },
+        ]
+    }
 
     #[test]
     fn one_iteration_yields_one_first_of_loop_stripe() {
-        let cl = fake_loop(FOUR_EVENTS, "#000000");
+        let cl = fake_loop(four_events(), "#000000");
         let cells = build_cells(&cl, 4);
         assert_eq!(cells.len(), 4);
         let firsts = cells.iter().filter(|c| c.is_first_of_loop).count();
@@ -201,7 +204,7 @@ mod tests {
 
     #[test]
     fn two_iterations_yield_two_first_of_loop_stripes() {
-        let cl = fake_loop(FOUR_EVENTS, "#000000");
+        let cl = fake_loop(four_events(), "#000000");
         let cells = build_cells(&cl, 8);
         assert_eq!(cells.len(), 8);
         let firsts: Vec<u32> = cells
@@ -214,7 +217,7 @@ mod tests {
 
     #[test]
     fn partial_iteration_truncates_to_duration() {
-        let cl = fake_loop(FOUR_EVENTS, "#000000");
+        let cl = fake_loop(four_events(), "#000000");
         let cells = build_cells(&cl, 6);
         assert_eq!(cells.len(), 6);
         // Second iteration was cut after two events.
@@ -229,10 +232,10 @@ mod tests {
 
     #[test]
     fn empty_loop_or_zero_duration_yields_no_cells() {
-        let empty = fake_loop(&[], "#000000");
+        let empty = fake_loop(Vec::new(), "#000000");
         assert!(build_cells(&empty, 4).is_empty());
 
-        let cl = fake_loop(FOUR_EVENTS, "#000000");
+        let cl = fake_loop(four_events(), "#000000");
         assert!(build_cells(&cl, 0).is_empty());
     }
 
@@ -240,7 +243,7 @@ mod tests {
     fn roman_case_is_preserved() {
         // Principle 3: case carries chord quality. Don't lowercase
         // major or uppercase minor.
-        let cl = fake_loop(FOUR_EVENTS, "#000000");
+        let cl = fake_loop(four_events(), "#000000");
         let cells = build_cells(&cl, 4);
         let romans: Vec<&str> = cells.iter().map(|c| c.roman.as_str()).collect();
         assert_eq!(romans, vec!["I", "V", "vi", "IV"]);

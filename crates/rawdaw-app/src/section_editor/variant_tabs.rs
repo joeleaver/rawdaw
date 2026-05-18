@@ -45,13 +45,13 @@ pub fn VariantTabs(
                 .sections
                 .iter()
                 .find(|s| s.name == key.as_str())
-                .map(|s| s.variants.to_vec())
+                .map(|s| s.variants.clone())
                 .unwrap_or_default()
             {
                 VariantTab {
-                    key: v.id,
-                    variant_id: v.id.to_string(),
-                    variant_name: v.name.to_string(),
+                    key: v.id.clone(),
+                    variant_id: v.id.clone(),
+                    variant_name: v.name,
                     is_default: v.id == default.as_str(),
                     section_color: color.clone(),
                 }

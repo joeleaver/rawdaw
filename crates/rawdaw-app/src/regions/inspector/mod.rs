@@ -82,11 +82,11 @@ fn SelectedInspector(idx: usize) -> NodeHandle {
     let Some(block) = r.arrangement.get(idx).cloned() else {
         return rsx! { InspectorEmpty { } };
     };
-    let Some(section) = fixture::section_by_key(&r, block.section_key).cloned() else {
+    let Some(section) = fixture::section_by_key(r, block.section_key.as_str()).cloned() else {
         return rsx! { InspectorEmpty { } };
     };
 
-    let instance_count = fixture::instance_count(&r, block.section_key);
+    let instance_count = fixture::instance_count(r, block.section_key.as_str());
 
     // Resolve all the strings/numbers we'll need up front so subcomponents
     // can take primitive props (every `#[component]` field type must impl
@@ -99,9 +99,9 @@ fn SelectedInspector(idx: usize) -> NodeHandle {
     let base_duration_bars = section.base_duration_bars;
     let start_bar = block.start_bar;
     let bars = block.bars;
-    let chord_loop_name = section.chord_loops.first().copied().unwrap_or("").to_string();
-    let chord_loop_color = fixture::chord_loop_by_name(&r, chord_loop_name.as_str())
-        .map(|c| c.color.to_string())
+    let chord_loop_name = section.chord_loops.first().cloned().unwrap_or_default();
+    let chord_loop_color = fixture::chord_loop_by_name(r, chord_loop_name.as_str())
+        .map(|c| c.color.clone())
         .unwrap_or_else(|| theme::PAL_TERRA.to_string());
 
     rsx! {
@@ -253,13 +253,13 @@ fn VariantTabs(
                 .sections
                 .iter()
                 .find(|s| s.name == key.as_str())
-                .map(|s| s.variants.to_vec())
+                .map(|s| s.variants.clone())
                 .unwrap_or_default()
             {
                 VariantTab {
-                    key: v.id,
-                    variant_id: v.id.to_string(),
-                    variant_name: v.name.to_string(),
+                    key: v.id.clone(),
+                    variant_id: v.id.clone(),
+                    variant_name: v.name,
                     active: v.id == active.as_str(),
                     is_default: v.id == default.as_str(),
                     section_color: color.clone(),
@@ -458,8 +458,14 @@ fn Select(value: String) -> NodeHandle {
 #[component]
 fn ChordLoopRow(bar_range: String, loop_name: String, color: String) -> NodeHandle {
     let r = fixture::round1();
-    let romans = fixture::chord_loop_by_name(&r, loop_name.as_str())
-        .map(|c| c.events.iter().map(|e| e.roman).collect::<Vec<_>>().join(" "))
+    let romans = fixture::chord_loop_by_name(r, loop_name.as_str())
+        .map(|c| {
+            c.events
+                .iter()
+                .map(|e| e.roman.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .unwrap_or_default();
     let row_style = format!(
         "display: flex; align-items: center; gap: 8px; \

@@ -30,16 +30,16 @@ use crate::theme;
 #[component]
 pub fn SectionMetaBar(section_name_key: String) -> NodeHandle {
     let r = fixture::round1();
-    let section = fixture::section_by_key(&r, section_name_key.as_str())
+    let section = fixture::section_by_key(r, section_name_key.as_str())
         .expect("section editor target must exist in the fixture");
 
     // Static-for-this-section values — `default_variant` is on the
     // section template, not on the per-variant view. The `inherited`
     // flag at each field is computed reactively against the active
     // variant inside FieldLabelRow.
-    let default_variant = section.default_variant.to_string();
+    let default_variant = section.default_variant.clone();
     let duration = section.base_duration_bars;
-    let loop_name = section.chord_loops.first().copied().unwrap_or("").to_string();
+    let loop_name = section.chord_loops.first().cloned().unwrap_or_default();
 
     let bar_style = format!(
         "flex: 0 0 auto; padding: 12px 20px; \
