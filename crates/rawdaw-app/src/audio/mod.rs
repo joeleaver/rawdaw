@@ -78,7 +78,7 @@ use rawdaw_engine::cpal_driver::{CpalDriver, StreamError};
 use rawdaw_engine::node::AudioNode;
 use rawdaw_engine::{
     translate_events, BlockEvent, Edge, Engine, EngineHandle, GraphCommand, MixerNode, NodeId,
-    NodePort, SineNode, TrackRouting, Transport, TransportHandle,
+    NodePort, TrackRouting, Transport, TransportHandle,
 };
 use rawdaw_fx::GainNode;
 use rawdaw_model::fixtures::build_round1_project;
@@ -86,6 +86,7 @@ use rawdaw_model::project::Project;
 use rawdaw_model::realize::realize;
 use rawdaw_model::tempo::TempoMap;
 use rawdaw_model::track::TrackKind;
+use rawdaw_synth_drum::DrumSynthNode;
 use rawdaw_synth_wavetable::WavetableSynthNode;
 
 /// Fallback engine sample rate used when no cpal output device can be
@@ -424,10 +425,10 @@ fn configure_graph(
     // reconfiguration.
     //
     // Per-track instrument picking is a stub for the round-3
-    // instrument-assignment UI. For now: every Pitched track (any
-    // role) plays through the v0 wavetable synth so the lead-line
-    // change is obvious in the mix; Drum tracks stay on the sine
-    // placeholder until the drum-specific synth lands.
+    // instrument-assignment UI. For now: every Pitched track gets the
+    // v0 wavetable synth, every Drum track gets the v0 drum synth.
+    // The physical modeller will land on a per-role basis later
+    // (Bass / Pad / Voicing will likely switch over).
     let mut commands: Vec<GraphCommand> = Vec::with_capacity(2 * track_count + 3);
     commands.push(GraphCommand::AddNode {
         id: mixer_id,
@@ -437,7 +438,7 @@ fn configure_graph(
         let instrument_id = NodeId::new((i + 1) as u32);
         let node: Box<dyn AudioNode> = match &track.kind {
             TrackKind::Pitched { .. } => Box::new(WavetableSynthNode::new()),
-            TrackKind::Drum { .. } => Box::new(SineNode::new()),
+            TrackKind::Drum { .. } => Box::new(DrumSynthNode::new()),
         };
         commands.push(GraphCommand::AddNode {
             id: instrument_id,

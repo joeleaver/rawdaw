@@ -3060,6 +3060,7 @@ dependencies = [
  "rawdaw-engine",
  "rawdaw-fx",
  "rawdaw-model",
+ "rawdaw-synth-drum",
  "rawdaw-synth-wavetable",
  "rinch",
 ]
@@ -3092,6 +3093,15 @@ dependencies = [
  "rawdaw-model",
  "ron",
  "serde",
+]
+
+[[package]]
+name = "rawdaw-synth-drum"
+version = "0.0.0"
+dependencies = [
+ "rawdaw-dsp",
+ "rawdaw-engine",
+ "rawdaw-model",
 ]
 
 [[package]]
