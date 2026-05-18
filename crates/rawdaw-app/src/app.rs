@@ -7,6 +7,7 @@
 
 use rinch::prelude::*;
 
+use crate::audio::AudioResources;
 use crate::regions::{Arrangement, BottomStrip, Inspector, Library, TopBar};
 use crate::section_editor::SectionEditor;
 use crate::state::{AppState, EditorMode};
@@ -14,9 +15,14 @@ use crate::theme;
 
 #[component]
 pub fn main_window() -> NodeHandle {
-    // Install the shared store once at the top of the tree. Every nested
-    // component reaches this via `use_store::<AppState>()`.
+    // Install the shared stores once at the top of the tree. Every
+    // nested component reaches AppState via `use_store::<AppState>()`;
+    // audio resources are installed alongside so future phases (E5
+    // playhead, E6 transport) can consume them from any handler. For
+    // E3 nothing reads `AudioResources` yet — the build runs to arm
+    // the engine.
     let app = create_store(AppState::new());
+    let _audio = create_store(AudioResources::build());
 
     let style = format!(
         "width: 100%; height: 100%; \

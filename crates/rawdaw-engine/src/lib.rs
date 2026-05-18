@@ -41,6 +41,6 @@ pub use event::{BlockEvent, BlockEventInBlock, EventBlock};
 pub use graph::{Edge, Graph, NodeId, NodePort};
 pub use handle::EngineHandle;
 pub use node::{AudioNode, InputDescriptor, OutputDescriptor, PortAccess, PortInputs, PortOutputs};
-pub use nodes::{ImpulseNode, SilenceNode, SineNode};
+pub use nodes::{ImpulseNode, MixerNode, SilenceNode, SineNode};
 pub use rtrb::PushError;
 pub use translate::{translate_events, TrackRouting, TranslateError};

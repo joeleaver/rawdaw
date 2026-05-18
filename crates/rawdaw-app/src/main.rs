@@ -10,10 +10,11 @@
 //! Architecture:
 //!
 //! - `theme` — design tokens (dark surfaces, identity palette, sizes).
-//! - `fixture` — Rust mirror of the round-1 JS fixture; will be
-//!   replaced with a real `rawdaw_model::Project` once the engine is
-//!   wired through.
+//! - `fixture` — UI view of the round-1 project, built via an adapter
+//!   over `rawdaw_model::fixtures::build_round1_project()`.
 //! - `state` — `EditorMode` + `AppState` shared via a Rinch store.
+//! - `audio` — `AudioResources`: engine instantiation + per-track sine
+//!   graph + realize→translate→push, also shared via a Rinch store.
 //! - `parts` — shared visual primitives (`rgba`, `Icon`).
 //! - `regions` — round-1 panes: `TopBar`, `Library`, `Arrangement`,
 //!   `Inspector`, `BottomStrip`.
@@ -22,6 +23,7 @@
 //! - `app` — the `MainWindow` composition + mode switch.
 
 mod app;
+mod audio;
 mod fixture;
 mod parts;
 mod regions;
