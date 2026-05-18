@@ -469,29 +469,125 @@ through Rinch's roadmap.
 
 ---
 
-## Phase E6 — Play / pause / stop wiring
+## Phase E6 — Play / pause / stop wiring ✅ done
 
 **Goal.** The top bar's transport buttons drive the engine's playback
 state. Pressing play starts the audio engine consuming events from the
 queue; pause halts the consumption; stop resets the transport to
 sample 0.
 
-**Steps.**
+**What landed.**
 
-- Add a `Transport` state machine to `AudioEngine` (Playing / Paused /
-  Stopped). Transition commands flow through the existing
-  `GraphCommand` queue (or a sibling `TransportCommand` queue if
-  conflating audio-graph mutations with transport state would be
-  surprising).
-- Top-bar buttons in `regions/topbar.rs` get onclick handlers that
-  push the appropriate commands via the `EngineHandle`.
-- Spacebar shortcut for play / pause (lift from round-1 follow-up list
-  if `keyboard shortcuts` was on it — wire just this one).
+- New `rawdaw-engine::transport` module with a `Transport` enum
+  (`Stopped` / `Paused` / `Playing`) and a cloneable
+  `TransportHandle` wrapping `Arc<AtomicU8>`. Pack stable; `Stopped`
+  is `0` so `AtomicU8::default()` lands on the safest state (silent,
+  clock at 0) without an explicit init step.
+- `AudioEngine` carries a `TransportHandle` and reads it at the top
+  of every `process_block`:
+  - **Playing**: existing path.
+  - **Paused**: drain commands, do NOT drain events, zero master
+    output, leave `sample_clock` alone.
+  - **Stopped**: drain commands, drain ALL queued events, zero
+    master output, force `sample_clock = 0`.
+  The drain-on-Stopped is a bounded-time loop (queue capped by
+  `event_queue_capacity`).
+- `Engine::render_offline` flips transport into `Playing` for the
+  duration of the render and restores the prior state on exit, so
+  the offline render path stays decoupled from whatever state a
+  caller left the engine in (default `Stopped` would otherwise
+  silence every render).
+- `CpalDriver`'s f32 stream callback consults transport per block:
+  resets its local `absolute_time` to 0 on Stopped; freezes it on
+  Paused; advances on Playing. `playing: bool` in the
+  `ProcessContext` mirrors the transport (Playing iff
+  `Transport::Playing`).
+- `AudioResources` exposes `play()` / `pause()` / `stop()`. `play()`
+  re-arms the cached realized events when transitioning out of
+  Stopped (the engine drained the queue on the way in), then sets
+  transport = Playing and calls `driver.play()` idempotently.
+  `pause()` and `stop()` just flip the atomic; the cpal stream
+  keeps running so the audio thread can drain commands while
+  paused / stopped. `realized_events: Rc<Vec<BlockEvent>>` is the
+  cached translation that gets re-pushed.
+- `regions/topbar.rs` `TransportBtn` gains an `onclick: Callback`
+  prop (no-op default for the disabled Record button). The Play
+  button is a toggle: pressing while Playing pauses, otherwise
+  plays. Stop / Rewind both call `audio.stop()`. A `pause` glyph
+  was added to `parts::Icon` for future visual feedback (not yet
+  used reactively — see deviations).
 
-**Done when.** Click play → audible sine output (per the project's
-realized events); pause → silence + playhead frozen; stop → silence +
-playhead at sample 0; click play again → resumes from sample 0. The
-arrangement's playhead from E5 advances in real time.
+**Done when (met for unit-testable surface).**
+
+- Engine transport tests pin: Stopped silences + drains events;
+  Paused silences + holds clock; Playing produces audio. (3 new
+  tests in `crates/rawdaw-engine/tests/render.rs`.)
+- AudioResources tests pin: starts Stopped; walks
+  Stopped → Playing → Paused → Playing → Stopped via the public
+  API; `realized_events` matches `initial_event_count`. (2 new
+  tests in `audio::tests`.)
+- 137 workspace tests green.
+- Clippy clean across default / `--no-default-features` /
+  `--features cpal-driver`.
+- Rinch MCP visual: app launches, layout identical, click events
+  on the Play button reach the handler. Audible-output
+  verification could NOT be demonstrated on this dev machine —
+  cpal opens but the ALSA backend reports the slave device
+  unavailable (`audio_enabled() == false`), so callbacks never
+  run and the playhead doesn't visually advance. On a machine
+  with a working f32 cpal device, the unit-tested logic should
+  drive: Play → audible sine + advancing playhead; Pause →
+  silence + frozen playhead; Stop → silence + playhead at bar 1;
+  Play after Stop → audible from bar 1.
+
+**Deviations from the original plan.**
+
+- **Transport state via `Arc<AtomicU8>`, not a GraphCommand queue.**
+  Plan offered both options ("Transition commands flow through the
+  existing `GraphCommand` queue (or a sibling `TransportCommand`
+  queue if conflating audio-graph mutations with transport state
+  would be surprising)"). The atomic was cleaner: the cpal driver
+  needs to consult transport per-callback to manage its
+  `absolute_time` counter, and an SPSC command queue is the wrong
+  shape for that read pattern. The host writes via
+  `TransportHandle::set` (lock-free, wait-free); the audio thread
+  loads via `TransportHandle::get`. Graph mutations still flow
+  through the existing command queue.
+- **`Stopped` is the default, not `Playing`.** Matches user
+  perception (transport bar shows Bar 1, no audio) and the safest
+  initial state. `render_offline` flips to `Playing` internally so
+  the offline test surface is unaffected.
+- **No dedicated `Pause` button — Play is a toggle.** The round-1
+  mockup has Rewind / Play / Stop / Record but no Pause button.
+  Plan suggested a spacebar shortcut for play/pause; the Play
+  button is the simplest equivalent for first cut. Spacebar
+  shortcut still deferred — see below.
+- **Spacebar shortcut deferred.** Plan called it out ("lift from
+  round-1 follow-up list if `keyboard shortcuts` was on it — wire
+  just this one"). Rinch's keyboard-event API for global
+  shortcuts is unfamiliar to me; rather than guess, leaving this
+  for E7 / round-3 follow-up so it gets the proper investigation.
+- **Play button glyph is static `"play"`.** A reactive glyph
+  (showing `pause` while Playing) requires either a dedicated
+  component that reads `Transport` inside its rsx attribute
+  closures, or proper closure-prop support on `String` props
+  through the component macro. For E6's first cut, the static
+  glyph + tooltip ("Play / Pause") + toggle behavior is enough.
+  Adding the reactive glyph is a small follow-up in E7's polish.
+- **The cpal stream stays running across Pause / Stop.** Calling
+  `cpal::Stream::pause()` during Pause would also work, but means
+  the host can't push commands (the audio thread isn't draining
+  the command queue while paused). Leaving the stream running and
+  gating purely on transport state keeps the command-edit-while-
+  paused flow open — important once the round-3 graph editor
+  lands.
+
+**Verification limitation.** The audio-thread / cpal callback path
+isn't unit-testable on this dev machine (no working ALSA device for
+the f32 driver). End-to-end "click Play → hear audio" requires a
+real audio device; the existing engine-side tests cover transport
+gating at the API layer, and the AudioResources tests cover the
+state machine the buttons drive.
 
 ---
 
