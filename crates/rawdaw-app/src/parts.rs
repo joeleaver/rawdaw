@@ -66,6 +66,7 @@ pub fn Icon(glyph: String, size: f32, stroke: String, stroke_width: f32) -> Node
 
     let path_d = match name {
         "play" => "M7 4v16l13 -8z",
+        "pause" => "M8 5v14M16 5v14",
         "stop" => "M6 6h12v12H6z",
         "rewind" => "M21 5v14l-10 -7zM4 5v14",
         "search" => "M10 16a6 6 0 1 1 0 -12a6 6 0 0 1 0 12zM21 21l-6 -6",

@@ -26,6 +26,7 @@ use crate::context::ProcessContext;
 use crate::event::{BlockEvent, BlockEventInBlock, EventBlock};
 use crate::graph::{Graph, NodeId};
 use crate::node::{AudioNode, PortAccess};
+use crate::transport::{Transport, TransportHandle};
 
 /// Engine-side maximum input ports per node. Used to size the input
 /// scratch once at construction so it doesn't reallocate during
@@ -73,6 +74,14 @@ pub struct AudioEngine {
     /// host before splitting; the audio thread owns its own copy
     /// behind the same `Arc`.
     sample_clock: Arc<AtomicU64>,
+
+    /// Shared transport state — Playing / Paused / Stopped. Loaded at
+    /// the top of every `process_block` and used to gate event /
+    /// node / output behavior. Cloned out to the host pre-split via
+    /// [`Self::transport_handle`]; the host writes, the audio thread
+    /// reads. See [`crate::transport`] for the state-machine
+    /// semantics.
+    transport: TransportHandle,
 }
 
 impl AudioEngine {
@@ -98,11 +107,18 @@ impl AudioEngine {
             event_partition: BTreeMap::new(),
             topo_scratch: Vec::new(),
             sample_clock: Arc::new(AtomicU64::new(0)),
+            transport: TransportHandle::new(),
         }
     }
 
     pub fn graph(&self) -> &Graph {
         &self.graph
+    }
+
+    /// Clone the shared transport handle. See
+    /// [`crate::transport::TransportHandle`] for the read / write API.
+    pub fn transport_handle(&self) -> TransportHandle {
+        self.transport.clone()
     }
 
     /// Clone the shared sample-clock handle.
@@ -122,18 +138,49 @@ impl AudioEngine {
     /// Must be RT-safe. The command and event queues are drained as
     /// `Consumer::pop()` (lock-free, no allocation). Node processing is
     /// single-threaded in topo order.
+    ///
+    /// Transport state gates per-block behavior — see [`Transport`] for
+    /// the per-variant contract. In short:
+    ///
+    /// - **Playing**: full path (this comment's main flow).
+    /// - **Paused**: commands drain, events stay queued, nodes don't
+    ///   process, output is silenced, sample clock isn't touched.
+    /// - **Stopped**: commands drain, events drain too, nodes don't
+    ///   process, output is silenced, sample clock is forced back to 0.
     pub fn process_block(
         &mut self,
         master: NodeId,
         mut output: BufferMut<'_>,
         ctx: ProcessContext,
     ) {
-        // 1. Drain commands and recompute topo if needed.
+        // 0. Drain commands first regardless of transport state. The host
+        //    can edit the graph while paused / stopped (e.g. install an
+        //    instrument before pressing play), and any pending RemoveNode
+        //    needs to flush garbage through the queue promptly.
         while let Ok(cmd) = self.command_rx.pop() {
             apply_command(&mut self.graph, cmd, &mut self.garbage_tx);
         }
         if self.graph.topology_is_dirty() {
             self.graph.recompute_topology();
+        }
+
+        // 1. Transport gating. Paused / Stopped exit early after writing
+        //    silence. Stopped additionally drains the event queue so the
+        //    host can re-arm cleanly before the next play.
+        let transport = self.transport.get();
+        if matches!(transport, Transport::Paused | Transport::Stopped) {
+            if matches!(transport, Transport::Stopped) {
+                // Drain pending events so the host's re-arm push starts
+                // from an empty queue. Bounded-time loop in the steady
+                // state (queue holds at most `event_queue_capacity`).
+                while self.event_rx.pop().is_ok() {}
+                // Sample clock snaps back to 0 so the UI playhead jumps
+                // to bar 1 on the next signal poll.
+                self.sample_clock.store(0, Ordering::Release);
+            }
+            // Either way the output for this block is silent.
+            output.clear();
+            return;
         }
 
         // 2. Partition events for this block.
@@ -186,6 +233,14 @@ impl AudioEngine {
             self.graph.max_block_size()
         );
 
+        // Offline render forces transport into Playing for the duration of
+        // the call and restores the prior state on exit. This keeps the
+        // offline path independent of whatever state a caller left the
+        // transport in (default is `Stopped`, which would otherwise
+        // silence every render).
+        let prior_transport = self.transport.get();
+        self.transport.set(Transport::Playing);
+
         let total = duration_samples.as_samples() as usize;
         let stride = self.graph.max_block_size();
         let mut left = Vec::with_capacity(total);
@@ -226,6 +281,8 @@ impl AudioEngine {
 
             produced += this_block as u64;
         }
+
+        self.transport.set(prior_transport);
 
         RenderResult {
             left,

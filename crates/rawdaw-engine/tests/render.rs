@@ -516,3 +516,153 @@ fn sample_clock_handles_are_shared() {
     a.store(42, std::sync::atomic::Ordering::Release);
     assert_eq!(b.load(std::sync::atomic::Ordering::Acquire), 42);
 }
+
+#[test]
+fn stopped_transport_silences_output_and_resets_clock() {
+    use rawdaw_engine::Transport;
+    use std::sync::atomic::Ordering;
+
+    let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let master = NodeId::new(0);
+    engine.push_command(GraphCommand::AddNode {
+        id: master,
+        node: Box::new(ImpulseNode::new()),
+    });
+    // Push events that would otherwise fire on the first block.
+    engine.push_event(BlockEvent {
+        time: SampleTime::samples(10),
+        target: master,
+        message: note_on(),
+    });
+
+    // Force Stopped, then render — render_offline temporarily flips to
+    // Playing for its duration. After it returns, we set Stopped and
+    // call process_block via Engine's helper to verify the gate.
+    engine.transport_handle().set(Transport::Stopped);
+    // Render at Stopped: render_offline forces Playing, so a 256-frame
+    // render with the queued NoteOn should produce a one-sample impulse.
+    // That's expected and proves render_offline's transport override.
+    let result = engine.render_offline(master, SampleTime::samples(256), 256);
+    assert_eq!(result.left[10], 1.0, "render_offline forces Playing");
+
+    // Verify the transport state was restored to Stopped (it was the
+    // prior state when render_offline started).
+    assert_eq!(engine.transport_handle().get(), Transport::Stopped);
+    // And the sample_clock was forced back to 0 by the Stopped state's
+    // gate on the next would-be process_block — but render_offline
+    // already finished, so the clock equals 256 (last published).
+    // We exercise the gate directly via process_block instead:
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx = rawdaw_engine::ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 999,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: false,
+    };
+    engine.process_block(master, output, ctx);
+    assert_eq!(
+        engine.sample_clock().load(Ordering::Acquire),
+        0,
+        "Stopped forces sample_clock back to 0",
+    );
+    assert!(
+        buf[..64].iter().all(|s| *s == 0.0),
+        "Stopped silences master output",
+    );
+}
+
+#[test]
+fn paused_transport_silences_output_but_holds_clock() {
+    use rawdaw_engine::Transport;
+    use std::sync::atomic::Ordering;
+
+    let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let master = NodeId::new(0);
+    engine.push_command(GraphCommand::AddNode {
+        id: master,
+        node: Box::new(ImpulseNode::new()),
+    });
+
+    // Advance the clock to a known value via a Playing render.
+    let _ = engine.render_offline(master, SampleTime::samples(500), 250);
+    assert_eq!(engine.sample_clock().load(Ordering::Acquire), 500);
+
+    // Flip to Paused. process_block should leave the clock untouched
+    // (no Release store) and silence the output. The clock READ should
+    // still show 500 — the last published value.
+    engine.transport_handle().set(Transport::Paused);
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx = rawdaw_engine::ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 500,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: false,
+    };
+    engine.process_block(master, output, ctx);
+    assert_eq!(
+        engine.sample_clock().load(Ordering::Acquire),
+        500,
+        "Paused doesn't touch the sample_clock",
+    );
+    assert!(
+        buf[..64].iter().all(|s| *s == 0.0),
+        "Paused silences master output",
+    );
+}
+
+#[test]
+fn stopped_drains_pending_events() {
+    use rawdaw_engine::Transport;
+
+    let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let master = NodeId::new(0);
+    engine.push_command(GraphCommand::AddNode {
+        id: master,
+        node: Box::new(ImpulseNode::new()),
+    });
+    // Queue an event at a far-future timestamp — render_offline runs
+    // 256 frames so the event normally stays queued past the render.
+    engine.push_event(BlockEvent {
+        time: SampleTime::samples(10_000),
+        target: master,
+        message: note_on(),
+    });
+    let _ = engine.render_offline(master, SampleTime::samples(256), 256);
+
+    // Now flip to Stopped and process one block; the engine should
+    // drain the still-queued event. Verify by re-rendering Playing for
+    // 16k frames and asserting no impulses fired (queue is empty).
+    engine.transport_handle().set(Transport::Stopped);
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx = rawdaw_engine::ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 0,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: false,
+    };
+    engine.process_block(master, output, ctx);
+
+    // Engine is back to default Stopped after the explicit set; flip to
+    // Playing and render — there should be no impulses anywhere.
+    let result = engine.render_offline(master, SampleTime::samples(16_384), 256);
+    let impulses: Vec<usize> = result
+        .left
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| **s != 0.0)
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        impulses.is_empty(),
+        "Stopped should have drained the event queue; saw impulses at {impulses:?}",
+    );
+}

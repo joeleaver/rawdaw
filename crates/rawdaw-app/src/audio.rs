@@ -74,8 +74,8 @@ use rinch::prelude::Signal;
 
 use rawdaw_engine::cpal_driver::{CpalDriver, StreamError};
 use rawdaw_engine::{
-    translate_events, Edge, Engine, EngineHandle, GraphCommand, MixerNode, NodeId, NodePort,
-    SineNode, TrackRouting,
+    translate_events, BlockEvent, Edge, Engine, EngineHandle, GraphCommand, MixerNode, NodeId,
+    NodePort, SineNode, TrackRouting, Transport, TransportHandle,
 };
 use rawdaw_model::fixtures::build_round1_project;
 use rawdaw_model::project::Project;
@@ -148,6 +148,18 @@ pub struct AudioResources {
     /// today; the round-3 tempo-editor work will update this when the
     /// host edits the project.
     pub tempo_map: TempoMap,
+    /// Transport state handle — Playing / Paused / Stopped. The host
+    /// writes via [`Self::play`] / [`Self::pause`] / [`Self::stop`];
+    /// the audio thread reads at the top of every `process_block`.
+    pub transport: TransportHandle,
+    /// Cached realized events. Pushed at build (E3) and re-pushed on
+    /// every Stop → Play transition: the engine drains the event
+    /// queue when entering Stopped, so a clean replay needs the host
+    /// to refill the queue. Stored as `Rc<Vec<_>>` so cloning
+    /// `AudioResources` for the rinch store doesn't deep-copy the
+    /// realized stream every UI handler. `BlockEvent: Clone`, so the
+    /// per-push iteration clones each event into the SPSC queue.
+    realized_events: Rc<Vec<BlockEvent>>,
     /// Optional background poller. `Some` when [`Self::build`] was
     /// called inside a rinch runtime; `None` for unit tests. Dropping
     /// the last `Rc` clone stops the thread.
@@ -186,8 +198,10 @@ impl AudioResources {
     /// [`Self::build`].
     pub fn build_from_project_and_rate(project: &Project, sample_rate: u32) -> Self {
         let mut engine = Engine::new(sample_rate, MAX_BLOCK);
-        let (master, routing, initial_event_count) = configure_graph(&mut engine, project, sample_rate);
+        let (master, routing, realized_events) = configure_graph(&mut engine, project, sample_rate);
+        let initial_event_count = realized_events.len();
         let sample_clock = engine.sample_clock();
+        let transport = engine.transport_handle();
         let (audio_engine, handle) = engine.split();
 
         let (err_tx, err_rx) = mpsc::channel::<String>();
@@ -226,6 +240,8 @@ impl AudioResources {
             sample_clock,
             playhead_samples: Signal::new(0u64),
             tempo_map: project.tempo_map.clone(),
+            transport,
+            realized_events: Rc::new(realized_events),
             _poller: None,
         }
     }
@@ -254,24 +270,65 @@ impl AudioResources {
         self.driver.is_some()
     }
 
-    /// Start the audio callback. No-op when the driver didn't open
-    /// (audio-disabled launch). Phase E6 hooks this to the play
-    /// button.
-    #[allow(dead_code)]
+    /// Transition to Playing.
+    ///
+    /// If currently Stopped, re-arms the event queue first — the
+    /// engine's Stopped state drains every queued event so a clean
+    /// replay needs the host to refill from `realized_events`. Then
+    /// flips the transport atomic to Playing and (idempotently)
+    /// starts the cpal stream so callbacks run.
+    ///
+    /// No-op for the audio-disabled launch (`driver = None`); the
+    /// transport state still updates so the UI can render
+    /// consistently.
     pub fn play(&self) -> Result<(), String> {
+        if self.transport.get() == Transport::Stopped {
+            self.rearm_events()?;
+        }
+        self.transport.set(Transport::Playing);
         let Some(driver) = self.driver.as_ref() else {
             return Ok(());
         };
         driver.play().map_err(|e| e.to_string())
     }
 
-    /// Pause the audio callback. No-op when the driver didn't open.
-    #[allow(dead_code)]
+    /// Transition to Paused.
+    ///
+    /// The cpal stream keeps running so the audio thread can drain
+    /// commands while paused — the engine sees `Transport::Paused`
+    /// and silences output without draining events or advancing the
+    /// sample clock. Pressing Play later resumes from the frozen
+    /// position.
     pub fn pause(&self) -> Result<(), String> {
-        let Some(driver) = self.driver.as_ref() else {
-            return Ok(());
-        };
-        driver.pause().map_err(|e| e.to_string())
+        self.transport.set(Transport::Paused);
+        Ok(())
+    }
+
+    /// Transition to Stopped — silence, drain queued events, snap
+    /// the playhead back to bar 1.
+    ///
+    /// The engine's Stopped state handles the actual drain on the
+    /// audio thread; the host's responsibility is just to flip the
+    /// atomic. Re-arming on the next [`Self::play`] handles the
+    /// "play after stop" case.
+    pub fn stop(&self) -> Result<(), String> {
+        self.transport.set(Transport::Stopped);
+        Ok(())
+    }
+
+    /// Push every cached realized event back into the engine's event
+    /// queue. Called from [`Self::play`] on a Stopped → Playing
+    /// transition. Errors if the queue overflows mid-push — the host
+    /// is the producer so this is a host-side capacity bug, not a
+    /// race condition.
+    fn rearm_events(&self) -> Result<(), String> {
+        let mut handle = self.handle.borrow_mut();
+        for ev in self.realized_events.iter() {
+            handle
+                .push_event(ev.clone())
+                .map_err(|e| format!("event queue overflowed while re-arming: {e:?}"))?;
+        }
+        Ok(())
     }
 
     /// Current playhead position derived from [`Self::playhead_samples`]
@@ -319,7 +376,7 @@ fn configure_graph(
     engine: &mut Engine,
     project: &Project,
     sample_rate: u32,
-) -> (NodeId, TrackRouting, usize) {
+) -> (NodeId, TrackRouting, Vec<BlockEvent>) {
     let track_count = project.tracks.len();
     let master_id = NodeId::new(0);
     let mut routing = TrackRouting::new();
@@ -354,11 +411,10 @@ fn configure_graph(
     let realized = realize(project, sample_rate);
     let block_events = translate_events(&realized, &routing)
         .expect("AudioResources routing must cover every realized track");
-    let count = block_events.len();
-    for ev in block_events {
-        engine.push_event(ev);
+    for ev in &block_events {
+        engine.push_event(ev.clone());
     }
-    (master_id, routing, count)
+    (master_id, routing, block_events)
 }
 
 /// Background thread mirroring an `Arc<AtomicU64>` sample clock into a
@@ -512,5 +568,33 @@ mod tests {
         let (project, _) = build_round1_project();
         let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
         assert!(resources._poller.is_none());
+    }
+
+    #[test]
+    fn transport_starts_stopped_and_walks_the_state_machine() {
+        let (project, _) = build_round1_project();
+        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+
+        assert_eq!(resources.transport.get(), Transport::Stopped);
+
+        resources.play().expect("play succeeds");
+        assert_eq!(resources.transport.get(), Transport::Playing);
+
+        resources.pause().expect("pause succeeds");
+        assert_eq!(resources.transport.get(), Transport::Paused);
+
+        resources.play().expect("play resumes");
+        assert_eq!(resources.transport.get(), Transport::Playing);
+
+        resources.stop().expect("stop succeeds");
+        assert_eq!(resources.transport.get(), Transport::Stopped);
+    }
+
+    #[test]
+    fn realized_events_are_cached_for_replay() {
+        let (project, _) = build_round1_project();
+        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+        assert_eq!(resources.realized_events.len(), resources.initial_event_count);
+        assert!(!resources.realized_events.is_empty());
     }
 }

@@ -52,12 +52,48 @@ pub fn TopBar() -> NodeHandle {
                 }
             }
 
-            // Center: transport
+            // Center: transport.
+            //
+            // Handlers read `AudioResources` from the rinch store (installed
+            // by `main_window` at app launch). The `move ||` closures
+            // capture the store reference; `use_store::<AudioResources>()`
+            // re-resolves the reference on each click, so cloning the
+            // store handle into the closure is unnecessary.
+            //
+            // Play is a toggle: pressing while Playing pauses; otherwise
+            // plays. Stop / Rewind both reset to bar 1. Record stays
+            // disabled (MIDI v1 has no audio recording surface yet).
             div {
                 style: "display: flex; align-items: center; gap: 4px;",
-                TransportBtn { glyph: "rewind", title: "Return to zero" }
-                TransportBtn { glyph: "play",   title: "Play", primary: true }
-                TransportBtn { glyph: "stop",   title: "Stop" }
+                TransportBtn {
+                    glyph: "rewind",
+                    title: "Return to zero",
+                    onclick: move || {
+                        let audio = use_store::<AudioResources>();
+                        let _ = audio.stop();
+                    },
+                }
+                TransportBtn {
+                    glyph: "play",
+                    title: "Play / Pause",
+                    primary: true,
+                    onclick: move || {
+                        let audio = use_store::<AudioResources>();
+                        let _ = if audio.transport.get() == rawdaw_engine::Transport::Playing {
+                            audio.pause()
+                        } else {
+                            audio.play()
+                        };
+                    },
+                }
+                TransportBtn {
+                    glyph: "stop",
+                    title: "Stop",
+                    onclick: move || {
+                        let audio = use_store::<AudioResources>();
+                        let _ = audio.stop();
+                    },
+                }
                 TransportBtn {
                     glyph: "record",
                     title: "Record (disabled — MIDI v1 has no audio recording)",
@@ -143,12 +179,17 @@ fn Tag(text: String) -> NodeHandle {
 
 /// Transport button (28×28). Plays / stops / rewinds / records. Record is
 /// rendered as a filled dot, not a stroked path.
+///
+/// `onclick` defaults to a no-op (the macro's default impl for `Callback`),
+/// so the disabled Record button can omit it. Active buttons pass a
+/// closure that drives [`crate::audio::AudioResources`].
 #[component]
 fn TransportBtn(
     glyph: String,
     title: String,
     primary: bool,
     disabled: bool,
+    onclick: Callback,
 ) -> NodeHandle {
     // Color choice: disabled → dim; primary → ok; otherwise → text0.
     let color = if disabled {
@@ -166,13 +207,14 @@ fn TransportBtn(
         color = color,
         cursor = if disabled { "not-allowed" } else { "pointer" },
     );
-    let sw = if glyph == "play" { 1.8_f32 } else { 1.6_f32 };
-    let sz = if glyph == "play" { 14.0_f32 } else { 13.0_f32 };
+    let sw = if glyph == "play" || glyph == "pause" { 1.8_f32 } else { 1.6_f32 };
+    let sz = if glyph == "play" || glyph == "pause" { 14.0_f32 } else { 13.0_f32 };
     rsx! {
         button {
             r#type: "button",
             title: {title.clone()},
             style: {style.clone()},
+            onclick: move || onclick.invoke(),
             Icon {
                 glyph: {glyph.clone()},
                 size: sz,

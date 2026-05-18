@@ -41,6 +41,7 @@ use crate::audio_engine::AudioEngine;
 use crate::buffer::BufferMut;
 use crate::context::ProcessContext;
 use crate::graph::NodeId;
+use crate::transport::Transport;
 
 #[derive(Debug)]
 pub enum CpalDriverError {
@@ -180,6 +181,7 @@ where
     let sample_rate = config.sample_rate.0;
     let device_channels = config.channels as usize;
     let max_block = audio_engine.graph().max_block_size();
+    let transport = audio_engine.transport_handle();
 
     // Planar scratch sized for the engine's stride. Lives in the
     // closure for the stream's lifetime; allocated once on this thread,
@@ -197,6 +199,16 @@ where
                     return;
                 }
 
+                // Read transport once per callback. Stopped resets the
+                // driver's local time so the next Play starts from 0;
+                // Paused freezes it. The engine performs its own
+                // gating per-state (event drain, output clear,
+                // sample_clock store) inside `process_block`.
+                let state = transport.get();
+                if matches!(state, Transport::Stopped) {
+                    absolute_time = 0;
+                }
+
                 // Zero the engine scratch's active region for both channels.
                 for ch in 0..2 {
                     let start = ch * max_block;
@@ -212,7 +224,7 @@ where
                     absolute_time_samples: absolute_time,
                     musical_time: MusicalTime::ZERO,
                     bpm: 120.0,
-                    playing: true,
+                    playing: matches!(state, Transport::Playing),
                 };
                 audio_engine.process_block(master, buf, ctx);
 
@@ -223,7 +235,13 @@ where
                     device_channels,
                     out,
                 );
-                absolute_time = absolute_time.saturating_add(frames as u64);
+
+                // Only advance the driver's wall clock while Playing.
+                // Paused freezes it; Stopped was reset above and stays
+                // at 0 until the next state change.
+                if matches!(state, Transport::Playing) {
+                    absolute_time = absolute_time.saturating_add(frames as u64);
+                }
             },
             error_handler,
             None,

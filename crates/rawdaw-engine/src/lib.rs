@@ -27,6 +27,7 @@ pub mod graph;
 pub mod handle;
 pub mod node;
 pub mod nodes;
+pub mod transport;
 pub mod translate;
 
 pub use audio_engine::{AudioEngine, RenderResult};
@@ -44,3 +45,4 @@ pub use node::{AudioNode, InputDescriptor, OutputDescriptor, PortAccess, PortInp
 pub use nodes::{ImpulseNode, MixerNode, SilenceNode, SineNode};
 pub use rtrb::PushError;
 pub use translate::{translate_events, TrackRouting, TranslateError};
+pub use transport::{Transport, TransportHandle};

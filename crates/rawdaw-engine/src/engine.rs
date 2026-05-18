@@ -38,6 +38,7 @@ use crate::event::BlockEvent;
 use crate::graph::{Graph, NodeId};
 use crate::handle::EngineHandle;
 use crate::node::AudioNode;
+use crate::transport::TransportHandle;
 
 /// Default command queue capacity. Graph mutations are infrequent;
 /// 1024 covers very chunky batch reconfigurations.
@@ -163,5 +164,12 @@ impl Engine {
     /// [`Self::split`]; the same atomic backs both halves.
     pub fn sample_clock(&self) -> Arc<AtomicU64> {
         self.audio.sample_clock()
+    }
+
+    /// Clone the shared transport handle so the host can drive
+    /// Playing / Paused / Stopped transitions. Safe to call before or
+    /// after [`Self::split`]; the same atomic backs both halves.
+    pub fn transport_handle(&self) -> TransportHandle {
+        self.audio.transport_handle()
     }
 }
