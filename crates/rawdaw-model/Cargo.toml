@@ -9,6 +9,16 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Public fixture constructors for downstream crates (rawdaw-app runtime
+# UI, rawdaw-engine tests, etc). Off by default so release builds of the
+# model crate stay minimal.
+fixtures = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 ron = "0.12"
+
+[dev-dependencies]
+# Tests use the public fixtures rather than maintaining their own copies.
+rawdaw-model = { path = ".", features = ["fixtures"] }

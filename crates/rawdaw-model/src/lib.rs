@@ -8,6 +8,8 @@
 
 pub mod activation;
 pub mod chord;
+#[cfg(feature = "fixtures")]
+pub mod fixtures;
 pub mod id;
 pub mod pattern;
 pub mod pitch;

@@ -3075,6 +3075,7 @@ dependencies = [
 name = "rawdaw-model"
 version = "0.0.0"
 dependencies = [
+ "rawdaw-model",
  "ron",
  "serde",
 ]
