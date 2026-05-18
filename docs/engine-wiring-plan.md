@@ -367,30 +367,105 @@ ready for the UI to push commands and events.
 
 ---
 
-## Phase E5 — Reactive playhead
+## Phase E5 — Reactive playhead ✅ done
 
 **Goal.** Drive the arrangement view's playhead from the engine's
 actual transport position instead of the hardcoded bar 5 beat 2.
 
-**Steps.**
+**What landed.**
 
-- The audio thread updates a `std::sync::atomic::AtomicU64` (packed
-  `SampleTime`) at every block boundary.
-- A Rinch `Signal<u64>` mirrors the atomic. A small `Effect` polls the
-  atomic on a frame timer (target ~60Hz UI refresh) and `send()`s the
-  new value when it changes.
-- `regions/arrangement.rs::playhead_percent` reads the signal and maps
-  `SampleTime` → bars → percent via the project's tempo map.
+- `rawdaw-engine::audio_engine::AudioEngine` gained an
+  `Arc<AtomicU64> sample_clock`. At the end of every `process_block`
+  the engine stores `absolute_time_samples + frames` with
+  `Ordering::Release`. Exposed via
+  `AudioEngine::sample_clock()` and the convenience
+  `Engine::sample_clock()` delegator. Allocation-free; works
+  uniformly across the realtime cpal path and `render_offline`.
+- `rawdaw-model::TempoMap::sample_to_musical` — inverse of
+  `musical_to_sample` under the same constant-BPM assumption. Returns
+  `MusicalTime::ZERO` for a zero sample rate (defensive).
+- `rawdaw-app::audio::AudioResources` gained four UI-facing fields:
+  `sample_clock: Arc<AtomicU64>` (the engine's atomic, shared),
+  `playhead_samples: Signal<u64>`, `tempo_map: TempoMap` (cloned
+  from the project), and `_poller: Option<Rc<PlayheadPoller>>`.
+- `PlayheadPoller` — a `std::thread` named
+  `rawdaw-playhead-poller` that loops at 16 ms (~60 Hz), reads the
+  atomic, and `Signal::send`s the new value through rinch's
+  registered cross-thread dispatcher when it changes. Drop sets a
+  stop flag (`Arc<AtomicBool>`) and joins the thread. Attached only
+  by `AudioResources::build()` (production); the test-facing
+  `build_from_project_and_rate()` leaves `_poller = None` because
+  unit tests run outside the rinch runtime, where `Signal::send`
+  from a background thread would panic.
+- `AudioResources::playhead_position()` — shared helper that reads
+  the signal once and returns `PlayheadPosition { bar, beat,
+  bars_f64 }`. Used by both `regions/arrangement.rs::playhead_percent`
+  (sub-bar percent positioning) and `regions/topbar.rs` (bar / beat
+  readout). Calling it inside an rsx attribute closure subscribes
+  the closure to the signal via the macro's effect-tracker, so the
+  surgical DOM update happens without any imperative re-render.
 
-**Done when.** With the engine paused, the playhead is stationary at
-its initial position (sample 0 → bar 1). When E6 lands, hitting play
-makes the playhead scrub across the arrangement.
+**Done when (met).**
 
-**Risks.**
+- App launches; engine sample clock + UI signal both read 0.
+- Arrangement playhead sits at the left edge (bar 1, sample 0).
+- Top-bar readout shows "BAR 1 · BEAT 1" — consistent with the
+  arrangement.
+- `cargo test --workspace` green (128 tests). New tests:
+  `rawdaw_engine::sample_clock_advances_with_render_offline`,
+  `rawdaw_engine::sample_clock_handles_are_shared`, five
+  `rawdaw_model::tempo::tests::*` cases pinning the
+  sample ↔ musical round-trip, and three `rawdaw_app::audio::tests::*`
+  cases for the new AudioResources fields.
+- Clippy clean across default / `--no-default-features` /
+  `--features cpal-driver`.
+- Rinch MCP visual: identical to post-E4 layout; the playhead has
+  moved from "bar 5 beat 2" (the round-1 fixture's static
+  `playhead_bar` / `playhead_beat`) to bar 1 — the engine is now
+  the source of truth, the fixture's display fields are unused.
 
-- The frame-timer polling pattern is a known anti-pattern; the rinch
-  framework may grow a native "audio-thread → UI signal" bridge. Document
-  this as a re-evaluation point.
+**Deviations from the original plan.**
+
+- **Engine owns the atomic, not the driver.** The plan listed two
+  options ("`CpalDriver::new` gains an `Arc<AtomicU64> sample_clock`
+  parameter" vs "engine takes the clock and updates it from within
+  `process_block`"). We took the engine-side path the plan flagged
+  as cleaner — it works uniformly for `render_offline` (used by the
+  engine's own test surface) and the cpal callback, and it avoids
+  duplicating the absolute-time accounting that the engine already
+  has via `ProcessContext::absolute_time_samples`. The cpal driver's
+  per-callback `absolute_time` local counter is unchanged.
+- **`std::thread` poller, not a Rinch `Effect` on a frame timer.**
+  The plan suggested "a small `Effect` polls the atomic on a frame
+  timer (target ~60Hz)." Rinch `Effect`s are dependency-triggered,
+  not time-triggered, and the framework has no public frame-tick
+  API yet — so the poller is a plain `std::thread` that uses
+  `Signal::send` (Rule 11 in the rinch skill: cross-thread updates
+  use `send()`, not `set()`). Rinch's main-thread dispatcher,
+  registered by `run_rinch_*`, routes the send to the UI thread.
+- **Top-bar readout wired alongside the arrangement playhead.**
+  Plan only mentioned `regions/arrangement.rs::playhead_percent`,
+  but leaving the top-bar BAR/BEAT readout reading the fixture's
+  static `playhead_bar` / `playhead_beat` would have meant the
+  readout disagreed with the visible playhead. Both now flow
+  through the same `AudioResources::playhead_position()` helper.
+  The fixture's `playhead_bar` / `playhead_beat` fields are now
+  unused at runtime; left in the round-1 fixture data structure
+  for now since they're not in the way.
+- **Poller attached at `build()`, skipped at
+  `build_from_project_and_rate()`.** Unit tests don't run inside
+  the rinch runtime, so the cross-thread dispatcher isn't
+  registered — `Signal::send` would panic. The constructor split
+  makes the test path safe by construction: production calls
+  `build()` which adds the poller, tests call the lower-level
+  entry which doesn't.
+
+**Re-evaluation point.** The 60 Hz polling thread is the engine
+plan's explicit anti-pattern. When rinch grows a native
+"audio-thread → UI signal" bridge (or a frame-tick API the host
+can subscribe to), `PlayheadPoller` should be ripped out and
+replaced. The bridge is independent of rawdaw work; track it
+through Rinch's roadmap.
 
 ---
 
