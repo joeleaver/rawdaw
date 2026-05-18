@@ -591,19 +591,76 @@ state machine the buttons drive.
 
 ---
 
-## Phase E7 — Polish + final sweep
+## Phase E7 — Polish + final sweep ✅ done
 
 **Goal.** Close out the milestone.
 
-**Steps.**
+**What landed.**
 
-- File-size audit. Anything approaching the 700-line cap gets split.
-- All three clippy gates (default, `--no-default-features`,
-  `--features cpal-driver`) clean.
-- `cargo test --workspace` green.
-- Memory + plan-doc updated. Status memory reflects the milestone is
-  done; next priorities (real instruments via `rawdaw-sampler`, tempo
-  ramps, plugin host) are listed.
+- File-size audit: `audio.rs` had climbed to 600 lines (86% of the
+  700 cap). Extracted `PlayheadPoller` into its own
+  `audio/poller.rs` module; `audio.rs` became `audio/mod.rs` at 547
+  lines. Other near-cap files (`arrangement.rs` 577,
+  `inspector/mod.rs` 572) checked but left in place — they're stable
+  with no pending additions.
+- Spacebar shortcut. `set_keyboard_interceptor` installed once in
+  `app::main_window` after the audio store is created. Returns
+  `true` only for Space without modifiers; everything else returns
+  `false` so rinch's normal key handling continues. The handler
+  reads the audio-thread transport atomic and calls
+  `audio.play()` / `audio.pause()` to toggle.
+- Reactive Play/Pause glyph. A new `transport_state: Signal<Transport>`
+  field on `AudioResources` mirrors the audio-thread atomic; the
+  public play/pause/stop methods now go through a `set_transport`
+  helper that updates both views atomically. The top bar's Play
+  button uses an rsx `match` on `transport_state.get()` (a real
+  Signal read, so the reactivity tracker subscribes), with
+  re-mounting `TransportBtn` variants per arm. Title strings updated
+  to "Play (Space)" / "Pause (Space)" so the keyboard shortcut is
+  discoverable via hover.
+- Cpal device picker (delivered alongside E6 but technically a
+  cross-cutting fix): `pick_output_device()` falls back to the
+  first f32 device with a working config when cpal's `default`
+  fails. Unblocks audio on stock Kubuntu without `pipewire-alsa`.
+
+**Done when (met).**
+
+- All three clippy gates clean (default / `--no-default-features` /
+  `--features cpal-driver`).
+- `cargo test --workspace` green (137 tests).
+- Visual end-to-end verified via Rinch MCP:
+  Click Play / Space → playhead advances, glyph swaps to Pause;
+  Space / click Pause → playhead freezes, glyph swaps back;
+  Stop → playhead returns to bar 1; Play after Stop → audio
+  re-arms and plays from bar 1 again.
+
+**Deviations from the original plan.**
+
+- **Reactive glyph needed a UI-facing Signal, not the engine
+  atomic.** The original wiring tried to read
+  `TransportHandle::get()` from inside an rsx `match` scrutinee
+  expecting reactivity. Caught during visual verification: the
+  glyph didn't swap. Rinch's reactivity tracker only subscribes to
+  `Signal` reads, not atomic loads — so `transport_state` was
+  added as a UI mirror that play/pause/stop now keep in lockstep
+  with the audio-thread atomic.
+- **`audio.rs` split was minimal.** Only `PlayheadPoller` got
+  extracted (~80 lines). The remaining file is cohesive
+  (AudioResources struct + constructors + transport helpers +
+  configure_graph), so further splitting would have meant churning
+  module boundaries without a clear separation gain.
+- **Spacebar interceptor is global, not focus-scoped.** Rinch's
+  keyboard interceptor is a global singleton; only one can be
+  active at a time. Round-1 has no text inputs yet, so this is
+  fine — but when text-editing UI lands (round 3 pattern editor),
+  the interceptor will need to defer to focused inputs (return
+  false when a contenteditable has focus).
+
+**Milestone graduated.** Round-3 priorities live in the
+project_status memory: `rawdaw-sampler` (SF2/SFZ via oxisynth
++ drum sample player), real subtractive synth, `rawdaw-drumkits`
+TOML loader, `rawdaw-fx` (EQ/reverb/delay/gain), tempo ramps,
+project file load/save UI, pattern editor / piano roll.
 
 ---
 
