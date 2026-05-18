@@ -85,23 +85,27 @@ pub struct CpalDriver {
 }
 
 impl CpalDriver {
-    /// Query the default output device's preferred sample rate so the
+    /// Query the picked output device's preferred sample rate so the
     /// caller can build an `Engine` at the matching rate before
-    /// constructing the driver.
+    /// constructing the driver. Uses the same picker as [`Self::new`],
+    /// so probe and construction always agree on the device.
     pub fn probe_default_sample_rate() -> Result<u32, CpalDriverError> {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or(CpalDriverError::NoOutputDevice)?;
-        let supported = device
-            .default_output_config()
-            .map_err(CpalDriverError::DefaultConfig)?;
-        Ok(supported.sample_rate().0)
+        let picked = pick_output_device()?;
+        Ok(picked.config.sample_rate.0)
     }
 
-    /// Open the default output device, build a stream wrapping
-    /// `audio_engine`, and return a paused driver. The stream is paused
-    /// at construction; call [`Self::play`] to start audio.
+    /// Open an f32 output device, build a stream wrapping `audio_engine`,
+    /// and return a paused driver. The stream is paused at construction;
+    /// call [`Self::play`] to start audio.
+    ///
+    /// Device selection prefers cpal's default device when its
+    /// `default_output_config()` query succeeds; otherwise falls back to
+    /// the first enumerated device with an f32 config. This matters on
+    /// Linux: stock Kubuntu / Ubuntu desktops with PipeWire don't ship
+    /// `pipewire-alsa` by default, leaving ALSA's `default` PCM bound
+    /// to a non-working dmix→HDMI path. The fallback finds the `pulse`
+    /// PCM (PipeWire's PulseAudio compatibility), which is universally
+    /// present alongside `pipewire-pulse`.
     ///
     /// `master` is the graph node whose stereo output is routed to the
     /// device. It must produce a stereo port at index 0.
@@ -120,15 +124,12 @@ impl CpalDriver {
     where
         F: FnMut(StreamError) + Send + 'static,
     {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or(CpalDriverError::NoOutputDevice)?;
-        let supported = device
-            .default_output_config()
-            .map_err(CpalDriverError::DefaultConfig)?;
-        let format = supported.sample_format();
-        let config: StreamConfig = supported.config();
+        let picked = pick_output_device()?;
+        let PickedDevice {
+            device,
+            config,
+            format,
+        } = picked;
         let device_rate = config.sample_rate.0;
         let engine_rate = audio_engine.graph().sample_rate();
         if device_rate != engine_rate {
@@ -281,6 +282,73 @@ fn interleave_stereo_into_device(
             }
         }
     }
+}
+
+/// An output device that's been confirmed to expose a usable
+/// `default_output_config()`. Returned by [`pick_output_device`].
+struct PickedDevice {
+    device: cpal::Device,
+    config: StreamConfig,
+    format: SampleFormat,
+}
+
+/// Find a working output device.
+///
+/// Strategy:
+///
+/// 1. Try `host.default_output_device()` and query its config. If both
+///    succeed, that's the pick — matches macOS / Windows and Linux
+///    setups where ALSA's `default` PCM is healthy.
+/// 2. Otherwise enumerate `host.output_devices()` and return the first
+///    one whose `default_output_config()` returns Ok AND uses f32.
+///    Captures the stock-Kubuntu case where ALSA's `default` is bound
+///    to dmix→HDMI but `pulse` (PipeWire's PulseAudio compat) is
+///    enumerable and works.
+/// 3. If neither succeeds, return `NoOutputDevice`.
+fn pick_output_device() -> Result<PickedDevice, CpalDriverError> {
+    let host = cpal::default_host();
+
+    // Path 1: trust the default device if its config query succeeds.
+    if let Some(device) = host.default_output_device()
+        && let Ok(supported) = device.default_output_config()
+    {
+        let format = supported.sample_format();
+        return Ok(PickedDevice {
+            device,
+            config: supported.config(),
+            format,
+        });
+    }
+
+    // Path 2: enumerate; take the first f32 device with a working
+    // config. cpal exposes `pulse` here on PipeWire/PulseAudio
+    // systems — that's what we end up with on stock Kubuntu.
+    let devices = host
+        .output_devices()
+        .map_err(|_| CpalDriverError::NoOutputDevice)?;
+    let mut first_non_f32: Option<PickedDevice> = None;
+    for device in devices {
+        let Ok(supported) = device.default_output_config() else {
+            continue;
+        };
+        let format = supported.sample_format();
+        let cfg = supported.config();
+        let picked = PickedDevice {
+            device,
+            config: cfg,
+            format,
+        };
+        if format == SampleFormat::F32 {
+            return Ok(picked);
+        }
+        if first_non_f32.is_none() {
+            first_non_f32 = Some(picked);
+        }
+    }
+    // No f32 device found — surface the first non-f32 we saw so the
+    // caller can report `UnsupportedSampleFormat` with a real format,
+    // rather than the more generic `NoOutputDevice`.
+    first_non_f32.ok_or(CpalDriverError::NoOutputDevice)
 }
 
 #[cfg(test)]
