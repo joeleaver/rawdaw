@@ -121,33 +121,92 @@ real `Project` equivalent of the rawdaw-app UI fixture.
 
 ---
 
-## Phase E2 — Presentation adapter; rawdaw-app reads the real Project
+## Phase E2 — Presentation adapter; rawdaw-app reads the real Project ✅ done
 
-**Goal.** Replace `rawdaw-app::fixture` types with model types where the
-model is authoritative (`Track`, `Pattern`, `ChordLoop`, `Section`,
-`Arrangement`, …). Keep a separate "presentation overlay" for UI-only
-fields (pattern colors, section colors, role labels, instance counts).
+**Goal.** Drive the UI's `Round1` view from the model's
+`build_round1_project()` plus a small presentation overlay carrying the
+UI-only fields the model doesn't own (colors, library meta strings,
+round-2 cell realization decorations, top-bar transient state).
 
-**Steps.**
+**What landed.**
 
-- Add `rawdaw-app::presentation` (renamed from `fixture`) with two halves:
-  - `model`: re-exports `rawdaw_model::fixtures::build_round1_project()`,
-    cached behind a `OnceLock<Project>` so every component pulls the same
-    instance.
-  - `overlay`: pattern & section colors, role labels — the data the UI
-    needs that the model doesn't carry. Keyed by `PatternId` /
-    `SectionId`.
-- Adapter functions matching the UI's existing lookup helpers:
-  `section_by_key(name)`, `pattern_by_name(name)`, `chord_loop_by_name`,
-  etc., but built on top of the real `Project` plus the overlay.
-- Update every rawdaw-app site that imports from `crate::fixture` to
-  import from `crate::presentation`.
-- Round-2's fixture-invariant tests move to operate on the real Project.
+- `rawdaw-app/Cargo.toml` enables the `fixtures` feature on
+  `rawdaw-model`. The crate now ships the round-1 model fixture in
+  the binary.
+- `rawdaw-app/src/fixture/mod.rs` keeps the UI's view types
+  (`Track`, `Pattern`, `ChordLoop`, `Section`, `Activation`,
+  `Arrangement`) — but with `String` / `Vec` fields instead of
+  `&'static str` / `&'static [_]` (Phase E2 step 1).
+- `rawdaw-app/src/fixture/data.rs` is the adapter: calls
+  `build_round1_project()` once, walks the resulting `Project` plus
+  an inline `Overlay` keyed by model ids, and produces the UI's
+  `Round1`. `OnceLock<Round1>` caches the result so every component
+  pulls the same `&'static Round1`.
+- `rawdaw-app/src/fixture/chord_naming.rs` carries the
+  Roman / absolute / quality-suffix display helpers (split out to
+  keep both files under the ~700-line cap).
+- `rawdaw-model/src/fixtures/round1.rs` intro section now includes
+  `pattern_ref: None` silent activations for bass / lead / drums so
+  the round-1 inspector activation table can render the `silent`
+  pill (vs the dashed `inherit` placeholder reserved for tracks
+  absent from a section). New `silent_activation` helper + test.
 
-**Done when.** `cargo run -p rawdaw-app` shows the same UI as Phase 8
-(verse base / stripped / chorus all match artboards A / B / C). The
-old `crate::fixture` module is gone; everything reads from the real
-Project + overlay. No regressions in clippy or tests.
+**Deviations from the original plan.**
+
+- **Kept the module name `fixture`** (plan said rename to
+  `presentation`). The module is unambiguously an adapter now; the
+  rename would have churned every import site without clarifying
+  intent.
+- **UI view types preserved.** Plan implied the UI would consume
+  `rawdaw_model::*` types directly + an overlay. In practice the UI's
+  `Track` / `Pattern` / etc. carry display-derived fields (role
+  display labels, "Pitched · N variants" meta strings, asterisks
+  computed against role defaults) that aren't 1:1 with model types.
+  The adapter populates the UI types from model data; cleaner than
+  threading model + overlay refs through every component.
+- **`OnceLock` caches the full UI `Round1`**, not just the model
+  `Project`. The adapter runs once on first call; subsequent
+  `round1()` calls return a `&'static Round1` directly.
+- **Cell realization decorations stay in the overlay.** The model's
+  `RealizationParams` carries voicing + a u8-jitter humanization
+  scalar; the UI's `Realization` carries voicing + octave +
+  fractional humanization. The mapping isn't 1:1 yet — until the
+  model grows richer realization fields, the per-cell display
+  values live in the overlay keyed by
+  `(SectionId, variant-name, TrackId)`.
+- **Pinned-note counts flow through the overlay** but the UI's
+  cell footer still reads a hardcoded `0` in `identity_column.rs`
+  (a Phase 6 stub). The plumbing is in place; surfacing the real
+  count is a follow-up.
+- **Visible regression in intro's activation table.** Phase 8
+  showed `bass · bass-main · silent` / `lead · lead-main · silent`
+  / `drums · drums-main · silent` in the round-1 inspector when
+  intro was selected. Post-E2 the rows still render and the
+  `silent` pill is preserved, but no pattern name is shown — the
+  model's `pattern_ref: None` state doesn't bind a pattern. The
+  three round-2 artboards exercised in Phase 8 (verse base / verse
+  stripped / chorus base) are visually identical; default render
+  (verse@bar5 selected) matches exactly.
+- **The `__silent__` variant id sentinel survived.** Phase E1
+  flagged it as needing a first-class model representation; the
+  adapter still translates it back to `Option::None` for the UI's
+  schedule entries. Resolution deferred to a later round.
+
+**Verification.**
+
+- 30 rawdaw-app unit tests pass — new tests pin the intro
+  silent-vs-active shape, chord-name resolution in C major
+  (`["I","V","vi","IV"]` → `["C","G","Am","F"]`), and the
+  five-step / 24-bar arrangement.
+- `cargo test --workspace` green.
+- Clippy clean across default / `--no-default-features` /
+  `--features cpal-driver` builds.
+- Visual verification via the rinch MCP: default arrangement
+  view + inspector match Phase 8; verse / verse@stripped / chorus
+  blocks render the expected variant chips and inspector
+  activation tables; section editor for verse (artboards A + B)
+  and chorus (artboard C) shows identical layout, realization
+  values, and variant schedules to Phase 8.
 
 ---
 
