@@ -210,7 +210,7 @@ round-2 cell realization decorations, top-bar transient state).
 
 ---
 
-## Phase E3 — Engine instantiation + per-track sine node graph
+## Phase E3 — Engine instantiation + per-track sine node graph ✅ done
 
 **Goal.** At app launch, build a `rawdaw_engine::Engine`, set up an audio
 graph with a per-track instrument node (`SineNode` for now), translate
@@ -218,35 +218,80 @@ the realized events from the Project, and feed them into the engine's
 event queue. **No audio thread yet.** The engine is ready to render but
 nothing is calling `process_block`.
 
-**Steps.**
+**What landed.**
 
-- `rawdaw-app::audio` module: owns the `Engine`-construction logic and
-  exposes a `BuiltEngine { engine, master_node, routing }` aggregate.
-- Construct the graph:
-  - Master node (a sum / passthrough; first cut can be a custom
-    `MixerNode` that's the topo-root).
-  - One `SineNode` per project track, connected into the master.
-  - `TrackRouting: BTreeMap<TrackId, NodeId>` maps each project track to
-    its sine.
-- Realize the Project to `TimedEvent`s via `rawdaw_model::realize::*`,
-  then `translate_events(..., &routing)` → `Vec<BlockEvent>`. Push every
-  event into the engine's event queue.
-- Store the built engine in `AppState` (or a Rinch store dedicated to
-  audio resources). The handle stays accessible from the UI layer
-  without crossing the `AppState`/audio boundary unsafely — at this
-  phase the engine is single-threaded so the convenience `Engine`
-  wrapper is fine.
+- `rawdaw-engine/src/nodes/mixer.rs` — new `MixerNode`: N stereo
+  inputs declared at construction → 1 stereo summing output. Sized
+  per construction call so a 4-track round-1 project gets a 4-input
+  mixer, etc. Tests pin zero / one / many inputs and the descriptor
+  channel shape.
+- `rawdaw-app/src/audio.rs` — new `AudioResources` Rinch store
+  (`Rc<RefCell<Engine>>` + `NodeId master` + `Rc<TrackRouting>` +
+  initial event count). `AudioResources::build()` calls
+  `build_round1_project()`, installs the mixer at `NodeId(0)` plus
+  one `SineNode` at `NodeId(i+1)` per track in a single
+  `GraphCommand::Batch` (one topo recompute), then runs
+  `realize() → translate_events() → push_event` to arm the engine.
+- `rawdaw-app/src/app.rs` — `main_window` installs the
+  `AudioResources` store alongside `AppState` at app launch.
+- `rawdaw-app/src/main.rs` — `audio` module added; architecture
+  doc-comment updated.
 
-**Done when.** App launches successfully; engine builds without panics;
-the realized event count matches what `tests/render.rs` produces for the
-same project (engine-test cross-check via a unit test).
+**Deviations from the original plan.**
 
-**Risks.**
+- **`Rc<RefCell<Engine>>` instead of bare `Engine` in the store.**
+  rinch's `create_store<T: Clone + 'static>` requires the type to be
+  cheaply cloneable. The engine isn't `Clone`; wrapping it in
+  `Rc<RefCell<>>` gives the store a Clone shape without contention
+  overhead (single-threaded UI). Phase E4 splits the engine — at
+  that point the `AudioEngine` moves to the audio thread and only
+  the `EngineHandle` remains here.
+- **`Rc<TrackRouting>` instead of inline `TrackRouting`.** Same
+  reason: keep the store cheap to clone. The routing is immutable
+  after build.
+- **Aggregate type is named `AudioResources`, not `BuiltEngine`.**
+  The plan called the aggregate `BuiltEngine`; the actual struct
+  carries more than just the engine (routing, event count) and the
+  store is consumed via `use_store::<AudioResources>()`, so the
+  more descriptive name reads better at call sites.
+- **No UI handler consumes the store yet.** The plan says "the
+  handle stays accessible from the UI layer." For E3 that's a
+  preparation step — phases E4 (cpal callback), E5 (playhead read),
+  and E6 (transport buttons) are the actual consumers. `_audio = …`
+  binds the store builder; the fields are marked `#[allow(dead_code)]`
+  pending those phases.
+- **Master is the mixer.** The plan said "first cut can be a custom
+  `MixerNode` that's the topo-root" — that's what landed. No
+  passthrough alternative.
+- **Sample rate hardcoded to 48 kHz, block size 256.** Matches the
+  engine's `tests/render.rs`. Phase E4 picks up the actual sample
+  rate from the opened cpal device.
 
-- The realize pass may surface gaps the fixture didn't exercise (e.g.
-  `PatternBody::Chord` block events, which the current model has design
-  for but no implementation). Track those gaps as `TODO`s; if any are
-  load-bearing for E4 playback, defer them to a follow-on milestone.
+**Verification.**
+
+- `audio::tests::round_1_pushes_one_block_event_per_realized_event`
+  is the milestone done-when's cross-check: builds the resources,
+  realizes the model project independently, asserts
+  `initial_event_count == realize(&project).len()`. Companion tests
+  pin every track routes to a sine, the NodeId layout
+  (master=0, sines=1..=N), and that the built engine renders offline
+  without panicking.
+- 113 workspace tests pass (rawdaw-app 34, rawdaw-engine 29
+  including 4 new mixer tests, rawdaw-model 12 + 21 integration,
+  plus crate-tests).
+- Clippy clean across default / `--no-default-features` /
+  `--features cpal-driver`.
+- Rinch MCP visual verification: UI unchanged from post-E2 state.
+  App launches; engine builds without panicking on the real
+  project.
+
+**Out-of-scope, flagged for later:**
+
+- The realize pass currently does not exercise `PatternBody::Chord`
+  block events (model design exists, no implementation). Round-1
+  fixture doesn't reach this code path, so it isn't blocking — but
+  E4 might want to widen the cross-check test to include a project
+  that does.
 
 ---
 
