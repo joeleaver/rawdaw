@@ -157,8 +157,33 @@ impl WavetableOsc {
 
     /// Read one sample from `wavetable` at the current phase and
     /// advance. Allocation-free.
+    ///
+    /// Equivalent to [`Self::tick_with_pm`] with a zero PM input —
+    /// kept as the convenience entry point for callers that don't
+    /// modulate.
     pub fn tick(&mut self, wavetable: &Wavetable) -> f32 {
-        let sample = wavetable.sample(self.phase);
+        self.tick_with_pm(wavetable, 0.0)
+    }
+
+    /// Phase-modulated tick. Reads the wavetable at `phase +
+    /// pm_input` rather than `phase`, then advances the phase by the
+    /// configured `phase_inc`.
+    ///
+    /// **Phase modulation, not frequency modulation.** Only the
+    /// *read* position is offset; the phase increment is unchanged,
+    /// so the carrier's average pitch stays the same and the
+    /// modulator can't introduce DC drift in the phase
+    /// accumulator. This is what every commercial "FM" synth (DX7,
+    /// Vital, Massive, …) actually does — true FM modulates
+    /// `phase_inc` and accumulates DC offsets that destabilize the
+    /// carrier over time.
+    ///
+    /// `pm_input` is the modulator's audio output *already scaled by
+    /// the PM depth* — `WavetableOsc` itself applies no depth scale.
+    /// Phase wrapping is handled by [`Wavetable::sample`] so any
+    /// finite `pm_input` magnitude is safe.
+    pub fn tick_with_pm(&mut self, wavetable: &Wavetable, pm_input: f32) -> f32 {
+        let sample = wavetable.sample(self.phase + pm_input);
         self.phase += self.phase_inc;
         // Keep phase in [0, 1) without an unbounded growth that would
         // eventually destroy precision. `rem_euclid` handles negative
@@ -265,6 +290,125 @@ mod tests {
                 chunked[i],
             );
         }
+    }
+
+    #[test]
+    fn tick_with_zero_pm_matches_plain_tick() {
+        // Contract: tick_with_pm(table, 0.0) must be sample-identical
+        // to tick(table). The two paths share an implementation
+        // today, but the test pins the API contract so a future
+        // refactor that splits them can't drift them apart silently.
+        let wt = Wavetable::saw_default();
+        let mut a = WavetableOsc::new();
+        a.prepare(SR);
+        a.set_frequency(220.0);
+        let mut b = a;
+        for _ in 0..512 {
+            let plain = a.tick(&wt);
+            let pmd = b.tick_with_pm(&wt, 0.0);
+            assert_eq!(plain, pmd);
+        }
+    }
+
+    #[test]
+    fn constant_pm_preserves_period() {
+        // PM is a *phase* offset, not a frequency offset. A constant
+        // pm_input shifts the read position by a constant amount each
+        // sample, but doesn't change the period — sample[i] still
+        // equals sample[i + period] at integer-period frequencies.
+        let wt = Wavetable::saw_default();
+        let mut osc = WavetableOsc::new();
+        osc.prepare(SR);
+        osc.set_frequency(480.0); // 100-sample period at 48 kHz.
+
+        let period = 100;
+        let pm = 0.17; // arbitrary non-trivial offset
+        let samples: Vec<f32> = (0..(period * 3))
+            .map(|_| osc.tick_with_pm(&wt, pm))
+            .collect();
+        let mut max_diff = 0.0_f32;
+        for i in 0..period {
+            let diff = (samples[i] - samples[i + period]).abs();
+            max_diff = max_diff.max(diff);
+        }
+        // Same tolerance as the unmodulated periodicity test — phase
+        // accumulator drift is on the order of 1e-3 over 100 samples
+        // at f32 precision.
+        assert!(
+            max_diff < 1e-3,
+            "constant PM should preserve period; max_diff = {max_diff}",
+        );
+    }
+
+    #[test]
+    fn constant_pm_shifts_apparent_phase() {
+        // Quarter-period PM (0.25) should read the wavetable a
+        // quarter-period ahead of unmodulated. Compare unmodulated
+        // sample[i + period/4] against PM'd sample[i] over an integer
+        // period: they must match within f32 tolerance.
+        let wt = Wavetable::saw_default();
+        let mut plain = WavetableOsc::new();
+        plain.prepare(SR);
+        plain.set_frequency(480.0); // 100-sample period
+        let mut pmd = plain;
+        let period = 100;
+        let shift = period / 4;
+        let plain_samples: Vec<f32> = (0..(period * 2)).map(|_| plain.tick(&wt)).collect();
+        let pmd_samples: Vec<f32> = (0..period)
+            .map(|_| pmd.tick_with_pm(&wt, 0.25))
+            .collect();
+        let mut max_diff = 0.0_f32;
+        for i in 0..period {
+            let diff = (pmd_samples[i] - plain_samples[i + shift]).abs();
+            max_diff = max_diff.max(diff);
+        }
+        // Wavetable read uses linear interpolation; pmd reads at
+        // exactly +0.25 phase which lands on integer sample indices
+        // (TABLE_LEN * 0.25 = 512), so the only error source is f32
+        // phase-accumulator drift between the unmodulated osc at
+        // sample i+25 and the modulated osc at sample i (whose phase
+        // has accumulated over fewer ticks but read offset is fixed).
+        // Tolerance matches the integer-period sibling test.
+        assert!(
+            max_diff < 1e-3,
+            "constant PM = 0.25 should shift read by a quarter period; max_diff = {max_diff}",
+        );
+    }
+
+    #[test]
+    fn nonzero_pm_changes_the_signal() {
+        // The plan's spirit is "FM produces measurably different
+        // output than no FM". Spectral checks (Bessel sidebands,
+        // total energy redistribution) are awkward to pin without an
+        // FFT and Parseval makes the RMS measure ambiguous, so the
+        // robust pin is: with a non-trivial sinusoidal PM input the
+        // sample-by-sample output differs from the unmodulated
+        // baseline by at least a threshold magnitude.
+        let wt = Wavetable::saw_default();
+        let mut plain = WavetableOsc::new();
+        plain.prepare(SR);
+        plain.set_frequency(200.0);
+        let mut pmd = plain;
+
+        let mod_hz = 50.0_f32;
+        let depth = 0.3_f32;
+        let n = 1024;
+        let mut diff_sq_sum = 0.0_f32;
+        for i in 0..n {
+            let t = i as f32 / SR as f32;
+            let modulator = (core::f32::consts::TAU * mod_hz * t).sin() * depth;
+            let p = plain.tick(&wt);
+            let m = pmd.tick_with_pm(&wt, modulator);
+            diff_sq_sum += (p - m).powi(2);
+        }
+        let diff_rms = (diff_sq_sum / n as f32).sqrt();
+        // A 0.3-phase depth at 50 Hz on a 200 Hz saw produces
+        // substantial waveform divergence — empirically ~0.4 RMS.
+        // 0.05 is a comfortable floor.
+        assert!(
+            diff_rms > 0.05,
+            "non-zero PM should audibly diverge from unmodulated; diff_rms = {diff_rms}",
+        );
     }
 
     #[test]

@@ -29,6 +29,7 @@
 pub mod envelope;
 pub mod filter;
 pub mod lfo;
+pub mod modulation;
 pub mod noise;
 pub mod oscillator;
 pub mod voicing;
@@ -36,6 +37,9 @@ pub mod voicing;
 pub use envelope::{Adsr, AdsrParams, AdsrStage, PitchEnvelope};
 pub use filter::{SvfHighpass, SvfLowpass};
 pub use lfo::SineLfo;
+pub use modulation::{
+    ModDestination, ModMatrix, ModSlot, ModSource, Modulations, NUM_OSCS_PER_VOICE,
+};
 pub use noise::NoiseSource;
-pub use oscillator::{Wavetable, WavetableOsc, TABLE_LEN};
+pub use oscillator::{note_offset_hz, Wavetable, WavetableOsc, WavetableOscParams, TABLE_LEN};
 pub use voicing::{Voice, VoicePool};
