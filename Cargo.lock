@@ -3059,8 +3059,13 @@ version = "0.0.0"
 dependencies = [
  "rawdaw-engine",
  "rawdaw-model",
+ "rawdaw-synth-wavetable",
  "rinch",
 ]
+
+[[package]]
+name = "rawdaw-dsp"
+version = "0.0.0"
 
 [[package]]
 name = "rawdaw-engine"
@@ -3078,6 +3083,15 @@ dependencies = [
  "rawdaw-model",
  "ron",
  "serde",
+]
+
+[[package]]
+name = "rawdaw-synth-wavetable"
+version = "0.0.0"
+dependencies = [
+ "rawdaw-dsp",
+ "rawdaw-engine",
+ "rawdaw-model",
 ]
 
 [[package]]

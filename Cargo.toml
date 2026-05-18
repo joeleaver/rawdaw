@@ -2,8 +2,10 @@
 resolver = "3"
 members = [
     "crates/rawdaw-app",
+    "crates/rawdaw-dsp",
     "crates/rawdaw-engine",
     "crates/rawdaw-model",
+    "crates/rawdaw-synth-wavetable",
 ]
 
 [workspace.package]

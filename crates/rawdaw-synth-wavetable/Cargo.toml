@@ -1,0 +1,18 @@
+[package]
+name = "rawdaw-synth-wavetable"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The synth wraps DSP primitives into an AudioNode implementation. It
+# depends on rawdaw-engine for the AudioNode trait + ProcessContext +
+# event types, and on rawdaw-model for MIDI message types.
+rawdaw-dsp = { path = "../rawdaw-dsp" }
+rawdaw-engine = { path = "../rawdaw-engine" }
+rawdaw-model = { path = "../rawdaw-model" }
