@@ -15,7 +15,11 @@ path = "src/main.rs"
 
 [dependencies]
 rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }
-rawdaw-engine = { path = "../rawdaw-engine" }
+# `cpal-driver` enables the cpal-based real-time audio thread. Required
+# for any audible output; the app launches the audio stream in
+# `audio::AudioResources::build()`. No-cpal builds are not supported —
+# rawdaw-app is the desktop binary, not a headless library.
+rawdaw-engine = { path = "../rawdaw-engine", features = ["cpal-driver"] }
 # `fixtures` feature pulls in `rawdaw_model::fixtures::build_round1_project()`,
 # the canonical round-1 Project that drives rawdaw-app's UI. The fixture
 # data ships in the binary at runtime — release builds still get the

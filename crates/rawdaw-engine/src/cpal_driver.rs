@@ -31,6 +31,10 @@ use cpal::{
     Stream, StreamConfig,
 };
 
+// Re-exported so downstream crates can wire an error handler without
+// pulling in `cpal` directly.
+pub use cpal::StreamError;
+
 use rawdaw_model::MusicalTime;
 
 use crate::audio_engine::AudioEngine;
@@ -100,7 +104,21 @@ impl CpalDriver {
     ///
     /// `master` is the graph node whose stereo output is routed to the
     /// device. It must produce a stereo port at index 0.
-    pub fn new(audio_engine: AudioEngine, master: NodeId) -> Result<Self, CpalDriverError> {
+    ///
+    /// `error_handler` is invoked for non-fatal stream errors emitted by
+    /// cpal (device-disconnect, backend hiccups, etc). The closure runs
+    /// on a cpal-managed thread, not the audio callback thread — locks
+    /// and channel sends are fine. The driver does **not** swallow
+    /// errors; the host gets to decide whether to log, display, or
+    /// retry. Pass a no-op closure if errors should be ignored.
+    pub fn new<F>(
+        audio_engine: AudioEngine,
+        master: NodeId,
+        error_handler: F,
+    ) -> Result<Self, CpalDriverError>
+    where
+        F: FnMut(StreamError) + Send + 'static,
+    {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -124,7 +142,7 @@ impl CpalDriver {
             return Err(CpalDriverError::UnsupportedSampleFormat(format));
         }
 
-        let stream = build_f32_stream(&device, &config, audio_engine, master)?;
+        let stream = build_f32_stream(&device, &config, audio_engine, master, error_handler)?;
         Ok(Self {
             stream,
             sample_rate: device_rate,
@@ -149,12 +167,16 @@ impl CpalDriver {
     }
 }
 
-fn build_f32_stream(
+fn build_f32_stream<F>(
     device: &cpal::Device,
     config: &StreamConfig,
     mut audio_engine: AudioEngine,
     master: NodeId,
-) -> Result<Stream, CpalDriverError> {
+    error_handler: F,
+) -> Result<Stream, CpalDriverError>
+where
+    F: FnMut(StreamError) + Send + 'static,
+{
     let sample_rate = config.sample_rate.0;
     let device_channels = config.channels as usize;
     let max_block = audio_engine.graph().max_block_size();
@@ -203,13 +225,7 @@ fn build_f32_stream(
                 );
                 absolute_time = absolute_time.saturating_add(frames as u64);
             },
-            move |err| {
-                // cpal stream errors are rare and primarily indicate
-                // device disconnect or a backend bug. v1 surfaces them
-                // via stderr; richer routing (a callback or an
-                // audio→host SPSC) is a follow-up.
-                eprintln!("cpal stream error: {err}");
-            },
+            error_handler,
             None,
         )
         .map_err(CpalDriverError::BuildStream)
