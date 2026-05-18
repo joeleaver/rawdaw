@@ -133,10 +133,16 @@ pub fn StripePaper(
         r = radius,
         pad = padding,
     );
-    let _ = children; // children are auto-appended by the rsx macro
-    rsx! {
+    // Children are NOT auto-appended by `#[component]` — the macro just
+    // exposes them as a `&[NodeHandle]` parameter and the body has to
+    // wire them in. Capture the rsx root and append explicitly.
+    let root = rsx! {
         div { style: {style.clone()} }
+    };
+    for child in children {
+        root.append_child(child);
     }
+    root
 }
 
 // ─── Schedule timeline primitive ─────────────────────────────────────────
