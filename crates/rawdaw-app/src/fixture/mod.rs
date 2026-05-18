@@ -20,6 +20,7 @@
 
 use std::sync::OnceLock;
 
+mod chord_naming;
 mod data;
 
 // ─── Project / track / pattern types ──────────────────────────────────────

@@ -1,17 +1,50 @@
-//! Round-1 fixture builder + round-2 invariant tests.
+//! Round-1 fixture adapter: builds the UI's `Round1` view from
+//! `rawdaw_model::fixtures::build_round1_project()` plus an inline
+//! presentation overlay.
 //!
-//! Round-1 mockup data, mirroring
-//! `docs/design/mockups/round-1/components/data.js`, extended with
-//! the round-2 additions from
-//! `docs/design/mockups/round-2/components/data.js`. The split between
-//! this file and `mod.rs` is purely size — types and helpers stay in
-//! `mod.rs`; the bulky construction lives here so neither file
-//! approaches the ~700-line cap.
+//! Phase E2 step 2: the static UI tables are gone. The model is now
+//! authoritative for the round-1 project's ids / names / structure
+//! (tracks, patterns, chord-loop events, sections, arrangement). The
+//! overlay below carries UI-only fields the model doesn't own —
+//! per-pattern / -section / -chord-loop colors, the library's
+//! `Pitched · N variants` meta strings, the round-2 cell realization
+//! decorations (voicing / octave / humanization per cell), and the
+//! transient project-meta fields the UI top bar surfaces (project
+//! name, tempo, playhead) that don't yet live in the model.
 //!
-//! Phase E2 type-flip: every fixture field is now `String` / `Vec`. The
-//! construction runs once via `OnceLock`-backed `round1()`; the tests
-//! pin the round-2 invariants the section editor port relies on.
+//! ## Mapping rules
+//!
+//! - `Track.id` is `format!("t_{}", model_track.name)` — preserves the
+//!   round-1 fixture's `t_bass` / `t_lead` / `t_drums` / `t_pad` form
+//!   so existing UI lookups by id continue to work.
+//! - `Pattern.id` / `Section.id` / `ChordLoop.id`: model `name` strings
+//!   (unique per kind in round 1).
+//! - `Activation.state`: derived from `ActivationEntry.pattern_ref` —
+//!   `Some(p)` ⇒ `Active`, `None` ⇒ `Silent`. A track that has no
+//!   entry at all in the section's `activations` is **absent** from
+//!   the UI section's activation list; the section editor renders the
+//!   dashed `inherit` placeholder for those (round-2 decision 14).
+//! - `Activation.pattern`: model `Pattern.name` resolved via
+//!   `pattern_ref`. Empty string when `pattern_ref` is `None`.
+//! - `ScheduleEntry.variant = None` when the model's variant id is the
+//!   sentinel `__silent__` (sub-range silence), otherwise
+//!   `Some(variant_id.as_str().to_string())`.
 
+use std::collections::BTreeMap;
+
+use rawdaw_model::activation::ActivationEntry as ModelActivation;
+use rawdaw_model::chord::ChordSpec;
+use rawdaw_model::fixtures::{build_round1_project, Round1Keys};
+use rawdaw_model::id::{ChordLoopId, PatternId, SectionId, TrackId};
+use rawdaw_model::pattern::{Pattern as ModelPattern, PatternBody};
+use rawdaw_model::project::Project as ModelProject;
+use rawdaw_model::scale::Scale;
+use rawdaw_model::section::{
+    ActivationOverride as ModelActivationOverride, Section as ModelSection,
+};
+use rawdaw_model::track::{Role, Track as ModelTrack, TrackKind as ModelTrackKind};
+
+use super::chord_naming::{absolute_label, pitch_class_name, quality_suffix, roman_label};
 use super::{
     Activation, ActivationOverride, ActivationState, ChordEvent, ChordLoop, Humanization,
     OctaveSpec, Pattern, Project, Realization, Round1, ScheduleEntry, Section, SectionRef, Track,
@@ -22,365 +55,503 @@ use crate::theme;
 // ─── Entry point ──────────────────────────────────────────────────────────
 
 pub(super) fn build_round1() -> Round1 {
+    let (project, keys) = build_round1_project();
+    let overlay = Overlay::build(&keys);
     Round1 {
-        project: Project {
-            name: "untitled-1".into(),
-            key: "C major".into(),
-            time_sig: "4/4".into(),
-            tempo: 96,
-            playhead_bar: 5,
-            playhead_beat: 2,
-        },
-        tracks: build_tracks(),
-        patterns: build_patterns(),
-        chord_loops: build_chord_loops(),
-        sections: build_sections(),
-        arrangement: build_arrangement(),
-        total_bars: 24,
+        project: build_project_meta(),
+        tracks: build_tracks(&project),
+        patterns: build_patterns(&project, &overlay),
+        chord_loops: build_chord_loops(&project, &overlay),
+        sections: build_sections(&project, &keys, &overlay),
+        arrangement: build_arrangement(&project),
+        total_bars: arrangement_total_bars(&project),
     }
 }
 
-// ─── Tracks / patterns / chord events / chord loops ───────────────────────
+// ─── Overlay ──────────────────────────────────────────────────────────────
+//
+// UI-only decorations the model doesn't carry. Keyed by model ids and
+// (for cell realizations) section / variant / track triples so the
+// adapter can look them up while walking the model.
 
-fn build_tracks() -> Vec<Track> {
-    vec![
-        Track { id: "t_bass".into(),  name: "bass".into(),  kind: TrackKind::Pitched, role: "bass".into()    },
-        Track { id: "t_lead".into(),  name: "lead".into(),  kind: TrackKind::Pitched, role: "melodic".into() },
-        Track { id: "t_drums".into(), name: "drums".into(), kind: TrackKind::Drum,    role: "—".into()       },
-        Track { id: "t_pad".into(),   name: "pad".into(),   kind: TrackKind::Pitched, role: "pad".into()     },
-    ]
+struct Overlay {
+    pattern_color: BTreeMap<PatternId, &'static str>,
+    pattern_meta: BTreeMap<PatternId, &'static str>,
+    section_color: BTreeMap<SectionId, &'static str>,
+    chord_loop_color: BTreeMap<ChordLoopId, &'static str>,
+    /// `(section, variant-name, track)` → realization decorations plus
+    /// pinned-note count. The literal `"base"` keys the section's base
+    /// activation; any other string keys a specific variant override.
+    cell: BTreeMap<(SectionId, &'static str, TrackId), CellOverlay>,
 }
 
-fn build_patterns() -> Vec<Pattern> {
-    vec![
-        Pattern {
-            id: "p_bass".into(),
-            name: "bass-main".into(),
-            color: theme::PAL_TEAL.into(),
-            kind: "Pitched".into(),
-            variants: 2,
-            default_variant: "main".into(),
-            meta: "Pitched · 2 variants".into(),
-        },
-        Pattern {
-            id: "p_lead".into(),
-            name: "lead-main".into(),
-            color: theme::PAL_PLUM.into(),
-            kind: "Pitched".into(),
-            variants: 1,
-            default_variant: "main".into(),
-            meta: "Pitched · 1 variant".into(),
-        },
-        Pattern {
-            id: "p_drums".into(),
-            name: "drums-main".into(),
-            color: theme::PAL_SAGE.into(),
-            kind: "Drum".into(),
-            variants: 2,
-            default_variant: "main".into(),
-            meta: "Drum · 2 variants".into(),
-        },
-        Pattern {
-            id: "p_pad".into(),
-            name: "pad-bed".into(),
-            color: theme::PAL_SLATE.into(),
-            kind: "Pitched".into(),
-            variants: 1,
-            default_variant: "main".into(),
-            meta: "Pitched · 1 variant".into(),
-        },
-    ]
+#[derive(Clone, Copy)]
+struct CellOverlay {
+    realization: Realization,
+    pinned: u32,
 }
 
-fn ce(roman: &str, quality: &str, absolute: &str) -> ChordEvent {
-    ChordEvent {
-        roman: roman.into(),
-        quality: quality.into(),
-        absolute: absolute.into(),
+impl Overlay {
+    fn build(k: &Round1Keys) -> Self {
+        let mut o = Overlay {
+            pattern_color: BTreeMap::new(),
+            pattern_meta: BTreeMap::new(),
+            section_color: BTreeMap::new(),
+            chord_loop_color: BTreeMap::new(),
+            cell: BTreeMap::new(),
+        };
+
+        o.pattern_color.insert(k.patterns.bass,  theme::PAL_TEAL);
+        o.pattern_color.insert(k.patterns.lead,  theme::PAL_PLUM);
+        o.pattern_color.insert(k.patterns.drums, theme::PAL_SAGE);
+        o.pattern_color.insert(k.patterns.pad,   theme::PAL_SLATE);
+
+        o.pattern_meta.insert(k.patterns.bass,  "Pitched · 2 variants");
+        o.pattern_meta.insert(k.patterns.lead,  "Pitched · 1 variant");
+        o.pattern_meta.insert(k.patterns.drums, "Drum · 2 variants");
+        o.pattern_meta.insert(k.patterns.pad,   "Pitched · 1 variant");
+
+        o.section_color.insert(k.sections.intro,  theme::PAL_ROSE);
+        o.section_color.insert(k.sections.verse,  theme::PAL_BLUE);
+        o.section_color.insert(k.sections.chorus, theme::PAL_SAND);
+
+        o.chord_loop_color.insert(k.chord_loops.verse,  theme::PAL_TERRA);
+        o.chord_loop_color.insert(k.chord_loops.chorus, theme::PAL_OLIVE);
+
+        // Round-2 cell realization decorations. Mirrors the mockup data
+        // in `mockups/round-2/components/data.js`. The model's
+        // `RealizationParams` only carries voicing + humanization
+        // scalars; octave is per-event, and the UI's humanization
+        // semantics (fractional velocity, ticks, swing, seed) differ
+        // from `RealizationParams`'s u8 jitter fields. Until the model
+        // grows a richer realization vocabulary, the per-cell display
+        // values live here.
+        let verse = k.sections.verse;
+        let chorus = k.sections.chorus;
+        let bass = k.tracks.bass;
+        let lead = k.tracks.lead;
+        let drums = k.tracks.drums;
+        let pad = k.tracks.pad;
+
+        o.cell.insert((verse, "base", bass), CellOverlay {
+            realization: pitched(Voicing::Power, OctaveSpec::Nearest,
+                Humanization { velocity: 0.04, timing: 4, swing: 0.0, seed: 1742 }),
+            pinned: 0,
+        });
+        o.cell.insert((verse, "base", lead), CellOverlay {
+            realization: pitched(Voicing::TriadClose, OctaveSpec::Anchored(4),
+                Humanization { velocity: 0.06, timing: 5, swing: 0.0, seed: 913 }),
+            pinned: 2,
+        });
+        o.cell.insert((verse, "base", drums), CellOverlay {
+            realization: drum(Humanization { velocity: 0.10, timing: 7, swing: 0.05, seed: 8821 }),
+            pinned: 0,
+        });
+
+        // Verse-stripped: bass is fully silenced (no realization needed);
+        // lead is replaced with anchored(4) but lower humanization.
+        o.cell.insert((verse, "stripped", lead), CellOverlay {
+            realization: pitched(Voicing::TriadClose, OctaveSpec::Anchored(4),
+                Humanization { velocity: 0.05, timing: 4, swing: 0.0, seed: 913 }),
+            pinned: 2,
+        });
+
+        // Chorus base — all four tracks active.
+        o.cell.insert((chorus, "base", bass), CellOverlay {
+            realization: pitched(Voicing::Power, OctaveSpec::Nearest,
+                Humanization { velocity: 0.04, timing: 4, swing: 0.0, seed: 1742 }),
+            pinned: 0,
+        });
+        o.cell.insert((chorus, "base", lead), CellOverlay {
+            realization: pitched(Voicing::TriadClose, OctaveSpec::UpFromPrev,
+                Humanization { velocity: 0.07, timing: 5, swing: 0.0, seed: 913 }),
+            pinned: 3,
+        });
+        o.cell.insert((chorus, "base", drums), CellOverlay {
+            realization: drum(Humanization { velocity: 0.12, timing: 8, swing: 0.05, seed: 8821 }),
+            pinned: 0,
+        });
+        o.cell.insert((chorus, "base", pad), CellOverlay {
+            // drop2 overrides role:pad's default triad-open; Nearest overrides
+            // role:pad's default Anchored(3).
+            realization: pitched(Voicing::Drop2, OctaveSpec::Nearest,
+                Humanization { velocity: 0.02, timing: 2, swing: 0.0, seed: 3104 }),
+            pinned: 0,
+        });
+
+        o
+    }
+
+    fn lookup_cell(&self, section: SectionId, variant: &str, track: TrackId) -> Option<CellOverlay> {
+        // The overlay table is keyed by `&'static str` for variant names,
+        // so callers passing dynamic strings (verse vs. stripped vs. base)
+        // need the same literal — fall through gracefully when missing.
+        for (&(s, v, t), c) in &self.cell {
+            if s == section && t == track && v == variant {
+                return Some(*c);
+            }
+        }
+        None
     }
 }
 
-fn build_chord_loops() -> Vec<ChordLoop> {
-    vec![
-        ChordLoop {
-            id: "cl_verse".into(),
-            name: "verse-progression".into(),
-            color: theme::PAL_TERRA.into(),
-            length_bars: 4,
-            events: vec![
-                ce("I",  "", "C"),
-                ce("V",  "", "G"),
-                ce("vi", "", "Am"),
-                ce("IV", "", "F"),
-            ],
+fn pitched(voicing: Voicing, octave: OctaveSpec, h: Humanization) -> Realization {
+    Realization { voicing: Some(voicing), octave: Some(octave), humanization: h }
+}
+
+fn drum(h: Humanization) -> Realization {
+    Realization { voicing: None, octave: None, humanization: h }
+}
+
+// ─── Project meta (top-bar fields the model doesn't carry yet) ───────────
+
+fn build_project_meta() -> Project {
+    // Tempo and playhead don't yet live on the model `Project`. The
+    // round-1 mockup pins these; the engine-wiring milestone surfaces
+    // real values in phases E4–E5.
+    Project {
+        name: "untitled-1".into(),
+        key: "C major".into(),
+        time_sig: "4/4".into(),
+        tempo: 96,
+        playhead_bar: 5,
+        playhead_beat: 2,
+    }
+}
+
+// ─── Tracks ───────────────────────────────────────────────────────────────
+
+fn build_tracks(project: &ModelProject) -> Vec<Track> {
+    project.tracks.iter().map(build_track).collect()
+}
+
+fn build_track(m: &ModelTrack) -> Track {
+    let (kind, role) = match &m.kind {
+        ModelTrackKind::Pitched { role } => (TrackKind::Pitched, role_name(*role).to_string()),
+        ModelTrackKind::Drum { .. } => (TrackKind::Drum, "—".to_string()),
+    };
+    Track {
+        id: track_ui_id(m),
+        name: m.name.clone(),
+        kind,
+        role,
+    }
+}
+
+fn track_ui_id(m: &ModelTrack) -> String {
+    format!("t_{}", m.name)
+}
+
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::Bass => "bass",
+        Role::Voicing => "voicing",
+        Role::Arp => "arp",
+        Role::Melodic => "melodic",
+        Role::Pad => "pad",
+        Role::Countermelody => "countermel",
+        Role::Other => "other",
+    }
+}
+
+// ─── Patterns ─────────────────────────────────────────────────────────────
+
+fn build_patterns(project: &ModelProject, overlay: &Overlay) -> Vec<Pattern> {
+    project
+        .patterns
+        .values()
+        .map(|p| build_pattern(p, overlay))
+        .collect()
+}
+
+fn build_pattern(m: &ModelPattern, overlay: &Overlay) -> Pattern {
+    let (kind_label, variants) = match &m.body {
+        PatternBody::Pitched(b) => ("Pitched", b.variants.len() as u32),
+        PatternBody::Drum(b) => ("Drum", b.variants.len() as u32),
+    };
+    let color = overlay
+        .pattern_color
+        .get(&m.id)
+        .copied()
+        .unwrap_or(theme::TEXT2);
+    let meta = overlay
+        .pattern_meta
+        .get(&m.id)
+        .copied()
+        .unwrap_or("");
+    Pattern {
+        id: m.name.clone(),
+        name: m.name.clone(),
+        color: color.into(),
+        kind: kind_label.into(),
+        variants,
+        default_variant: m.default_variant.as_str().to_string(),
+        meta: meta.into(),
+    }
+}
+
+// ─── Chord loops ──────────────────────────────────────────────────────────
+
+fn build_chord_loops(project: &ModelProject, overlay: &Overlay) -> Vec<ChordLoop> {
+    project
+        .chord_loops
+        .values()
+        .map(|cl| {
+            let scale = effective_scale(project, None);
+            let events = cl.events.iter().map(|e| build_chord_event(e, &scale)).collect();
+            let color = overlay
+                .chord_loop_color
+                .get(&cl.id)
+                .copied()
+                .unwrap_or(theme::TEXT2);
+            ChordLoop {
+                id: cl.name.clone(),
+                name: cl.name.clone(),
+                color: color.into(),
+                length_bars: 4, // round-1 fixture: every loop is 4 bars (1 beat per chord × 4).
+                events,
+            }
+        })
+        .collect()
+}
+
+fn build_chord_event(e: &rawdaw_model::chord::ChordEvent, project_scale: &Scale) -> ChordEvent {
+    match &e.chord {
+        ChordSpec::Functional { roman, suffix, in_key } => {
+            let scale = in_key.as_ref().unwrap_or(project_scale);
+            ChordEvent {
+                roman: roman_label(*roman, &suffix.quality),
+                quality: "".into(), // round-1 fixture uses no extension/alteration markers
+                absolute: absolute_label(*roman, &suffix.quality, scale),
+            }
+        }
+        ChordSpec::Absolute { root, suffix } => ChordEvent {
+            roman: "".into(),
+            quality: "".into(),
+            absolute: format!("{}{}", pitch_class_name(*root), quality_suffix(&suffix.quality)),
         },
-        ChordLoop {
-            id: "cl_chorus".into(),
-            name: "chorus-progression".into(),
-            color: theme::PAL_OLIVE.into(),
-            length_bars: 4,
-            events: vec![
-                ce("vi", "", "Am"),
-                ce("IV", "", "F"),
-                ce("I",  "", "C"),
-                ce("V",  "", "G"),
-            ],
-        },
-    ]
-}
-
-// ─── Activation helpers ──────────────────────────────────────────────────
-
-fn silent_no_realization(pattern: &str) -> Activation {
-    Activation {
-        pattern: pattern.into(),
-        state: ActivationState::Silent,
-        overridden: false,
-        realization: None,
-        variant_schedule: Vec::new(),
-        per_note_overrides: 0,
     }
 }
 
-fn active_no_realization(pattern: &str) -> Activation {
-    Activation {
-        pattern: pattern.into(),
-        state: ActivationState::Active,
-        overridden: false,
-        realization: None,
-        variant_schedule: Vec::new(),
-        per_note_overrides: 0,
-    }
-}
-
-fn active_pitched(
-    pattern: &str,
-    voicing: Voicing,
-    octave: OctaveSpec,
-    humanization: Humanization,
-    per_note_overrides: u32,
-) -> Activation {
-    Activation {
-        pattern: pattern.into(),
-        state: ActivationState::Active,
-        overridden: false,
-        realization: Some(Realization {
-            voicing: Some(voicing),
-            octave: Some(octave),
-            humanization,
-        }),
-        variant_schedule: Vec::new(),
-        per_note_overrides,
-    }
-}
-
-fn active_drum(pattern: &str, humanization: Humanization, schedule: Vec<ScheduleEntry>) -> Activation {
-    Activation {
-        pattern: pattern.into(),
-        state: ActivationState::Active,
-        overridden: false,
-        realization: Some(Realization {
-            voicing: None,
-            octave: None,
-            humanization,
-        }),
-        variant_schedule: schedule,
-        per_note_overrides: 0,
-    }
+fn effective_scale(project: &ModelProject, section_override: Option<&Scale>) -> Scale {
+    section_override.cloned().unwrap_or_else(|| project.default_key.clone())
 }
 
 // ─── Sections ─────────────────────────────────────────────────────────────
-//
-// Round-2 mockup data, mirroring
-// `docs/design/mockups/round-2/components/data.js`. The intro section
-// keeps its round-1 shape (no realization needed there yet — the section
-// editor only renders verse + chorus). Verse and chorus add full
-// realization blocks and variant schedules.
 
-fn build_sections() -> Vec<Section> {
-    vec![intro_section(), verse_section(), chorus_section()]
+fn build_sections(
+    project: &ModelProject,
+    keys: &Round1Keys,
+    overlay: &Overlay,
+) -> Vec<Section> {
+    // Walk in the order intro / verse / chorus to match the round-1
+    // fixture. The model's BTreeMap order is by SectionId, which lines
+    // up because the fixture allocates intro first, then verse, then
+    // chorus — but we anchor explicitly via `keys` to avoid coupling to
+    // the BTreeMap's insertion-id order.
+    [keys.sections.intro, keys.sections.verse, keys.sections.chorus]
+        .into_iter()
+        .map(|id| build_section(&project.sections[&id], project, overlay))
+        .collect()
 }
 
-fn intro_section() -> Section {
+fn build_section(s: &ModelSection, project: &ModelProject, overlay: &Overlay) -> Section {
+    let color = overlay
+        .section_color
+        .get(&s.id)
+        .copied()
+        .unwrap_or(theme::TEXT2);
+    let variants = section_variants(s);
+    let chord_loops = section_chord_loops(s, project);
+    let activations = section_activations(s, project, overlay);
+    let variant_overrides = section_variant_overrides(s, project, overlay);
     Section {
-        id: "s_intro".into(),
-        name: "intro".into(),
-        color: theme::PAL_ROSE.into(),
-        variants: vec![Variant { id: "base".into(), name: "base".into() }],
-        default_variant: "base".into(),
-        base_duration_bars: 4,
-        chord_loops: vec!["verse-progression".into()],
-        activations: vec![
-            ("t_bass".into(),  silent_no_realization("bass-main")),
-            ("t_lead".into(),  silent_no_realization("lead-main")),
-            ("t_drums".into(), silent_no_realization("drums-main")),
-            ("t_pad".into(),   active_no_realization("pad-bed")),
-        ],
-        variant_overrides: Vec::new(),
-    }
-}
-
-fn verse_section() -> Section {
-    // Verse / base. NOTE: pad is deliberately absent. Decision 14 in the
-    // round-2 README says tracks without an entry in `activations` render
-    // as a dashed-border inherit placeholder — that path is exercised here.
-    let base_activations = vec![
-        (
-            "t_bass".into(),
-            active_pitched(
-                "bass-main",
-                Voicing::Power,
-                OctaveSpec::Nearest,
-                Humanization { velocity: 0.04, timing: 4, swing: 0.0, seed: 1742 },
-                0,
-            ),
-        ),
-        (
-            "t_lead".into(),
-            active_pitched(
-                "lead-main",
-                Voicing::TriadClose,
-                OctaveSpec::Anchored(4), // pinned, overrides role default `Nearest`
-                Humanization { velocity: 0.06, timing: 5, swing: 0.0, seed: 913 },
-                2,
-            ),
-        ),
-        (
-            "t_drums".into(),
-            active_drum(
-                "drums-main",
-                Humanization { velocity: 0.10, timing: 7, swing: 0.05, seed: 8821 },
-                Vec::new(),
-            ),
-        ),
-    ];
-
-    // Verse / stripped overrides. Bass + drums fully silenced; lead replaced
-    // with an activation whose schedule drops out for bar 4 (a
-    // `(BarRange, None)` sub-range silence — distinct from a full `Silent`,
-    // per round-2 decision 20).
-    let stripped_lead = Activation {
-        pattern: "lead-main".into(),
-        state: ActivationState::Active,
-        overridden: true,
-        realization: Some(Realization {
-            voicing: Some(Voicing::TriadClose),
-            octave: Some(OctaveSpec::Anchored(4)),
-            humanization: Humanization { velocity: 0.05, timing: 4, swing: 0.0, seed: 913 },
-        }),
-        variant_schedule: vec![ScheduleEntry { start_bar: 3, end_bar: 4, variant: None }],
-        per_note_overrides: 2,
-    };
-
-    let stripped: VariantOverride = vec![
-        ("t_bass".into(),  ActivationOverride::Silent),
-        ("t_drums".into(), ActivationOverride::Silent),
-        ("t_lead".into(),  ActivationOverride::Replace(stripped_lead)),
-    ];
-
-    Section {
-        id: "s_verse".into(),
-        name: "verse".into(),
-        color: theme::PAL_BLUE.into(),
-        variants: vec![
-            Variant { id: "base".into(),     name: "base".into()     },
-            Variant { id: "stripped".into(), name: "stripped".into() },
-        ],
-        default_variant: "base".into(),
-        base_duration_bars: 4,
-        chord_loops: vec!["verse-progression".into()],
-        activations: base_activations,
-        variant_overrides: vec![("stripped".into(), stripped)],
-    }
-}
-
-fn chorus_section() -> Section {
-    // Chorus / base. Drums carry a sparse variant schedule: only the `fill`
-    // entry at bar 8 is stored. Bars 1–7 play the pattern's default variant
-    // (`main`), computed at render time — never persisted as a phantom entry.
-    let activations = vec![
-        (
-            "t_bass".into(),
-            active_pitched(
-                "bass-main",
-                Voicing::Power,
-                OctaveSpec::Nearest,
-                Humanization { velocity: 0.04, timing: 4, swing: 0.0, seed: 1742 },
-                0,
-            ),
-        ),
-        (
-            "t_lead".into(),
-            active_pitched(
-                "lead-main",
-                Voicing::TriadClose,
-                OctaveSpec::UpFromPrev, // hook leap, overrides role default
-                Humanization { velocity: 0.07, timing: 5, swing: 0.0, seed: 913 },
-                3,
-            ),
-        ),
-        (
-            "t_drums".into(),
-            active_drum(
-                "drums-main",
-                Humanization { velocity: 0.12, timing: 8, swing: 0.05, seed: 8821 },
-                vec![ScheduleEntry {
-                    start_bar: 7,
-                    end_bar: 8,
-                    variant: Some("fill".into()),
-                }],
-            ),
-        ),
-        (
-            "t_pad".into(),
-            // drop2 overrides role:pad's default triad-open; Nearest overrides
-            // role:pad's default Anchored(3).
-            active_pitched(
-                "pad-bed",
-                Voicing::Drop2,
-                OctaveSpec::Nearest,
-                Humanization { velocity: 0.02, timing: 2, swing: 0.0, seed: 3104 },
-                0,
-            ),
-        ),
-    ];
-
-    Section {
-        id: "s_chorus".into(),
-        name: "chorus".into(),
-        color: theme::PAL_SAND.into(),
-        variants: vec![Variant { id: "base".into(), name: "base".into() }],
-        default_variant: "base".into(),
-        base_duration_bars: 8,
-        chord_loops: vec!["chorus-progression".into()],
+        id: s.name.clone(),
+        name: s.name.clone(),
+        color: color.into(),
+        variants,
+        default_variant: s.default_variant.as_str().to_string(),
+        base_duration_bars: s.base.duration_bars,
+        chord_loops,
         activations,
-        variant_overrides: Vec::new(),
+        variant_overrides,
     }
+}
+
+fn section_variants(s: &ModelSection) -> Vec<Variant> {
+    // The UI's variant list always includes "base" (the default) plus
+    // every named variant from the model's `variants` map. The model
+    // doesn't store a `base` entry — it's implicit via
+    // `default_variant`.
+    let mut out = vec![Variant { id: "base".into(), name: "base".into() }];
+    for v in s.variants.keys() {
+        out.push(Variant {
+            id: v.as_str().to_string(),
+            name: v.as_str().to_string(),
+        });
+    }
+    out
+}
+
+fn section_chord_loops(s: &ModelSection, project: &ModelProject) -> Vec<String> {
+    s.base
+        .chord_loops
+        .iter()
+        .map(|(_, id)| project.chord_loops[id].name.clone())
+        .collect()
+}
+
+fn section_activations(
+    s: &ModelSection,
+    project: &ModelProject,
+    overlay: &Overlay,
+) -> Vec<(String, Activation)> {
+    s.base
+        .activations
+        .iter()
+        .map(|(track_id, entry)| {
+            let track = project_track(project, *track_id);
+            (
+                track_ui_id(track),
+                activation_from_model(entry, project, overlay.lookup_cell(s.id, "base", *track_id)),
+            )
+        })
+        .collect()
+}
+
+fn section_variant_overrides(
+    s: &ModelSection,
+    project: &ModelProject,
+    overlay: &Overlay,
+) -> Vec<(String, VariantOverride)> {
+    s.variants
+        .iter()
+        .map(|(vid, sov)| {
+            let variant_str = vid.as_str().to_string();
+            // The variant-name lookup against the overlay uses the
+            // model's variant id verbatim. The overlay's keys are
+            // `&'static str` literals — see `lookup_cell` for the
+            // string-compare fallback path.
+            let list: VariantOverride = sov
+                .activations
+                .iter()
+                .map(|(tid, ov)| {
+                    let track = project_track(project, *tid);
+                    let cell = overlay.lookup_cell(s.id, vid.as_str(), *tid);
+                    let ui_ov = match ov {
+                        ModelActivationOverride::Silent => ActivationOverride::Silent,
+                        ModelActivationOverride::Replace(entry) => ActivationOverride::Replace({
+                            let mut act = activation_from_model(entry, project, cell);
+                            act.overridden = true;
+                            act
+                        }),
+                    };
+                    (track_ui_id(track), ui_ov)
+                })
+                .collect();
+            (variant_str, list)
+        })
+        .collect()
+}
+
+/// Build the UI's `Activation` from a model `ActivationEntry`.
+///
+/// State derives from `pattern_ref`: `Some` ⇒ Active, `None` ⇒ Silent.
+/// Realization decorations come from the overlay when one is registered
+/// for the cell; otherwise the activation carries `realization: None`
+/// (round-1-style; the round-2 cell still renders, just without the
+/// `↳ role default` / `*` inheritance markers).
+fn activation_from_model(
+    entry: &ModelActivation,
+    project: &ModelProject,
+    cell: Option<CellOverlay>,
+) -> Activation {
+    let (pattern, state) = match entry.pattern_ref {
+        Some(pid) => (project.patterns[&pid].name.clone(), ActivationState::Active),
+        None => (String::new(), ActivationState::Silent),
+    };
+    let variant_schedule = entry
+        .variant_schedule
+        .iter()
+        .map(|(range, vid)| ScheduleEntry {
+            start_bar: range.start,
+            end_bar: range.end,
+            variant: if vid.as_str() == "__silent__" {
+                None
+            } else {
+                Some(vid.as_str().to_string())
+            },
+        })
+        .collect();
+    let (realization, pinned) = cell
+        .map(|c| (Some(c.realization), c.pinned))
+        .unwrap_or((None, 0));
+    Activation {
+        pattern,
+        state,
+        overridden: false,
+        realization,
+        variant_schedule,
+        per_note_overrides: pinned,
+    }
+}
+
+fn project_track(project: &ModelProject, id: TrackId) -> &ModelTrack {
+    project
+        .tracks
+        .iter()
+        .find(|t| t.id == id)
+        .unwrap_or_else(|| {
+            panic!("track id {id:?} from section activation must exist in project.tracks")
+        })
 }
 
 // ─── Arrangement ──────────────────────────────────────────────────────────
 
-fn build_arrangement() -> Vec<SectionRef> {
-    vec![
-        SectionRef { idx: 0, section_key: "intro".into(),  variant: "base".into(),     start_bar: 0,  bars: 4 },
-        SectionRef { idx: 1, section_key: "verse".into(),  variant: "base".into(),     start_bar: 4,  bars: 4 },
-        SectionRef { idx: 2, section_key: "verse".into(),  variant: "stripped".into(), start_bar: 8,  bars: 4 },
-        SectionRef { idx: 3, section_key: "verse".into(),  variant: "base".into(),     start_bar: 12, bars: 4 },
-        SectionRef { idx: 4, section_key: "chorus".into(), variant: "base".into(),     start_bar: 16, bars: 8 },
-    ]
+fn build_arrangement(project: &ModelProject) -> Vec<SectionRef> {
+    project
+        .arrangement
+        .sections
+        .iter()
+        .enumerate()
+        .map(|(idx, sr)| {
+            let section = &project.sections[&sr.section];
+            // 4/4 throughout the round-1 fixture: 4 beats per bar. The
+            // UI's bar-aligned arrangement assumes integer bar starts.
+            let start_bar = (sr.start.as_beats_f64() / 4.0) as u32;
+            SectionRef {
+                idx,
+                section_key: section.name.clone(),
+                variant: sr.variant.as_str().to_string(),
+                start_bar,
+                bars: section.base.duration_bars,
+            }
+        })
+        .collect()
+}
+
+fn arrangement_total_bars(project: &ModelProject) -> u32 {
+    let last = project
+        .arrangement
+        .sections
+        .last()
+        .expect("non-empty arrangement");
+    let section = &project.sections[&last.section];
+    let last_start_bar = (last.start.as_beats_f64() / 4.0) as u32;
+    last_start_bar + section.base.duration_bars
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────
 //
-// Round-2 fixture invariants. These pin the data shape the section
-// editor port relies on — especially the "no phantom default entry"
-// rule from the round-2 README.
+// Round-2 fixture invariants pinned to the model-driven adapter. These
+// match the prior static-fixture tests but exercise the adapter
+// alongside `build_round1_project()`.
 
 #[cfg(test)]
 mod tests {
     use crate::fixture::{
-        self, base_activation, role_defaults, round1, variant_override, ActivationOverride,
-        OctaveSpec, Section, Voicing,
+        base_activation, role_defaults, round1, variant_override, ActivationOverride,
+        ActivationState, OctaveSpec, Section, Voicing,
     };
 
     fn section(name: &str) -> &'static Section {
@@ -405,10 +576,10 @@ mod tests {
 
     #[test]
     fn stripped_lead_schedule_has_only_silent_sub_range() {
-        // Per round-2 decision 20 + the fixture-fix pass: the only
-        // explicit entry on stripped lead is the sub-range silence at
-        // bar 4. Bars 1–3 are an implicit-default fill computed at
-        // render time — there must be NO phantom "main" entry stored.
+        // Per round-2 decision 20: the only explicit entry on stripped
+        // lead is the sub-range silence at bar 4. Bars 1–3 are an
+        // implicit-default fill computed at render time — there must be
+        // NO phantom "main" entry stored.
         let ov = variant_override(section("verse"), "stripped", "t_lead")
             .expect("stripped variant overrides the lead activation");
         let act = match ov {
@@ -446,9 +617,6 @@ mod tests {
 
     #[test]
     fn role_defaults_match_round_2_table() {
-        // Spot-check the role table against round-2's `data.js` so the
-        // inheritance comparison in the section editor matches the
-        // mockup. Drums have no role → no defaults.
         let bass = role_defaults("bass").expect("bass role is defined");
         assert_eq!(bass.voicing, Voicing::Power);
         assert_eq!(bass.octave, OctaveSpec::Nearest);
@@ -463,15 +631,61 @@ mod tests {
 
     #[test]
     fn patterns_all_carry_default_variant() {
-        // Every Pattern must declare its default_variant — the schedule
-        // builder uses it to compute implicit-default fills, and a
-        // missing value would silently mis-render.
-        for p in fixture::round1().patterns.iter() {
+        for p in round1().patterns.iter() {
             assert!(
                 !p.default_variant.is_empty(),
                 "pattern {} is missing default_variant",
                 p.name
             );
         }
+    }
+
+    #[test]
+    fn intro_has_pad_active_and_other_tracks_silent() {
+        // The model now carries pattern_ref:None silent entries for
+        // bass/lead/drums in intro; the adapter maps those to
+        // ActivationState::Silent (with an empty pattern string) so
+        // the round-1 inspector renders a `silent` pill rather than
+        // the dashed `inherit` placeholder for those tracks.
+        let intro = section("intro");
+        let names: Vec<&str> = intro
+            .activations
+            .iter()
+            .map(|(tid, _)| tid.as_str())
+            .collect();
+        assert!(names.contains(&"t_pad"));
+        assert!(names.contains(&"t_bass"));
+        assert!(names.contains(&"t_lead"));
+        assert!(names.contains(&"t_drums"));
+        let pad_state = base_activation(intro, "t_pad").map(|a| a.state);
+        let bass_state = base_activation(intro, "t_bass").map(|a| a.state);
+        assert_eq!(pad_state, Some(ActivationState::Active));
+        assert_eq!(bass_state, Some(ActivationState::Silent));
+    }
+
+    #[test]
+    fn chord_loop_events_resolve_in_c_major() {
+        // verse-progression = I V vi IV in C major.
+        let r = round1();
+        let verse_loop = r
+            .chord_loops
+            .iter()
+            .find(|c| c.name == "verse-progression")
+            .expect("verse-progression in fixture");
+        let romans: Vec<&str> = verse_loop.events.iter().map(|e| e.roman.as_str()).collect();
+        assert_eq!(romans, vec!["I", "V", "vi", "IV"]);
+        let abs: Vec<&str> = verse_loop.events.iter().map(|e| e.absolute.as_str()).collect();
+        assert_eq!(abs, vec!["C", "G", "Am", "F"]);
+    }
+
+    #[test]
+    fn arrangement_has_five_steps_24_bars() {
+        let r = round1();
+        assert_eq!(r.arrangement.len(), 5);
+        assert_eq!(r.total_bars, 24);
+        assert_eq!(r.arrangement[0].section_key, "intro");
+        assert_eq!(r.arrangement[2].variant, "stripped");
+        assert_eq!(r.arrangement[4].section_key, "chorus");
+        assert_eq!(r.arrangement[4].bars, 8);
     }
 }

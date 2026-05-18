@@ -16,4 +16,8 @@ path = "src/main.rs"
 [dependencies]
 rinch = { workspace = true, features = ["desktop", "components", "theme", "debug"] }
 rawdaw-engine = { path = "../rawdaw-engine" }
-rawdaw-model = { path = "../rawdaw-model" }
+# `fixtures` feature pulls in `rawdaw_model::fixtures::build_round1_project()`,
+# the canonical round-1 Project that drives rawdaw-app's UI. The fixture
+# data ships in the binary at runtime — release builds still get the
+# round-1 mockup data until project-file I/O lands.
+rawdaw-model = { path = "../rawdaw-model", features = ["fixtures"] }

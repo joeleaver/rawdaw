@@ -445,8 +445,12 @@ fn insert_sections(
     }
 }
 
-/// Intro: pad-only; bass / lead / drums are silent. Mirrors the round-1
-/// fixture's intro shape.
+/// Intro: pad-active; bass / lead / drums present-but-silent.
+/// `pattern_ref: None` is the model's "track is in this section but
+/// plays no pattern" state — distinct from "absent from section,"
+/// which renders as the dashed inherit placeholder in the UI. The
+/// round-1 inspector activation table relies on this so it can show a
+/// `silent` pill for tracks that explicitly opt out of a section.
 fn build_intro(
     alloc: &mut crate::project::IdAllocators,
     id: SectionId,
@@ -455,6 +459,9 @@ fn build_intro(
     tr: &Round1TrackIds,
 ) -> Section {
     let mut activations = BTreeMap::new();
+    activations.insert(tr.bass, silent_activation(alloc));
+    activations.insert(tr.lead, silent_activation(alloc));
+    activations.insert(tr.drums, silent_activation(alloc));
     activations.insert(tr.pad, simple_activation(alloc, pat.pad));
     Section {
         id,
@@ -578,6 +585,20 @@ fn simple_activation(
     }
 }
 
+/// An activation that exists in a section but plays no pattern. The
+/// round-1 inspector renders these as a `silent` state pill rather than
+/// the dashed `inherit` placeholder (which is reserved for tracks that
+/// have no entry at all).
+fn silent_activation(alloc: &mut crate::project::IdAllocators) -> ActivationEntry {
+    ActivationEntry {
+        id: ActivationEntryId::new(alloc_activation_entry(alloc)),
+        pattern_ref: None,
+        variant_schedule: Vec::new(),
+        realization: RealizationParams::default(),
+        per_note_overrides: Vec::new(),
+    }
+}
+
 fn alloc_activation_entry(alloc: &mut crate::project::IdAllocators) -> u64 {
     let id = alloc.next_activation_entry_id;
     alloc.next_activation_entry_id += 1;
@@ -625,6 +646,21 @@ mod tests {
         let last_start_bars = (last.start.as_beats_f64() / 4.0) as u32;
         let last_end_bars = last_start_bars + last_section.base.duration_bars;
         assert_eq!(last_end_bars, 24);
+    }
+
+    #[test]
+    fn intro_has_pad_active_and_other_tracks_silent() {
+        let (p, keys) = build_round1_project();
+        let intro = &p.sections[&keys.sections.intro];
+        // All four tracks have an entry; pad plays a pattern, the others
+        // are bound-but-silent.
+        for tr in [keys.tracks.bass, keys.tracks.lead, keys.tracks.drums, keys.tracks.pad] {
+            assert!(intro.base.activations.contains_key(&tr));
+        }
+        assert!(intro.base.activations[&keys.tracks.pad].pattern_ref.is_some());
+        assert!(intro.base.activations[&keys.tracks.bass].pattern_ref.is_none());
+        assert!(intro.base.activations[&keys.tracks.lead].pattern_ref.is_none());
+        assert!(intro.base.activations[&keys.tracks.drums].pattern_ref.is_none());
     }
 
     #[test]
