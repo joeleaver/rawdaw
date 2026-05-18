@@ -18,6 +18,7 @@
 
 use rinch::prelude::*;
 
+use crate::audio::AudioResources;
 use crate::fixture;
 use crate::parts::rgba;
 use crate::state::AppState;
@@ -47,33 +48,34 @@ pub fn Arrangement() -> NodeHandle {
          background: {bg};",
         bg = theme::BG0,
     );
-    let playhead_pct = playhead_percent();
 
     rsx! {
         section { style: {section_style.clone()},
-            Ruler { total_bars: r.total_bars, playhead_pct: playhead_pct }
+            Ruler { total_bars: r.total_bars }
             ChordRibbon { total_bars: r.total_bars }
-            SectionLane {
-                total_bars: r.total_bars,
-                playhead_pct: playhead_pct,
-            }
-            LaneFiller { total_bars: r.total_bars, playhead_pct: playhead_pct }
+            SectionLane { total_bars: r.total_bars }
+            LaneFiller { total_bars: r.total_bars }
         }
     }
 }
 
-/// Fixture playhead position as a percent of total_bars. Bar 5 ·
-/// Beat 2 → bar_index 4 + 0.25 = 4.25 → 4.25 / 24 ≈ 17.71%.
+/// Engine-driven playhead position as a percent of `total_bars`.
+///
+/// Reads `AudioResources::playhead_samples` (a `Signal<u64>`) via the
+/// shared `AudioResources::playhead_position` helper; the `.get()`
+/// inside subscribes any rsx attribute closure that calls this
+/// function. With the cpal stream paused (default until phase E6) the
+/// signal stays at 0 and the playhead sits at bar 1.
 fn playhead_percent() -> f32 {
+    let audio = use_store::<AudioResources>();
     let r = fixture::round1();
-    let bars = (r.project.playhead_bar as f32 - 1.0) + (r.project.playhead_beat as f32 - 1.0) / 4.0;
-    bars / r.total_bars as f32 * 100.0
+    (audio.playhead_position().bars_f64 / r.total_bars as f64 * 100.0) as f32
 }
 
 // ─── Timeline ruler ───────────────────────────────────────────────────────
 
 #[component]
-fn Ruler(total_bars: u32, playhead_pct: f32) -> NodeHandle {
+fn Ruler(total_bars: u32) -> NodeHandle {
     let height = theme::H_RULER;
     let style = format!(
         "height: {h}px; flex: 0 0 {h}px; position: relative; \
@@ -116,12 +118,15 @@ fn Ruler(total_bars: u32, playhead_pct: f32) -> NodeHandle {
             for bar in (0..total_bars).filter(|b| b % 4 == 0).collect::<Vec<u32>>() {
                 BarLabel { bar: bar, total_bars: total_bars }
             }
-            // Playhead head — small caret + 1px vertical line.
+            // Playhead head — 1px vertical line. The style closure reads
+            // `playhead_percent()`, which calls `Signal::get` on the
+            // engine-driven playhead; the rsx attribute is a Fn effect
+            // closure, so it re-evaluates whenever the signal updates.
             div {
                 style: format!(
                     "position: absolute; left: {p}%; top: 0; bottom: 0; \
                      width: 1px; background: {acc}; transform: translateX(-0.5px);",
-                    p = playhead_pct, acc = theme::ACCENT,
+                    p = playhead_percent(), acc = theme::ACCENT,
                 ),
             }
         }
@@ -311,10 +316,7 @@ fn RibbonCell(
 // ─── Section lane ─────────────────────────────────────────────────────────
 
 #[component]
-fn SectionLane(
-    total_bars: u32,
-    playhead_pct: f32,
-) -> NodeHandle {
+fn SectionLane(total_bars: u32) -> NodeHandle {
     let style = format!(
         "height: {h}px; flex: 0 0 {h}px; position: relative; \
          background: {bg}; border-bottom: 1px solid {line};",
@@ -357,13 +359,14 @@ fn SectionLane(
                     total_bars: total_bars,
                 }
             }
-            // Playhead vertical line.
+            // Playhead vertical line. Reactive via `playhead_percent()`
+            // — see Ruler's playhead for the closure-tracking rationale.
             div {
                 style: format!(
                     "position: absolute; left: {p}%; top: 0; bottom: 0; \
                      width: 1px; background: {acc}; opacity: 0.85; \
                      transform: translateX(-0.5px); pointer-events: none;",
-                    p = playhead_pct, acc = theme::ACCENT,
+                    p = playhead_percent(), acc = theme::ACCENT,
                 ),
             }
         }
@@ -529,7 +532,7 @@ fn VariantBlockChip(label: String, style: String) -> NodeHandle {
 // ─── Lane filler (faint future-multi-lane area) ───────────────────────────
 
 #[component]
-fn LaneFiller(total_bars: u32, playhead_pct: f32) -> NodeHandle {
+fn LaneFiller(total_bars: u32) -> NodeHandle {
     let style = format!(
         "flex: 1; min-height: 0; position: relative; \
          background: {bg}; border-top: 1px solid {line};",
@@ -553,12 +556,14 @@ fn LaneFiller(total_bars: u32, playhead_pct: f32) -> NodeHandle {
                         position: absolute; inset: 0; pointer-events: none;",
                 path { d: {guide_d.clone()} }
             }
+            // Playhead vertical line. Reactive via `playhead_percent()`
+            // — see Ruler's playhead for the closure-tracking rationale.
             div {
                 style: format!(
                     "position: absolute; left: {p}%; top: 0; bottom: 0; \
                      width: 1px; background: {acc}; opacity: 0.7; \
                      transform: translateX(-0.5px); pointer-events: none;",
-                    p = playhead_pct, acc = theme::ACCENT,
+                    p = playhead_percent(), acc = theme::ACCENT,
                 ),
             }
             div {

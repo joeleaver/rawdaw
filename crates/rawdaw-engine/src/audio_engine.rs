@@ -13,6 +13,8 @@
 //! the host to drop).
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use rtrb::{Consumer, Producer};
 
@@ -60,6 +62,17 @@ pub struct AudioEngine {
     /// without holding a borrow on `self.graph`. Grows monotonically to
     /// the graph's node count, so once warm it never reallocates.
     topo_scratch: Vec<NodeId>,
+
+    /// Shared sample clock — the absolute sample index at which the
+    /// *next* `process_block` call will begin. Published with `Release`
+    /// at the end of every `process_block` so a host-side observer can
+    /// load with `Acquire` and read a consistent post-block transport
+    /// position. Initialized to 0. Used by Phase E5's reactive playhead.
+    ///
+    /// Held as an `Arc` so the engine can clone the handle out to the
+    /// host before splitting; the audio thread owns its own copy
+    /// behind the same `Arc`.
+    sample_clock: Arc<AtomicU64>,
 }
 
 impl AudioEngine {
@@ -84,11 +97,24 @@ impl AudioEngine {
             input_channel_counts: vec![0u8; MAX_INPUT_PORTS_PER_NODE],
             event_partition: BTreeMap::new(),
             topo_scratch: Vec::new(),
+            sample_clock: Arc::new(AtomicU64::new(0)),
         }
     }
 
     pub fn graph(&self) -> &Graph {
         &self.graph
+    }
+
+    /// Clone the shared sample-clock handle.
+    ///
+    /// The returned `Arc<AtomicU64>` is the same atomic the audio thread
+    /// updates at the end of every `process_block`. Host callers can
+    /// `load(Acquire)` it on any thread to read the transport position
+    /// at the start of the next block. Initialized to 0 and reset to
+    /// 0 only at engine construction; transport-state semantics
+    /// (pause / stop with reset) land in Phase E6.
+    pub fn sample_clock(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.sample_clock)
     }
 
     /// Process one block. Writes the master node's output into `output`.
@@ -129,6 +155,15 @@ impl AudioEngine {
 
         // 4. Copy master output to the host's output buffer.
         Self::copy_master_to_output(&self.graph, master, &mut output, ctx.block_size);
+
+        // 5. Publish the next-block sample position so the host can mirror
+        //    the playhead reactively. `Release` pairs with the host's
+        //    `Acquire` load — when the load sees this value, all of the
+        //    output writes above are visible too. Allocation-free.
+        let next_block_start = ctx
+            .absolute_time_samples
+            .saturating_add(ctx.block_size as u64);
+        self.sample_clock.store(next_block_start, Ordering::Release);
     }
 
     /// Render the graph offline for a fixed duration, returning planar L/R

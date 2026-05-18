@@ -475,3 +475,44 @@ fn batch_commands_apply_atomically() {
     assert!(engine.graph().has_node(a));
     assert!(engine.graph().has_node(b));
 }
+
+#[test]
+fn sample_clock_advances_with_render_offline() {
+    use std::sync::atomic::Ordering;
+
+    let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let master = NodeId::new(0);
+    engine.push_command(GraphCommand::AddNode {
+        id: master,
+        node: Box::new(SilenceNode::new()),
+    });
+
+    let clock = engine.sample_clock();
+    assert_eq!(clock.load(Ordering::Acquire), 0, "fresh engine reads 0");
+
+    // Render in two batches so we exercise multi-block accumulation.
+    let _ = engine.render_offline(master, SampleTime::samples(1000), MAX_BLOCK);
+    assert_eq!(
+        clock.load(Ordering::Acquire),
+        1000,
+        "after 1000-sample render the clock points at the next block start",
+    );
+
+    let _ = engine.render_offline(master, SampleTime::samples(500), MAX_BLOCK);
+    assert_eq!(
+        clock.load(Ordering::Acquire),
+        500,
+        "render_offline restarts absolute_time per call (host-provided ctx); \
+         the published clock reflects whatever the caller passed in plus block_size",
+    );
+}
+
+#[test]
+fn sample_clock_handles_are_shared() {
+    let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let a = engine.sample_clock();
+    let b = engine.sample_clock();
+    // Cloning the Arc — both handles must reference the same atomic.
+    a.store(42, std::sync::atomic::Ordering::Release);
+    assert_eq!(b.load(std::sync::atomic::Ordering::Acquire), 42);
+}

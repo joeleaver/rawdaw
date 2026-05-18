@@ -7,6 +7,7 @@
 
 use rinch::prelude::*;
 
+use crate::audio::AudioResources;
 use crate::fixture;
 use crate::parts::Icon;
 use crate::theme;
@@ -28,8 +29,6 @@ pub fn TopBar() -> NodeHandle {
 
     let project_name = p.name.to_string();
     let project_meta = format!("{} · {}", p.key, p.time_sig);
-    let playhead_bar = p.playhead_bar.to_string();
-    let playhead_beat = p.playhead_beat.to_string();
     let tempo = format!("{}.00", p.tempo);
 
     rsx! {
@@ -82,12 +81,19 @@ pub fn TopBar() -> NodeHandle {
                         bg0 = theme::BG0, line = theme::LINE,
                     ),
                     Tag { text: "Bar" }
+                    // Bar / beat readouts read `AudioResources::playhead_position()`
+                    // inside the rsx text expression — the `{|| ...}` closure
+                    // wrapper subscribes to the engine sample clock so the
+                    // values update whenever the audio thread publishes a new
+                    // block boundary.
                     span { style: "min-width: 14px; text-align: right;",
-                        {playhead_bar.clone()}
+                        {|| use_store::<AudioResources>().playhead_position().bar.to_string()}
                     }
                     span { style: "color: rgba(232,234,238,0.28);", "·" }
                     Tag { text: "Beat" }
-                    span { style: "min-width: 8px;", {playhead_beat.clone()} }
+                    span { style: "min-width: 8px;",
+                        {|| use_store::<AudioResources>().playhead_position().beat.to_string()}
+                    }
                 }
             }
 

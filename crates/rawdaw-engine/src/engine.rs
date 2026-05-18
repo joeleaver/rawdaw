@@ -23,6 +23,9 @@
 //! deterministically instead of silently dropping; an overflow is
 //! always a host-side bug or capacity-sizing miscalculation.
 
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+
 use rtrb::RingBuffer;
 
 use rawdaw_model::SampleTime;
@@ -153,5 +156,12 @@ impl Engine {
 
     pub fn graph(&self) -> &Graph {
         self.audio.graph()
+    }
+
+    /// Clone the shared sample-clock handle so the host can observe the
+    /// audio thread's transport position. Safe to call before or after
+    /// [`Self::split`]; the same atomic backs both halves.
+    pub fn sample_clock(&self) -> Arc<AtomicU64> {
+        self.audio.sample_clock()
     }
 }

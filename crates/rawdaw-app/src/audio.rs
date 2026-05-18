@@ -1,6 +1,6 @@
 //! Audio engine wiring for rawdaw-app.
 //!
-//! Phases E3–E4 of the engine-wiring milestone — at app launch we
+//! Phases E3–E5 of the engine-wiring milestone — at app launch we
 //!
 //! 1. probe the default cpal output device for its sample rate;
 //! 2. build a [`rawdaw_engine::Engine`] at that rate;
@@ -9,7 +9,11 @@
 //!    [`TrackRouting`] map, and push every [`BlockEvent`] into the
 //!    queue;
 //! 5. `engine.split()` into an [`AudioEngine`] + [`EngineHandle`], move
-//!    the audio side into a [`CpalDriver`], and start the stream.
+//!    the audio side into a [`CpalDriver`], and start the stream;
+//! 6. (Phase E5) clone the engine's `Arc<AtomicU64>` sample clock,
+//!    pair it with a UI-facing `Signal<u64>`, and spawn a background
+//!    poller that mirrors atomic → signal at ~60 Hz so the
+//!    arrangement playhead tracks the engine's transport position.
 //!
 //! After that the audio thread runs continuously, producing silence
 //! while the engine has no pending NoteOn events. Once phase E6 wires
@@ -31,6 +35,26 @@
 //! polls via [`AudioResources::next_stream_error`]. The audio thread
 //! never blocks: the channel's `Sender::send` is wait-free.
 //!
+//! ## Playhead polling thread (E5)
+//!
+//! This is a **known anti-pattern** noted in the engine-wiring plan: we
+//! poll an atomic from a background `std::thread` and `Signal::send`
+//! the value into the UI. The rinch framework may grow a native
+//! audio-thread → signal bridge later, at which point this can be
+//! replaced. Until then, the thread:
+//!
+//! - sleeps `PLAYHEAD_POLL_INTERVAL_MS` between reads (target ~60 Hz);
+//! - only dispatches a `Signal::send` when the atomic actually changed;
+//! - is owned by an `Rc<PlayheadPoller>` whose `Drop` flips a stop flag
+//!   and joins the thread, so the last [`AudioResources`] clone going
+//!   out of scope cleans up the poller.
+//!
+//! The poller is only attached by the public [`AudioResources::build`]
+//! entry; the test-facing [`AudioResources::build_from_project_and_rate`]
+//! leaves `_poller = None` because unit tests don't run inside the
+//! rinch runtime, so `Signal::send` from a background thread would
+//! panic without a registered cross-thread dispatcher.
+//!
 //! ## Node layout
 //!
 //! - `master_node = NodeId(0)` is a [`MixerNode`] with `tracks.len()`
@@ -40,7 +64,13 @@
 
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use rinch::prelude::Signal;
 
 use rawdaw_engine::cpal_driver::{CpalDriver, StreamError};
 use rawdaw_engine::{
@@ -50,6 +80,7 @@ use rawdaw_engine::{
 use rawdaw_model::fixtures::build_round1_project;
 use rawdaw_model::project::Project;
 use rawdaw_model::realize::realize;
+use rawdaw_model::tempo::TempoMap;
 
 /// Fallback engine sample rate used when no cpal output device can be
 /// probed. Matches the engine-side render tests so unit tests that
@@ -62,6 +93,14 @@ pub const FALLBACK_SAMPLE_RATE: u32 = 48_000;
 /// allocates scratch sized to this at construction.
 pub const MAX_BLOCK: usize = 256;
 
+/// Playhead poller sleep interval. ~60 Hz target — the smallest delay
+/// that still produces visually-smooth scrubbing without burning a
+/// core to update a single u64. Tuned in pairs with the engine's
+/// per-block publication: at 48 kHz / 256 frames per block the audio
+/// thread publishes the clock every ~5 ms, so 16 ms polling skips
+/// roughly three publications per visible update.
+const PLAYHEAD_POLL_INTERVAL_MS: u64 = 16;
+
 /// Shared host-side handle on the audio engine and its topology.
 ///
 /// Wrapped in `Rc<RefCell>` so the type satisfies the rinch
@@ -70,7 +109,7 @@ pub const MAX_BLOCK: usize = 256;
 /// audio thread is reached entirely through the rtrb SPSC queues
 /// that the handle's `push_command` / `push_event` methods drive.
 #[derive(Clone)]
-#[allow(dead_code)] // fields read by future phases (E5 playhead, E6 transport)
+#[allow(dead_code)] // fields read by future phases (E6 transport)
 pub struct AudioResources {
     handle: Rc<RefCell<EngineHandle>>,
     /// The cpal driver owns the running output stream. Held here for
@@ -92,25 +131,63 @@ pub struct AudioResources {
     /// Sample rate the engine was built with — either the cpal device's
     /// reported rate or [`FALLBACK_SAMPLE_RATE`] when probe failed.
     pub sample_rate: u32,
+    /// Engine sample clock — the absolute sample index at which the
+    /// audio thread will start processing the *next* block. Updated
+    /// with `Release` ordering at the end of every `process_block`.
+    /// Hosts can `load(Acquire)` from any thread; the polling thread
+    /// (when attached) mirrors this into [`Self::playhead_samples`].
+    pub sample_clock: Arc<AtomicU64>,
+    /// UI-facing reactive playhead position in samples. Components
+    /// read `.get()` inside rsx attribute closures to subscribe.
+    /// Starts at 0; the polling thread `Signal::send`s updates from
+    /// a background thread (rinch routes them to the main thread
+    /// via the registered cross-thread dispatcher).
+    pub playhead_samples: Signal<u64>,
+    /// Project tempo map cloned at build time. Used by the UI to
+    /// convert `playhead_samples` → bars/beats for display. Constant
+    /// today; the round-3 tempo-editor work will update this when the
+    /// host edits the project.
+    pub tempo_map: TempoMap,
+    /// Optional background poller. `Some` when [`Self::build`] was
+    /// called inside a rinch runtime; `None` for unit tests. Dropping
+    /// the last `Rc` clone stops the thread.
+    _poller: Option<Rc<PlayheadPoller>>,
 }
 
 impl AudioResources {
     /// Build the round-1 project's audio stack. Probes the cpal device,
     /// constructs the engine, installs the per-track sine graph, pushes
-    /// the realized events, opens the stream, and starts playback. See
-    /// the module doc for the failure-mode contract.
+    /// the realized events, opens the stream, and starts playback.
+    /// Attaches a background playhead poller so the UI's
+    /// [`Self::playhead_samples`] signal mirrors the engine's transport
+    /// position. See the module doc for the failure-mode contract.
+    ///
+    /// Must be called inside a rinch runtime — the poller's
+    /// `Signal::send` from a background thread requires the runtime's
+    /// cross-thread dispatcher to be registered. Tests that don't
+    /// initialize the runtime should call
+    /// [`Self::build_from_project_and_rate`] directly instead.
     pub fn build() -> Self {
         let sample_rate =
             CpalDriver::probe_default_sample_rate().unwrap_or(FALLBACK_SAMPLE_RATE);
         let (project, _keys) = build_round1_project();
-        Self::build_from_project_and_rate(&project, sample_rate)
+        let mut resources = Self::build_from_project_and_rate(&project, sample_rate);
+        resources._poller = Some(Rc::new(PlayheadPoller::spawn(
+            Arc::clone(&resources.sample_clock),
+            resources.playhead_samples,
+            PLAYHEAD_POLL_INTERVAL_MS,
+        )));
+        resources
     }
 
-    /// Build for a specific project at a specific sample rate. Used
-    /// directly by tests; production callers go through [`Self::build`].
+    /// Build for a specific project at a specific sample rate, *without*
+    /// the playhead polling thread. Used directly by tests (which run
+    /// outside the rinch runtime); production callers go through
+    /// [`Self::build`].
     pub fn build_from_project_and_rate(project: &Project, sample_rate: u32) -> Self {
         let mut engine = Engine::new(sample_rate, MAX_BLOCK);
         let (master, routing, initial_event_count) = configure_graph(&mut engine, project, sample_rate);
+        let sample_clock = engine.sample_clock();
         let (audio_engine, handle) = engine.split();
 
         let (err_tx, err_rx) = mpsc::channel::<String>();
@@ -146,6 +223,10 @@ impl AudioResources {
             routing: Rc::new(routing),
             initial_event_count,
             sample_rate,
+            sample_clock,
+            playhead_samples: Signal::new(0u64),
+            tempo_map: project.tempo_map.clone(),
+            _poller: None,
         }
     }
 
@@ -192,6 +273,46 @@ impl AudioResources {
         };
         driver.pause().map_err(|e| e.to_string())
     }
+
+    /// Current playhead position derived from [`Self::playhead_samples`]
+    /// and the project's tempo map. Reads the signal — callers inside
+    /// an rsx attribute closure will re-evaluate when the engine
+    /// publishes a new sample-clock value.
+    ///
+    /// The returned `bar` and `beat` are 1-indexed for display (the
+    /// project starts at "Bar 1 · Beat 1"). `bars_f64` is the raw
+    /// fractional bar count from `MusicalTime`; arrangement code uses
+    /// it for sub-bar percent positioning, the top-bar readout uses
+    /// `(bar, beat)`.
+    pub fn playhead_position(&self) -> PlayheadPosition {
+        let samples = self.playhead_samples.get();
+        let mt = self
+            .tempo_map
+            .sample_to_musical(rawdaw_model::SampleTime::samples(samples), self.sample_rate);
+        let beats_per_bar = self.tempo_map.beats_per_bar_at(rawdaw_model::MusicalTime::ZERO);
+        let total_beats = mt.as_beats_f64();
+        let bars_f64 = total_beats / beats_per_bar as f64;
+        let bar_idx = bars_f64.floor().max(0.0) as u32;
+        let beat_in_bar = (total_beats - (bar_idx as f64) * beats_per_bar as f64)
+            .floor()
+            .max(0.0) as u32;
+        PlayheadPosition {
+            bar: bar_idx + 1,
+            beat: beat_in_bar + 1,
+            bars_f64,
+        }
+    }
+}
+
+/// Reactive playhead position, derived from the engine sample clock.
+///
+/// See [`AudioResources::playhead_position`]. `bar` and `beat` are
+/// 1-indexed for display; `bars_f64` is the raw fractional position.
+#[derive(Debug, Clone, Copy)]
+pub struct PlayheadPosition {
+    pub bar: u32,
+    pub beat: u32,
+    pub bars_f64: f64,
 }
 
 fn configure_graph(
@@ -238,6 +359,67 @@ fn configure_graph(
         engine.push_event(ev);
     }
     (master_id, routing, count)
+}
+
+/// Background thread mirroring an `Arc<AtomicU64>` sample clock into a
+/// rinch `Signal<u64>` for reactive UI consumption. Wrapped in an `Rc`
+/// inside [`AudioResources`] so the last clone dropping out of scope
+/// stops the thread cleanly.
+///
+/// This is the explicit anti-pattern called out in the engine-wiring
+/// plan: until rinch grows a native audio-thread → signal bridge, the
+/// UI has to poll. Sleeping `PLAYHEAD_POLL_INTERVAL_MS` between reads
+/// caps wakeups at ~60 Hz and only emits a `Signal::send` when the
+/// atomic actually changed since the last read.
+struct PlayheadPoller {
+    stop: Arc<AtomicBool>,
+    join_handle: Option<JoinHandle<()>>,
+}
+
+impl PlayheadPoller {
+    fn spawn(clock: Arc<AtomicU64>, signal: Signal<u64>, interval_ms: u64) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = Arc::clone(&stop);
+        let join_handle = thread::Builder::new()
+            .name("rawdaw-playhead-poller".into())
+            .spawn(move || {
+                // u64::MAX is a "never seen" sentinel so the first
+                // successful read of any value — including 0 — emits a
+                // Signal::send. The signal itself starts at 0, so this
+                // does nothing on the steady state until the audio
+                // thread publishes a new clock value.
+                let mut last_seen: u64 = u64::MAX;
+                while !stop_for_thread.load(Ordering::Acquire) {
+                    let now = clock.load(Ordering::Acquire);
+                    if now != last_seen {
+                        last_seen = now;
+                        // `send` routes to the main thread via rinch's
+                        // registered dispatcher; required because this
+                        // thread is not the rinch main thread.
+                        signal.send(now);
+                    }
+                    thread::sleep(Duration::from_millis(interval_ms));
+                }
+            })
+            .expect("spawning rawdaw-playhead-poller thread must succeed");
+        Self {
+            stop,
+            join_handle: Some(join_handle),
+        }
+    }
+}
+
+impl Drop for PlayheadPoller {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.join_handle.take() {
+            // Worst case the thread sleeps PLAYHEAD_POLL_INTERVAL_MS
+            // before noticing — acceptable for app teardown. We do
+            // join (not detach) so the thread name doesn't leak
+            // beyond the AudioResources lifetime.
+            let _ = handle.join();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -306,5 +488,29 @@ mod tests {
         // at startup — errors only arrive in response to a running
         // stream's mishaps.
         assert!(resources.next_stream_error().is_none());
+    }
+
+    #[test]
+    fn sample_clock_starts_at_zero() {
+        let (project, _) = build_round1_project();
+        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+        assert_eq!(resources.sample_clock.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn tempo_map_matches_project() {
+        let (project, _) = build_round1_project();
+        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+        assert_eq!(resources.tempo_map, project.tempo_map);
+    }
+
+    #[test]
+    fn build_from_project_and_rate_does_not_spawn_poller() {
+        // Unit tests run outside the rinch runtime — spawning the
+        // poller would mean a future Signal::send panic. Guarantee
+        // that the test entry leaves the field None.
+        let (project, _) = build_round1_project();
+        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+        assert!(resources._poller.is_none());
     }
 }
