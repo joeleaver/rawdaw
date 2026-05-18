@@ -44,6 +44,14 @@ pub fn main_window() -> NodeHandle {
 /// row + bottom strip. Pulled out so the `match` above can keep both arms
 /// terse and so the section-editor mode doesn't pay for any of these
 /// regions' renders.
+///
+/// Selection is reactive: clicking a SectionBlock writes to
+/// `AppState::selected_idx`. The Arrangement reads it inline (per-block
+/// reactive style closures); the Inspector re-mounts on selection change
+/// via a `for sel in inspector_selection_keys()` keyed singleton — the
+/// whole inspector body depends on which section is selected, so a
+/// remount is cheaper than wiring fine-grained closures through every
+/// header / table cell.
 #[component]
 fn ArrangementSurface() -> NodeHandle {
     let row_style = "flex: 1; display: flex; min-height: 0;";
@@ -51,15 +59,27 @@ fn ArrangementSurface() -> NodeHandle {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
             div { style: {row_style},
                 Library { }
-                // Round 1 selection is hardcoded to "verse base at bar 5–8"
-                // (idx=1) so the inspector renders its populated state and
-                // the arrangement shows linked-highlight on the matching
-                // section blocks. Real click-driven selection is queued
-                // for after the round-2 port (engine wiring milestone).
-                Arrangement { selected_idx: Some(1usize) }
-                Inspector { idx: Some(1usize) }
+                Arrangement { }
+                for sel in inspector_selection_keys() {
+                    Inspector { key: sel.0, idx: sel.1 }
+                }
             }
             BottomStrip { }
         }
     }
+}
+
+/// Singleton iterator used by `ArrangementSurface` to force an Inspector
+/// re-mount on every selection change. Returns a 1-element vec of
+/// `(key, idx)` — `key` is the for-loop identity used by rsx
+/// reconciliation (`usize::MAX` stands in for `None`), and `idx` is the
+/// actual prop value passed into Inspector. When the user clicks a
+/// different SectionBlock, the key changes → rsx unmounts the old
+/// Inspector and mounts a new one with fresh content. Pulled out as a
+/// free function because the rsx `for` source must be `Fn() -> Vec<T>`
+/// callable.
+fn inspector_selection_keys() -> Vec<(usize, Option<usize>)> {
+    let app = use_store::<AppState>();
+    let sel = app.selected_idx.get();
+    vec![(sel.unwrap_or(usize::MAX), sel)]
 }

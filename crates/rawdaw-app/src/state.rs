@@ -40,7 +40,8 @@ pub enum EditorMode {
 }
 
 /// Shared app state. Holds a single `Signal<EditorMode>` so navigation
-/// changes propagate reactively to every component that reads it.
+/// changes propagate reactively to every component that reads it, plus
+/// the currently-selected arrangement-block index.
 ///
 /// `Copy` is intentional and load-bearing: `Signal` is `Copy` (per the
 /// rinch framework contract — never `.clone()` a Signal), and this
@@ -49,12 +50,18 @@ pub enum EditorMode {
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub editor_mode: Signal<EditorMode>,
+    /// Index into `fixture::round1().arrangement` of the currently
+    /// selected SectionRef. Round-1 boot value is `Some(1)`
+    /// (verse@bar5) so the inspector lands populated; users can change
+    /// it by clicking a SectionBlock in the arrangement.
+    pub selected_idx: Signal<Option<usize>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
             editor_mode: Signal::new(EditorMode::Arrangement),
+            selected_idx: Signal::new(Some(1usize)),
         }
     }
 
@@ -82,5 +89,11 @@ impl AppState {
                 variant: variant.into(),
             });
         }
+    }
+
+    /// Set the currently-selected SectionRef index. `None` clears the
+    /// selection (inspector goes to its empty state).
+    pub fn set_selected_idx(&self, idx: Option<usize>) {
+        self.selected_idx.set(idx);
     }
 }

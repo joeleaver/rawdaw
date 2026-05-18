@@ -486,7 +486,7 @@ B / C without restart.
 
 ---
 
-## Phase 8 — Visual parity + sweep
+## Phase 8 — Visual parity + sweep ✅ done
 
 **Goal.** Use the `rinch` MCP to compare the live app against the
 mockup PNGs side-by-side; close every gap that isn't an explicit
@@ -506,6 +506,38 @@ round-3 deferral.
   `--features cpal-driver` — both clean. Same discipline as round 1.
 
 **Done when.** Screenshots match. Project-status memory updated.
+
+**Deviations from the original plan.**
+- **Mockup is JSX, not PNG.** The `mockups/round-2/` directory ships
+  the section-editor as `section-editor.html` plus a `components/`
+  tree of JSX — there is no rendered ground-truth image to diff
+  against. Parity was verified by spec-reading (README decisions
+  1–24) + visual inspection of each artboard's screenshot, matching
+  every key UI element. No deltas found.
+- **File-size cap holding.** Top three rawdaw-app sources after
+  Phase 8: `regions/inspector/mod.rs` (566), `regions/arrangement.rs`
+  (~590 after this phase's selection wiring), `parts.rs` (476). All
+  under the 700-line cap. `parts.rs` should split into a
+  `components/` directory when it next grows; nothing else needs
+  splitting today.
+- **Round-1 selection-wiring punt closed.** The Phase 7 caveat
+  ("chorus can't be selected by clicking the chorus block") was the
+  natural side-quest for Phase 8. Added `AppState::selected_idx:
+  Signal<Option<usize>>` + `set_selected_idx`; `SectionBlock` gained
+  an `onclick` handler and its style closure now reads selection
+  reactively (the cell never re-mounts, just re-styles).
+  `RibbonCell`'s emphasized-fill / stripe / text-color also re-style
+  reactively. `Inspector` is force-remounted on selection change via
+  a `for sel in inspector_selection_keys()` keyed singleton in
+  `ArrangementSurface` — every text node in the inspector body
+  depends on which section is selected, and threading per-prop
+  reactivity through every header / table cell would have been a
+  much bigger restructure for the same observable behavior.
+- **Rinch closure-capture rule re-discovered.** Each `style:` /
+  `onclick:` in rsx becomes a separate `Fn` effect closure that
+  moves its captures, so any `String` used by two style expressions
+  needs an explicit `let foo_for_X = foo.clone()` per closure.
+  Documented inline in `RibbonCell`'s style block.
 
 ---
 

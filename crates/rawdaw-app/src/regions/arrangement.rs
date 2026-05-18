@@ -20,16 +20,28 @@ use rinch::prelude::*;
 
 use crate::fixture::{self, ChordEvent};
 use crate::parts::rgba;
+use crate::state::AppState;
 use crate::theme;
 
-#[component]
-pub fn Arrangement(selected_idx: Option<usize>) -> NodeHandle {
+/// Look up the section key of the currently-selected SectionRef. Reads
+/// `AppState::selected_idx` — when called inside an rsx style expression
+/// the rinch effect tracker wires the read into the surrounding closure
+/// and re-evaluates the style on selection changes.
+fn current_selected_section_key() -> String {
+    let app = use_store::<AppState>();
+    let Some(idx) = app.selected_idx.get() else {
+        return String::new();
+    };
     let r = fixture::round1();
-    let selected_section_key = selected_idx
-        .and_then(|i| r.arrangement.get(i))
+    r.arrangement
+        .get(idx)
         .map(|b| b.section_key.to_string())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
+#[component]
+pub fn Arrangement() -> NodeHandle {
+    let r = fixture::round1();
     let section_style = format!(
         "flex: 1; min-width: 0; display: flex; flex-direction: column; \
          background: {bg};",
@@ -40,14 +52,9 @@ pub fn Arrangement(selected_idx: Option<usize>) -> NodeHandle {
     rsx! {
         section { style: {section_style.clone()},
             Ruler { total_bars: r.total_bars, playhead_pct: playhead_pct }
-            ChordRibbon {
-                total_bars: r.total_bars,
-                selected_section_key: selected_section_key.clone(),
-            }
+            ChordRibbon { total_bars: r.total_bars }
             SectionLane {
                 total_bars: r.total_bars,
-                selected_idx: selected_idx,
-                selected_section_key: selected_section_key.clone(),
                 playhead_pct: playhead_pct,
             }
             LaneFiller { total_bars: r.total_bars, playhead_pct: playhead_pct }
@@ -139,13 +146,12 @@ fn BarLabel(bar: u32, total_bars: u32) -> NodeHandle {
 // ─── Chord-loop ribbon ────────────────────────────────────────────────────
 
 #[component]
-fn ChordRibbon(total_bars: u32, selected_section_key: String) -> NodeHandle {
+fn ChordRibbon(total_bars: u32) -> NodeHandle {
     let style = format!(
         "height: {h}px; flex: 0 0 {h}px; position: relative; \
          background: {bg}; border-bottom: 1px solid {line};",
         h = theme::H_RIBBON, bg = theme::BG1, line = theme::LINE,
     );
-    let sel_key = selected_section_key;
     rsx! {
         div { style: {style.clone()},
             for cell in build_ribbon_cells() {
@@ -157,7 +163,6 @@ fn ChordRibbon(total_bars: u32, selected_section_key: String) -> NodeHandle {
                     absolute: cell.absolute.to_string(),
                     color: cell.color.to_string(),
                     is_first_of_loop: cell.is_first_of_loop,
-                    is_emphasized: sel_key.as_str() == cell.section_key,
                     section_key: cell.section_key.to_string(),
                 }
             }
@@ -220,55 +225,87 @@ fn RibbonCell(
     absolute: String,
     color: String,
     is_first_of_loop: bool,
-    is_emphasized: bool,
     section_key: String,
 ) -> NodeHandle {
-    let _ = section_key; // identity for linked highlight comes from is_emphasized
     let left_pct = bar as f32 / total_bars as f32 * 100.0;
     let width_pct = 1.0 / total_bars as f32 * 100.0;
-    let bg = if is_emphasized {
-        rgba(color.as_str(), 0.10)
-    } else {
-        "transparent".to_string()
-    };
-    let style = format!(
+    let bar_style_base = format!(
         "position: absolute; left: {l}%; top: 0; width: {w}%; height: 100%; \
          border-right: 1px solid {line_soft}; \
          display: flex; flex-direction: column; \
          justify-content: center; align-items: center; \
-         padding-top: 3px; gap: 1px; background: {bg};",
+         padding-top: 3px; gap: 1px;",
         l = left_pct, w = width_pct, line_soft = theme::LINE_SOFT,
     );
-    let stripe_style = if is_first_of_loop {
-        format!(
-            "position: absolute; left: 0; top: 0; width: 2px; \
-             height: 100%; background: {col}; opacity: {opa};",
-            col = color, opa = if is_emphasized { 1.0 } else { 0.7 },
-        )
-    } else {
-        "display: none;".to_string()
-    };
-    let roman_color = if is_emphasized {
-        "rgba(232,234,238,0.96)".to_string()
-    } else {
-        "rgba(232,234,238,0.82)".to_string()
-    };
-    let roman_style = format!(
-        "font-family: inherit; font-feature-settings: \"tnum\" 1; \
-         font-weight: 600; font-size: 13.5px; letter-spacing: 0.6px; \
-         color: {roman_color}; line-height: 1;",
-    );
-    let abs_color = if is_emphasized { theme::TEXT1 } else { theme::TEXT2 };
-    let abs_style = format!(
-        "font-size: 9.5px; color: {abs_color}; \
-         font-feature-settings: \"tnum\" 1; letter-spacing: 0.2px; line-height: 1;",
-    );
+
+    // Each style: expression below becomes a separate `Fn` effect
+    // closure that moves its captures (same shape as variant_tabs.rs).
+    // Strings used by more than one closure need a per-closure clone.
+    // Every helper call reads `AppState::selected_idx`, so the macro's
+    // effect tracker re-runs each style on selection changes — the
+    // cell itself is never re-mounted.
+    let color_for_bg = color.clone();
+    let color_for_stripe = color.clone();
+    let section_key_for_bg = section_key.clone();
+    let section_key_for_stripe = section_key.clone();
+    let section_key_for_roman = section_key.clone();
+    let section_key_for_abs = section_key;
 
     rsx! {
-        div { style: {style.clone()},
-            span { style: {stripe_style.clone()} }
-            span { style: {roman_style.clone()}, {roman.clone()} }
-            div { style: {abs_style.clone()}, {absolute.clone()} }
+        div {
+            style: {
+                let emphasized = current_selected_section_key() == section_key_for_bg;
+                let bg = if emphasized {
+                    rgba(color_for_bg.as_str(), 0.10)
+                } else {
+                    "transparent".to_string()
+                };
+                format!("{} background: {};", bar_style_base, bg)
+            },
+            span {
+                style: {
+                    if !is_first_of_loop {
+                        "display: none;".to_string()
+                    } else {
+                        let emphasized = current_selected_section_key() == section_key_for_stripe;
+                        let opa = if emphasized { 1.0 } else { 0.7 };
+                        format!(
+                            "position: absolute; left: 0; top: 0; width: 2px; \
+                             height: 100%; background: {}; opacity: {};",
+                            color_for_stripe, opa,
+                        )
+                    }
+                },
+            }
+            span {
+                style: {
+                    let emphasized = current_selected_section_key() == section_key_for_roman;
+                    let roman_color = if emphasized {
+                        "rgba(232,234,238,0.96)"
+                    } else {
+                        "rgba(232,234,238,0.82)"
+                    };
+                    format!(
+                        "font-family: inherit; font-feature-settings: \"tnum\" 1; \
+                         font-weight: 600; font-size: 13.5px; letter-spacing: 0.6px; \
+                         color: {}; line-height: 1;",
+                        roman_color,
+                    )
+                },
+                {roman.clone()}
+            }
+            div {
+                style: {
+                    let emphasized = current_selected_section_key() == section_key_for_abs;
+                    let abs_color = if emphasized { theme::TEXT1 } else { theme::TEXT2 };
+                    format!(
+                        "font-size: 9.5px; color: {}; \
+                         font-feature-settings: \"tnum\" 1; letter-spacing: 0.2px; line-height: 1;",
+                        abs_color,
+                    )
+                },
+                {absolute.clone()}
+            }
         }
     }
 }
@@ -278,8 +315,6 @@ fn RibbonCell(
 #[component]
 fn SectionLane(
     total_bars: u32,
-    selected_idx: Option<usize>,
-    selected_section_key: String,
     playhead_pct: f32,
 ) -> NodeHandle {
     let style = format!(
@@ -310,11 +345,9 @@ fn SectionLane(
             }
             // Section blocks. The rsx for source must be `Fn() -> Vec<T>`
             // callable; chaining off the fixture's `'static` slice
-            // produces a fresh iterator each call.
-            //
-            // No `let` bindings are allowed inside the for body grammar,
-            // so selection comparisons inline directly into the prop
-            // assignments below.
+            // produces a fresh iterator each call. SectionBlock reads
+            // selection internally so we don't need to thread is_selected
+            // / is_linked props through here.
             for block in fixture::round1().arrangement.iter().cloned() {
                 SectionBlock {
                     key: block.idx,
@@ -324,9 +357,6 @@ fn SectionLane(
                     start_bar: block.start_bar,
                     bars: block.bars,
                     total_bars: total_bars,
-                    is_selected: Some(block.idx) == selected_idx,
-                    is_linked: Some(block.idx) != selected_idx
-                        && selected_section_key.as_str() == block.section_key,
                 }
             }
             // Playhead vertical line.
@@ -350,10 +380,8 @@ fn SectionBlock(
     start_bar: u32,
     bars: u32,
     total_bars: u32,
-    is_selected: bool,
-    is_linked: bool,
 ) -> NodeHandle {
-    let _ = idx; // identity comes from rsx `key:` above
+    let app = use_store::<AppState>();
     let r = fixture::round1();
     let Some(section) = fixture::section_by_key(&r, section_key.as_str()) else {
         return rsx! { span {} };
@@ -364,30 +392,18 @@ fn SectionBlock(
 
     let left_pct = start_bar as f32 / total_bars as f32 * 100.0;
     let width_pct = bars as f32 / total_bars as f32 * 100.0;
-    let bg = rgba(color.as_str(), if is_selected { 0.20 } else if is_linked { 0.14 } else { 0.10 });
-    let border = if is_selected {
-        format!("1px solid {}", color)
-    } else if is_linked {
-        format!("1px solid {}", rgba(color.as_str(), 0.55))
-    } else {
-        format!("1px solid {}", rgba(color.as_str(), 0.28))
-    };
-    let box_shadow = if is_selected {
-        format!("0 0 0 1px {}", rgba(color.as_str(), 0.30))
-    } else {
-        "none".to_string()
-    };
 
-    // Taffy doesn't accept mixed-unit `calc(N% - Mpx)` for layout, so
-    // plain percentages it is — small 1-px insets between adjacent
-    // blocks are round-2 polish anyway.
-    let block_style = format!(
+    // Layout positions / sizes are static; selection-dependent colors,
+    // borders and box-shadow re-evaluate inside the rsx style: closure
+    // each time `AppState::selected_idx` changes. The static fragment is
+    // built once here and concatenated with the reactive fragment
+    // inline.
+    let block_static = format!(
         "position: absolute; left: {l}%; top: 6px; \
          width: {w}%; bottom: 6px; \
-         background: {bg}; border: {border}; \
          border-left: 3px solid {col}; border-radius: 3px; \
-         cursor: pointer; box-shadow: {sh}; overflow: hidden;",
-        l = left_pct, w = width_pct, col = color, sh = box_shadow,
+         cursor: pointer; overflow: hidden;",
+        l = left_pct, w = width_pct, col = color,
     );
 
     // Internal bar guide path within the block (single SVG path).
@@ -422,8 +438,48 @@ fn SectionBlock(
     };
     let length_text = format!("{} {}", bars, if bars == 1 { "bar" } else { "bars" });
 
+    let color_for_style = color.clone();
+    let section_key_for_style = section_key.clone();
+    let _ = section_key; // remaining captures are inside this style closure
+
     rsx! {
-        div { style: {block_style.clone()},
+        div {
+            style: {
+                let sel = app.selected_idx.get();
+                let is_selected = sel == Some(idx);
+                let is_linked = !is_selected
+                    && sel
+                        .and_then(|i| fixture::round1().arrangement.get(i))
+                        .map(|b| b.section_key == section_key_for_style)
+                        .unwrap_or(false);
+                let bg = rgba(
+                    color_for_style.as_str(),
+                    if is_selected {
+                        0.20
+                    } else if is_linked {
+                        0.14
+                    } else {
+                        0.10
+                    },
+                );
+                let border = if is_selected {
+                    format!("1px solid {}", color_for_style)
+                } else if is_linked {
+                    format!("1px solid {}", rgba(color_for_style.as_str(), 0.55))
+                } else {
+                    format!("1px solid {}", rgba(color_for_style.as_str(), 0.28))
+                };
+                let box_shadow = if is_selected {
+                    format!("0 0 0 1px {}", rgba(color_for_style.as_str(), 0.30))
+                } else {
+                    "none".to_string()
+                };
+                format!(
+                    "{block_static} background: {bg}; border: {border}; \
+                     box-shadow: {box_shadow};"
+                )
+            },
+            onclick: move || app.set_selected_idx(Some(idx)),
             svg {
                 viewBox: format!("0 0 {bars_str} 100"),
                 preserveAspectRatio: "none",
