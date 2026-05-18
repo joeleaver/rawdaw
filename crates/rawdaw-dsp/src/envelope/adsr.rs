@@ -141,8 +141,18 @@ impl Adsr {
             AdsrStage::Decay => {
                 self.level += self.delta_per_sample;
                 if self.level <= self.params.sustain_level {
-                    self.level = self.params.sustain_level;
-                    self.stage = AdsrStage::Sustain;
+                    // Auto-Idle when the patch has no sustain — a
+                    // `sustain_level == 0` ADSR becomes a one-shot AD
+                    // envelope, which is what drum patches want
+                    // (NoteOff is a no-op; the voice decays and
+                    // releases the slot when the level hits zero).
+                    if self.params.sustain_level <= 0.0 {
+                        self.level = 0.0;
+                        self.stage = AdsrStage::Idle;
+                    } else {
+                        self.level = self.params.sustain_level;
+                        self.stage = AdsrStage::Sustain;
+                    }
                     self.delta_per_sample = 0.0;
                 }
             }
@@ -344,6 +354,27 @@ mod tests {
             "retrigger should resume from current level: was {mid_release}, became {just_retrigger}",
         );
         assert_eq!(e.stage(), AdsrStage::Attack);
+    }
+
+    #[test]
+    fn sustain_zero_makes_one_shot_ad_envelope() {
+        // Drum patches use sustain_level = 0 to get a one-shot
+        // attack-decay shape: the envelope plays Attack → Decay →
+        // Idle automatically, no NoteOff required.
+        let mut e = fresh(AdsrParams {
+            attack_s: 0.001,
+            decay_s: 0.010,
+            sustain_level: 0.0,
+            release_s: 0.020,
+        });
+        e.note_on();
+        // 1ms attack + 10ms decay = 11ms = ~528 samples at 48 kHz.
+        // Run with a generous margin and confirm the env auto-Idles.
+        for _ in 0..1000 {
+            e.tick();
+        }
+        assert_eq!(e.stage(), AdsrStage::Idle);
+        assert!(e.is_idle());
     }
 
     #[test]

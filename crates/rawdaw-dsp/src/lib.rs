@@ -29,11 +29,13 @@
 pub mod envelope;
 pub mod filter;
 pub mod lfo;
+pub mod noise;
 pub mod oscillator;
 pub mod voicing;
 
-pub use envelope::{Adsr, AdsrParams, AdsrStage};
-pub use filter::SvfLowpass;
+pub use envelope::{Adsr, AdsrParams, AdsrStage, PitchEnvelope};
+pub use filter::{SvfHighpass, SvfLowpass};
 pub use lfo::SineLfo;
+pub use noise::NoiseSource;
 pub use oscillator::{Wavetable, WavetableOsc, TABLE_LEN};
 pub use voicing::{Voice, VoicePool};
