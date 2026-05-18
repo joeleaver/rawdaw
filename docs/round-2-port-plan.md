@@ -440,7 +440,7 @@ editing.
 
 ---
 
-## Phase 7 — Wire it all up
+## Phase 7 — Wire it all up ✅ done
 
 **Goal.** Static surfaces are done; connect navigation and variant
 switching.
@@ -460,6 +460,29 @@ switching.
 switching from `base` to `stripped` and back, returning via Done,
 opening chorus — all work and produce visuals matching artboards A /
 B / C without restart.
+
+**Deviations from the original plan.**
+- **Caught a Phase-4 regression during verification.** `StripePaper`
+  declared `children: &[NodeHandle]` but never appended them — the
+  comment claimed `#[component]` auto-appends, which is false. The
+  bug silently emptied the round-1 inspector header *and* every
+  section-editor activation cell (only the colored stripes rendered).
+  Fix: capture the rsx root and `append_child` each child explicitly,
+  matching `rinch-components`'s manual `impl Component` pattern.
+- **Arrangement-click selection is still out of scope.** Phase 7's
+  four wiring steps (Open-in-editor, tab click, Done, default-variant
+  placement) are all done. The Done-when's "opening chorus" branch
+  was verified by temporarily flipping `app.rs`'s hardcoded
+  `selected_idx` from `Some(1)` (verse@bar5) to `Some(4)` (chorus@bar16)
+  to drive the Open-in-editor flow into the chorus surface, then
+  reverted. Real selection wiring is still post-round-2 (the
+  engine-wiring milestone), as the round-1 follow-ups list called
+  out — chorus can't actually be selected by clicking the chorus
+  block today.
+- **No other regressions found.** Verse base, verse stripped (with
+  `↳ base` meta markers + bass/drums silenced + lead replaced + bar-4
+  silent sub-range on lead), and chorus base (single tab, two-iteration
+  chord-loop strip, drums fill at bar 8) all match the artboards.
 
 ---
 
