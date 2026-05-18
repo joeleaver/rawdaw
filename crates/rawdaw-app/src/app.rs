@@ -5,7 +5,9 @@
 //! arrangement view and the round-2 section editor based on
 //! `state::EditorMode`. The top bar persists across both modes.
 
+use rinch::core::events::set_keyboard_interceptor;
 use rinch::prelude::*;
+use rawdaw_engine::Transport;
 
 use crate::audio::AudioResources;
 use crate::regions::{Arrangement, BottomStrip, Inspector, Library, TopBar};
@@ -17,12 +19,33 @@ use crate::theme;
 pub fn main_window() -> NodeHandle {
     // Install the shared stores once at the top of the tree. Every
     // nested component reaches AppState via `use_store::<AppState>()`;
-    // audio resources are installed alongside so future phases (E5
-    // playhead, E6 transport) can consume them from any handler. For
-    // E3 nothing reads `AudioResources` yet — the build runs to arm
-    // the engine.
+    // audio resources are installed alongside so handlers (E6
+    // transport, future MIDI) can consume them from any closure.
     let app = create_store(AppState::new());
     let _audio = create_store(AudioResources::build());
+
+    // Global Space → Play/Pause shortcut. Rinch's keyboard interceptor
+    // is a global singleton — only one can be active at a time — so
+    // we install it once here at app startup. Returning `false` for
+    // every key except Space lets rinch's normal handling continue
+    // (text input focus, contenteditable, etc.); a future text-input
+    // field would need to coordinate with this interceptor if it
+    // wants to consume Space.
+    set_keyboard_interceptor(|data| {
+        if data.key == "Space" && !data.ctrl && !data.alt && !data.meta {
+            let audio = use_store::<AudioResources>();
+            // Read the audio-thread atomic here, not the UI signal —
+            // we want a no-rinch-effect-tracking peek (the interceptor
+            // closure isn't inside any reactive context).
+            let _ = if audio.transport.get() == Transport::Playing {
+                audio.pause()
+            } else {
+                audio.play()
+            };
+            return true;
+        }
+        false
+    });
 
     let style = format!(
         "width: 100%; height: 100%; \

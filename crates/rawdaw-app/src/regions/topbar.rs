@@ -73,17 +73,28 @@ pub fn TopBar() -> NodeHandle {
                         let _ = audio.stop();
                     },
                 }
-                TransportBtn {
-                    glyph: "play",
-                    title: "Play / Pause",
-                    primary: true,
-                    onclick: move || {
-                        let audio = use_store::<AudioResources>();
-                        let _ = if audio.transport.get() == rawdaw_engine::Transport::Playing {
-                            audio.pause()
-                        } else {
-                            audio.play()
-                        };
+                // Reactive Play/Pause glyph. rsx `match` is auto-tracked
+                // (rinch Rule 14) IF the scrutinee reads a `Signal` —
+                // atomic loads aren't subscribed by the reactivity
+                // tracker. We read `transport_state: Signal<Transport>`
+                // here (the UI-facing mirror), which the play/pause/stop
+                // methods keep in lockstep with the audio-thread atomic.
+                match use_store::<AudioResources>().transport_state.get() {
+                    rawdaw_engine::Transport::Playing => TransportBtn {
+                        glyph: "pause",
+                        title: "Pause (Space)",
+                        primary: true,
+                        onclick: move || {
+                            let _ = use_store::<AudioResources>().pause();
+                        },
+                    },
+                    _ => TransportBtn {
+                        glyph: "play",
+                        title: "Play (Space)",
+                        primary: true,
+                        onclick: move || {
+                            let _ = use_store::<AudioResources>().play();
+                        },
                     },
                 }
                 TransportBtn {

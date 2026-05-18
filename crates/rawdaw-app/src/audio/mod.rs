@@ -62,15 +62,17 @@
 //! - Per track `i`, the sine instrument is `NodeId(i + 1)`. Its single
 //!   stereo output port (port `0`) is wired to mixer input port `i`.
 
+mod poller;
+
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use rinch::prelude::Signal;
+
+use poller::PlayheadPoller;
 
 use rawdaw_engine::cpal_driver::{CpalDriver, StreamError};
 use rawdaw_engine::{
@@ -152,6 +154,13 @@ pub struct AudioResources {
     /// writes via [`Self::play`] / [`Self::pause`] / [`Self::stop`];
     /// the audio thread reads at the top of every `process_block`.
     pub transport: TransportHandle,
+    /// UI-facing reactive mirror of [`Self::transport`]. Updated by
+    /// the public play/pause/stop methods alongside the atomic. The
+    /// rinch reactivity tracker only subscribes to `Signal` reads,
+    /// not atomic loads — so any rsx attribute closure or `match`
+    /// scrutinee that needs to re-render on transport changes must
+    /// read this signal, not the [`TransportHandle`].
+    pub transport_state: Signal<Transport>,
     /// Cached realized events. Pushed at build (E3) and re-pushed on
     /// every Stop → Play transition: the engine drains the event
     /// queue when entering Stopped, so a clean replay needs the host
@@ -241,6 +250,7 @@ impl AudioResources {
             playhead_samples: Signal::new(0u64),
             tempo_map: project.tempo_map.clone(),
             transport,
+            transport_state: Signal::new(Transport::default()),
             realized_events: Rc::new(realized_events),
             _poller: None,
         }
@@ -285,7 +295,7 @@ impl AudioResources {
         if self.transport.get() == Transport::Stopped {
             self.rearm_events()?;
         }
-        self.transport.set(Transport::Playing);
+        self.set_transport(Transport::Playing);
         let Some(driver) = self.driver.as_ref() else {
             return Ok(());
         };
@@ -300,7 +310,7 @@ impl AudioResources {
     /// sample clock. Pressing Play later resumes from the frozen
     /// position.
     pub fn pause(&self) -> Result<(), String> {
-        self.transport.set(Transport::Paused);
+        self.set_transport(Transport::Paused);
         Ok(())
     }
 
@@ -312,8 +322,17 @@ impl AudioResources {
     /// atomic. Re-arming on the next [`Self::play`] handles the
     /// "play after stop" case.
     pub fn stop(&self) -> Result<(), String> {
-        self.transport.set(Transport::Stopped);
+        self.set_transport(Transport::Stopped);
         Ok(())
+    }
+
+    /// Write both the audio-thread atomic and the UI signal in one
+    /// place. Keeps the two views of transport in lockstep so the
+    /// reactive Play/Pause glyph (and any future transport-aware UI)
+    /// never disagrees with what the audio thread is actually doing.
+    fn set_transport(&self, state: Transport) {
+        self.transport.set(state);
+        self.transport_state.set(state);
     }
 
     /// Push every cached realized event back into the engine's event
@@ -417,67 +436,6 @@ fn configure_graph(
     (master_id, routing, block_events)
 }
 
-/// Background thread mirroring an `Arc<AtomicU64>` sample clock into a
-/// rinch `Signal<u64>` for reactive UI consumption. Wrapped in an `Rc`
-/// inside [`AudioResources`] so the last clone dropping out of scope
-/// stops the thread cleanly.
-///
-/// This is the explicit anti-pattern called out in the engine-wiring
-/// plan: until rinch grows a native audio-thread → signal bridge, the
-/// UI has to poll. Sleeping `PLAYHEAD_POLL_INTERVAL_MS` between reads
-/// caps wakeups at ~60 Hz and only emits a `Signal::send` when the
-/// atomic actually changed since the last read.
-struct PlayheadPoller {
-    stop: Arc<AtomicBool>,
-    join_handle: Option<JoinHandle<()>>,
-}
-
-impl PlayheadPoller {
-    fn spawn(clock: Arc<AtomicU64>, signal: Signal<u64>, interval_ms: u64) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_for_thread = Arc::clone(&stop);
-        let join_handle = thread::Builder::new()
-            .name("rawdaw-playhead-poller".into())
-            .spawn(move || {
-                // u64::MAX is a "never seen" sentinel so the first
-                // successful read of any value — including 0 — emits a
-                // Signal::send. The signal itself starts at 0, so this
-                // does nothing on the steady state until the audio
-                // thread publishes a new clock value.
-                let mut last_seen: u64 = u64::MAX;
-                while !stop_for_thread.load(Ordering::Acquire) {
-                    let now = clock.load(Ordering::Acquire);
-                    if now != last_seen {
-                        last_seen = now;
-                        // `send` routes to the main thread via rinch's
-                        // registered dispatcher; required because this
-                        // thread is not the rinch main thread.
-                        signal.send(now);
-                    }
-                    thread::sleep(Duration::from_millis(interval_ms));
-                }
-            })
-            .expect("spawning rawdaw-playhead-poller thread must succeed");
-        Self {
-            stop,
-            join_handle: Some(join_handle),
-        }
-    }
-}
-
-impl Drop for PlayheadPoller {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(handle) = self.join_handle.take() {
-            // Worst case the thread sleeps PLAYHEAD_POLL_INTERVAL_MS
-            // before noticing — acceptable for app teardown. We do
-            // join (not detach) so the thread name doesn't leak
-            // beyond the AudioResources lifetime.
-            let _ = handle.join();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,7 +508,12 @@ mod tests {
     fn sample_clock_starts_at_zero() {
         let (project, _) = build_round1_project();
         let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        assert_eq!(resources.sample_clock.load(Ordering::Acquire), 0);
+        assert_eq!(
+            resources
+                .sample_clock
+                .load(std::sync::atomic::Ordering::Acquire),
+            0,
+        );
     }
 
     #[test]
