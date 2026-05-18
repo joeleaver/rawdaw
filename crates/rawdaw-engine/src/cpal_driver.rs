@@ -195,8 +195,8 @@ where
         .build_output_stream::<f32, _, _>(
             config,
             move |out: &mut [f32], _info| {
-                let frames = (out.len() / device_channels).min(max_block);
-                if frames == 0 {
+                let total_frames = out.len() / device_channels;
+                if total_frames == 0 {
                     return;
                 }
 
@@ -209,39 +209,59 @@ where
                 if matches!(state, Transport::Stopped) {
                     absolute_time = 0;
                 }
+                let playing = matches!(state, Transport::Playing);
 
-                // Zero the engine scratch's active region for both channels.
-                for ch in 0..2 {
-                    let start = ch * max_block;
-                    for s in scratch[start..start + frames].iter_mut() {
-                        *s = 0.0;
+                // cpal's per-callback buffer can be larger than the
+                // engine's `max_block_size` (pulse typically asks for
+                // 1024+ frames; max_block_size is 256). Loop until we
+                // fill `out`, calling `process_block` once per
+                // sub-block so the engine never sees more than
+                // `max_block` frames at a time and the back of `out`
+                // never plays stale data.
+                let mut frames_done = 0usize;
+                while frames_done < total_frames {
+                    let this_block = (total_frames - frames_done).min(max_block);
+
+                    // Zero the engine scratch's active region for both channels.
+                    for ch in 0..2 {
+                        let start = ch * max_block;
+                        for s in scratch[start..start + this_block].iter_mut() {
+                            *s = 0.0;
+                        }
                     }
-                }
 
-                let buf = BufferMut::new(&mut scratch, 2, frames, max_block);
-                let ctx = ProcessContext {
-                    sample_rate,
-                    block_size: frames,
-                    absolute_time_samples: absolute_time,
-                    musical_time: MusicalTime::ZERO,
-                    bpm: 120.0,
-                    playing: matches!(state, Transport::Playing),
-                };
-                audio_engine.process_block(master, buf, ctx);
+                    let buf = BufferMut::new(&mut scratch, 2, this_block, max_block);
+                    let ctx = ProcessContext {
+                        sample_rate,
+                        block_size: this_block,
+                        absolute_time_samples: absolute_time,
+                        musical_time: MusicalTime::ZERO,
+                        bpm: 120.0,
+                        playing,
+                    };
+                    audio_engine.process_block(master, buf, ctx);
 
-                interleave_stereo_into_device(
-                    &scratch,
-                    max_block,
-                    frames,
-                    device_channels,
-                    out,
-                );
+                    // Interleave into the correct slice of `out`. We
+                    // build a temporary sub-slice rather than letting
+                    // `interleave_stereo_into_device` index from zero,
+                    // so the function stays simple.
+                    let out_start = frames_done * device_channels;
+                    let out_end = out_start + this_block * device_channels;
+                    interleave_stereo_into_device(
+                        &scratch,
+                        max_block,
+                        this_block,
+                        device_channels,
+                        &mut out[out_start..out_end],
+                    );
 
-                // Only advance the driver's wall clock while Playing.
-                // Paused freezes it; Stopped was reset above and stays
-                // at 0 until the next state change.
-                if matches!(state, Transport::Playing) {
-                    absolute_time = absolute_time.saturating_add(frames as u64);
+                    // Advance the driver's wall clock only while Playing.
+                    // Paused freezes it; Stopped was reset above and stays
+                    // at 0 until the next state change.
+                    if playing {
+                        absolute_time = absolute_time.saturating_add(this_block as u64);
+                    }
+                    frames_done += this_block;
                 }
             },
             error_handler,
