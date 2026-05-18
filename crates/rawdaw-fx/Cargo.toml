@@ -1,0 +1,20 @@
+[package]
+name = "rawdaw-fx"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# FX nodes are AudioNode implementations; they need the engine's
+# trait + port types.
+rawdaw-engine = { path = "../rawdaw-engine" }
+
+[dev-dependencies]
+# `ProcessContext` carries a `MusicalTime` field; tests fabricate
+# contexts so they need the model crate's type.
+rawdaw-model = { path = "../rawdaw-model" }

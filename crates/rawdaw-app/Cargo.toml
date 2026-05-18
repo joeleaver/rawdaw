@@ -29,3 +29,5 @@ rawdaw-model = { path = "../rawdaw-model", features = ["fixtures"] }
 # uses this instead of the sine placeholder; bass / drums / pad still
 # get the sine until their domain-specific synths land.
 rawdaw-synth-wavetable = { path = "../rawdaw-synth-wavetable" }
+# Master-output gain attenuator + future FX nodes.
+rawdaw-fx = { path = "../rawdaw-fx" }

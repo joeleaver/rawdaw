@@ -3058,6 +3058,7 @@ name = "rawdaw-app"
 version = "0.0.0"
 dependencies = [
  "rawdaw-engine",
+ "rawdaw-fx",
  "rawdaw-model",
  "rawdaw-synth-wavetable",
  "rinch",
@@ -3074,6 +3075,14 @@ dependencies = [
  "cpal",
  "rawdaw-model",
  "rtrb",
+]
+
+[[package]]
+name = "rawdaw-fx"
+version = "0.0.0"
+dependencies = [
+ "rawdaw-engine",
+ "rawdaw-model",
 ]
 
 [[package]]

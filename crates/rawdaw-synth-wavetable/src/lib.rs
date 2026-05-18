@@ -242,8 +242,15 @@ fn note_to_hz(note: u8) -> f32 {
     A4_HZ * 2.0_f32.powf((note as f32 - A4_NOTE) / 12.0)
 }
 
+/// Per-voice headroom: each voice peaks at `PER_VOICE_HEADROOM` times
+/// the velocity-normalized amplitude. Three full-velocity voices
+/// summed still leave ~0.4 of headroom under the master GainNode,
+/// preventing pre-clip in the mixer. v1 should replace this with a
+/// proper voice-level VCA and a soft-clipper at the master.
+const PER_VOICE_HEADROOM: f32 = 0.5;
+
 fn u16_velocity_to_amplitude(v: U16Velocity) -> f32 {
-    v.get() as f32 / u16::MAX as f32
+    (v.get() as f32 / u16::MAX as f32) * PER_VOICE_HEADROOM
 }
 
 #[cfg(test)]

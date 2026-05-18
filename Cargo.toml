@@ -4,6 +4,7 @@ members = [
     "crates/rawdaw-app",
     "crates/rawdaw-dsp",
     "crates/rawdaw-engine",
+    "crates/rawdaw-fx",
     "crates/rawdaw-model",
     "crates/rawdaw-synth-wavetable",
 ]

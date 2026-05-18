@@ -80,11 +80,12 @@ use rawdaw_engine::{
     translate_events, BlockEvent, Edge, Engine, EngineHandle, GraphCommand, MixerNode, NodeId,
     NodePort, SineNode, TrackRouting, Transport, TransportHandle,
 };
+use rawdaw_fx::GainNode;
 use rawdaw_model::fixtures::build_round1_project;
 use rawdaw_model::project::Project;
 use rawdaw_model::realize::realize;
 use rawdaw_model::tempo::TempoMap;
-use rawdaw_model::track::{Role, TrackKind};
+use rawdaw_model::track::TrackKind;
 use rawdaw_synth_wavetable::WavetableSynthNode;
 
 /// Fallback engine sample rate used when no cpal output device can be
@@ -97,6 +98,13 @@ pub const FALLBACK_SAMPLE_RATE: u32 = 48_000;
 /// block sizes (128–1024 typical) fit under this, and the engine
 /// allocates scratch sized to this at construction.
 pub const MAX_BLOCK: usize = 256;
+
+/// Master output gain. Roughly -12 dB. Multi-voice synth chords +
+/// the still-sine drum bursts comfortably exceed unity at the
+/// mixer; this gives the cpal device clean headroom without a
+/// soft-clipper. Replace with a real master-channel strip + a
+/// soft-clipper once `rawdaw-fx` grows more nodes.
+const MASTER_GAIN: f32 = 0.25;
 
 /// Playhead poller sleep interval. ~60 Hz target — the smallest delay
 /// that still produces visually-smooth scrubbing without burning a
@@ -400,27 +408,36 @@ fn configure_graph(
     sample_rate: u32,
 ) -> (NodeId, TrackRouting, Vec<BlockEvent>) {
     let track_count = project.tracks.len();
-    let master_id = NodeId::new(0);
+    // Graph layout:
+    //   NodeId(0)         — MixerNode (sums all instrument outputs).
+    //   NodeId(1..=N)     — per-track instrument nodes.
+    //   NodeId(N+1)       — master GainNode. cpal reads from here.
+    // The mixer is no longer the master itself; the gain node sits
+    // between mixer and output so multi-voice chords don't pre-clip.
+    let mixer_id = NodeId::new(0);
+    let master_id = NodeId::new((track_count + 1) as u32);
     let mut routing = TrackRouting::new();
 
-    // One master + one instrument per track + one Connect per track,
-    // batched so the engine recomputes topo order once after the
-    // whole reconfiguration.
+    // One mixer + one instrument per track + one Connect per track +
+    // master GainNode + Connect mixer → master. Batched so the
+    // engine recomputes topo order once after the whole
+    // reconfiguration.
     //
-    // Per-track instrument picking is a stub for the round-3 instrument
-    // assignment work: for now, the Melodic role gets the v0 wavetable
-    // synth; everything else stays on the sine placeholder. As more
-    // synths land (physical / drum / synth-v0 polish), the match grows.
-    let mut commands: Vec<GraphCommand> = Vec::with_capacity(2 * track_count + 1);
+    // Per-track instrument picking is a stub for the round-3
+    // instrument-assignment UI. For now: every Pitched track (any
+    // role) plays through the v0 wavetable synth so the lead-line
+    // change is obvious in the mix; Drum tracks stay on the sine
+    // placeholder until the drum-specific synth lands.
+    let mut commands: Vec<GraphCommand> = Vec::with_capacity(2 * track_count + 3);
     commands.push(GraphCommand::AddNode {
-        id: master_id,
+        id: mixer_id,
         node: Box::new(MixerNode::new(track_count)),
     });
     for (i, track) in project.tracks.iter().enumerate() {
         let instrument_id = NodeId::new((i + 1) as u32);
         let node: Box<dyn AudioNode> = match &track.kind {
-            TrackKind::Pitched { role: Role::Melodic } => Box::new(WavetableSynthNode::new()),
-            _ => Box::new(SineNode::new()),
+            TrackKind::Pitched { .. } => Box::new(WavetableSynthNode::new()),
+            TrackKind::Drum { .. } => Box::new(SineNode::new()),
         };
         commands.push(GraphCommand::AddNode {
             id: instrument_id,
@@ -429,11 +446,22 @@ fn configure_graph(
         commands.push(GraphCommand::Connect {
             edge: Edge {
                 from: NodePort::new(instrument_id, 0),
-                to: NodePort::new(master_id, i as u8),
+                to: NodePort::new(mixer_id, i as u8),
             },
         });
         routing.insert(track.id, instrument_id);
     }
+    // Master GainNode after the mixer.
+    commands.push(GraphCommand::AddNode {
+        id: master_id,
+        node: Box::new(GainNode::new(MASTER_GAIN)),
+    });
+    commands.push(GraphCommand::Connect {
+        edge: Edge {
+            from: NodePort::new(mixer_id, 0),
+            to: NodePort::new(master_id, 0),
+        },
+    });
     engine.push_command(GraphCommand::Batch(commands));
 
     // Realize → translate → push events. `translate_events` errors if
@@ -483,14 +511,19 @@ mod tests {
     }
 
     #[test]
-    fn master_is_node_zero_and_other_nodes_follow() {
+    fn node_layout_has_mixer_then_instruments_then_master_gain() {
         let (project, _) = build_round1_project();
         let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        assert_eq!(resources.master, NodeId::new(0));
-        let mut sine_ids: Vec<NodeId> = resources.routing.values().copied().collect();
-        sine_ids.sort_by_key(|n| n.get());
-        let expected: Vec<NodeId> = (1..=sine_ids.len() as u32).map(NodeId::new).collect();
-        assert_eq!(sine_ids, expected);
+        let n = project.tracks.len();
+        // Instrument NodeIds are 1..=n.
+        let mut instrument_ids: Vec<NodeId> = resources.routing.values().copied().collect();
+        instrument_ids.sort_by_key(|n| n.get());
+        let expected: Vec<NodeId> = (1..=n as u32).map(NodeId::new).collect();
+        assert_eq!(instrument_ids, expected);
+        // Mixer sits at NodeId(0) (not in routing — it's the bus, not
+        // an instrument), and the master GainNode sits at NodeId(n+1)
+        // and is the cpal output read.
+        assert_eq!(resources.master, NodeId::new((n + 1) as u32));
     }
 
     #[test]
