@@ -97,16 +97,35 @@ impl<V: Voice> VoicePool<V> {
         self.ages[idx] = self.age_counter;
     }
 
-    /// Dispatch a MIDI note-off. Matches by MIDI note: the first
-    /// active voice whose `note()` equals `note` receives the
-    /// release. If no voice matches, the event is silently dropped —
-    /// this mirrors the existing `SineNode` semantics and matches
-    /// MIDI's "stray note-off" tolerance.
+    /// Dispatch a MIDI note-off to **every** active voice with a
+    /// matching MIDI note.
+    ///
+    /// Why "every," not "first": a voice in its Release stage is
+    /// still `is_active()` (the amp envelope hasn't reached Idle
+    /// yet — Release is the last 100–1000 ms of any patch with
+    /// a non-zero `release_s`). If the user plays the same note
+    /// twice quickly, the second NoteOn allocates a *new* slot
+    /// while the first voice is still tail-releasing. When the
+    /// matching NoteOff arrives, returning after the first match
+    /// would hit the already-releasing voice (a no-op, since
+    /// [`Adsr::note_off`] only transitions from non-Idle stages)
+    /// and orphan the second voice in Sustain forever.
+    ///
+    /// Releasing every matching voice is robust to:
+    /// - rapid same-note retrigger with overlapping release tails;
+    /// - keyboards that send multiple NoteOns for one key press;
+    /// - the rare "release all stuck instances of this note" gesture.
+    ///
+    /// [`Adsr::note_off`] is idempotent on a Release-stage voice,
+    /// so re-releasing a voice that's already on its way out has
+    /// no audible effect.
+    ///
+    /// Stray NoteOffs for notes that aren't playing are silently
+    /// ignored (no matches → no-op), matching MIDI tolerance.
     pub fn note_off(&mut self, note: u8) {
         for v in self.voices.iter_mut() {
             if v.is_active() && v.note() == note {
                 v.note_off();
-                return;
             }
         }
     }
@@ -242,5 +261,103 @@ mod tests {
     #[should_panic(expected = "polyphony must be ≥ 1")]
     fn zero_polyphony_panics() {
         let _ = VoicePool::new(0, TestVoice::new);
+    }
+
+    /// Voice that models a release tail: `note_off` doesn't immediately
+    /// flip `is_active` to false — it records that release was
+    /// requested. A subsequent `finish_release` simulates the
+    /// envelope decaying to Idle. This mirrors the real
+    /// `WavetableVoice` where `is_active` returns true for the entire
+    /// Release stage.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct ReleasingVoice {
+        note: u8,
+        active: bool,
+        releasing: bool,
+    }
+
+    impl ReleasingVoice {
+        fn new() -> Self {
+            Self {
+                note: 0,
+                active: false,
+                releasing: false,
+            }
+        }
+
+        fn finish_release(&mut self) {
+            if self.releasing {
+                self.active = false;
+                self.releasing = false;
+            }
+        }
+    }
+
+    impl Voice for ReleasingVoice {
+        fn note(&self) -> u8 {
+            self.note
+        }
+        fn is_active(&self) -> bool {
+            self.active
+        }
+        fn note_on(&mut self, note: u8, _velocity: f32) {
+            self.note = note;
+            self.active = true;
+            self.releasing = false;
+        }
+        fn note_off(&mut self) {
+            // Voice stays active until `finish_release` simulates the
+            // envelope reaching Idle.
+            self.releasing = true;
+        }
+    }
+
+    #[test]
+    fn note_off_releases_all_matching_voices_even_when_one_is_already_in_release() {
+        // K1.fix2 regression: with the old "first match + return"
+        // logic, a NoteOff on a note that has multiple active voices
+        // (because an earlier voice's release tail overlaps a fresh
+        // NoteOn) would only release the older voice — leaving the
+        // newer one stuck in Sustain forever.
+        //
+        // The trace from Joe's KeyLab MkII showed exactly this:
+        // NoteOn 53 → NoteOff 53 → NoteOn 53 → NoteOff 53, with the
+        // second pair allocating voice slot 1 while slot 0 was still
+        // in its release tail.
+        let mut p = VoicePool::<ReleasingVoice>::new(4, ReleasingVoice::new);
+
+        // First press-release cycle. Voice 0 enters "releasing" but
+        // stays active.
+        p.note_on(53, 1.0);
+        p.note_off(53);
+        assert!(p.voices()[0].is_active(), "voice 0 still tail-releasing");
+        assert!(p.voices()[0].releasing);
+
+        // Second press: voice 0 still active in release tail, so a
+        // fresh slot (voice 1) is allocated.
+        p.note_on(53, 1.0);
+        assert!(p.voices()[1].is_active());
+        assert!(!p.voices()[1].releasing, "voice 1 not yet released");
+
+        // Second release: under the buggy "first match + return"
+        // semantics, this would target voice 0 (already releasing)
+        // and orphan voice 1. The fix iterates every matching voice,
+        // so voice 1 must end up `releasing == true` too.
+        p.note_off(53);
+        assert!(
+            p.voices()[1].releasing,
+            "voice 1 must be released by the second NoteOff",
+        );
+        // Voice 0 is still releasing (was already releasing; the
+        // re-release is idempotent per Adsr::note_off semantics).
+        assert!(p.voices()[0].releasing);
+
+        // Both voices reach Idle after their envelopes finish.
+        for v in p.voices_mut() {
+            v.finish_release();
+        }
+        for v in p.voices() {
+            assert!(!v.is_active(), "all voices must be idle");
+        }
     }
 }
