@@ -54,8 +54,28 @@ pub fn wavetable_presets() -> &'static [WavetablePreset] {
                 data: parse_wavetable(include_str!("../assets/presets/wavetable/pluck.json")),
             },
             WavetablePreset {
+                name: "pluck-bass",
+                data: parse_wavetable(include_str!("../assets/presets/wavetable/pluck-bass.json")),
+            },
+            WavetablePreset {
                 name: "bass",
                 data: parse_wavetable(include_str!("../assets/presets/wavetable/bass.json")),
+            },
+            WavetablePreset {
+                name: "sub",
+                data: parse_wavetable(include_str!("../assets/presets/wavetable/sub.json")),
+            },
+            WavetablePreset {
+                name: "lead",
+                data: parse_wavetable(include_str!("../assets/presets/wavetable/lead.json")),
+            },
+            WavetablePreset {
+                name: "wobble",
+                data: parse_wavetable(include_str!("../assets/presets/wavetable/wobble.json")),
+            },
+            WavetablePreset {
+                name: "poly",
+                data: parse_wavetable(include_str!("../assets/presets/wavetable/poly.json")),
             },
             WavetablePreset {
                 name: "bell",
@@ -85,6 +105,18 @@ pub fn drum_presets() -> &'static [DrumPreset] {
             DrumPreset {
                 name: "electronic",
                 data: parse_drum(include_str!("../assets/presets/drum/electronic.json")),
+            },
+            DrumPreset {
+                name: "808",
+                data: parse_drum(include_str!("../assets/presets/drum/808.json")),
+            },
+            DrumPreset {
+                name: "909",
+                data: parse_drum(include_str!("../assets/presets/drum/909.json")),
+            },
+            DrumPreset {
+                name: "lo-fi",
+                data: parse_drum(include_str!("../assets/presets/drum/lo-fi.json")),
             },
         ]
     })

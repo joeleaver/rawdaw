@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "kick": {
+    "start_hz": 95.0,
+    "end_hz": 40.0,
+    "pitch_decay_s": 0.10,
+    "amp": { "attack_s": 0.003, "decay_s": 0.30, "sustain_level": 0.0, "release_s": 0.03 }
+  },
+  "snare": {
+    "body_start_hz": 180.0,
+    "body_end_hz": 100.0,
+    "body_pitch_decay_s": 0.05,
+    "noise_mix": 0.45,
+    "noise_hp_hz": 800.0,
+    "noise_hp_q": 0.4,
+    "amp": { "attack_s": 0.003, "decay_s": 0.18, "sustain_level": 0.0, "release_s": 0.03 }
+  },
+  "closed_hat": {
+    "hp_hz": 3500.0,
+    "hp_q": 0.4,
+    "amp": { "attack_s": 0.002, "decay_s": 0.07, "sustain_level": 0.0, "release_s": 0.02 }
+  },
+  "open_hat": {
+    "hp_hz": 3500.0,
+    "hp_q": 0.4,
+    "amp": { "attack_s": 0.002, "decay_s": 0.45, "sustain_level": 0.0, "release_s": 0.03 }
+  }
+}
