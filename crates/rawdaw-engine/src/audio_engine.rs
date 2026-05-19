@@ -55,6 +55,13 @@ pub struct AudioEngine {
     /// queue) so the MIDI input thread is an independent SPSC
     /// producer. See `MidiInputHandle` docs.
     midi_event_rx: Consumer<BlockEvent>,
+    /// Third SPSC consumer dedicated to **host live events** —
+    /// parameter changes from the UI (slider drags, preset
+    /// application). Drained **unconditionally** in every transport
+    /// state so UI controls work in Stopped/Paused the same as in
+    /// Playing. See [`crate::handle::EngineHandle::host_event_tx`]
+    /// for the rationale on splitting these out of `event_rx`.
+    host_event_rx: Consumer<BlockEvent>,
     garbage_tx: Producer<Box<dyn AudioNode>>,
 
     /// Preallocated input scratch. `input_scratch[port]` is a flat planar
@@ -101,6 +108,7 @@ impl AudioEngine {
         command_rx: Consumer<GraphCommand>,
         event_rx: Consumer<BlockEvent>,
         midi_event_rx: Consumer<BlockEvent>,
+        host_event_rx: Consumer<BlockEvent>,
         garbage_tx: Producer<Box<dyn AudioNode>>,
     ) -> Self {
         let max_channels = 2;
@@ -113,6 +121,7 @@ impl AudioEngine {
             command_rx,
             event_rx,
             midi_event_rx,
+            host_event_rx,
             garbage_tx,
             input_scratch,
             input_channel_counts: vec![0u8; MAX_INPUT_PORTS_PER_NODE],
@@ -171,6 +180,12 @@ impl AudioEngine {
     /// partitions on every block in every transport state. Pressing
     /// a key on a MIDI keyboard always makes sound.
     ///
+    /// **Host live events are unconditional.** The host-event queue
+    /// (fed by [`EngineHandle::push_param`](crate::handle::EngineHandle::push_param))
+    /// drains and partitions on every block too — slider drags, preset
+    /// application, and other UI control changes apply regardless of
+    /// transport state.
+    ///
     /// Voices that are already playing continue to render until they
     /// release on a NoteOff. There's no panic / all-notes-off path in
     /// v1 — a NoteOn delivered while Playing that doesn't get a
@@ -214,6 +229,9 @@ impl AudioEngine {
         //     drained them in step 1.
         //   - MIDI input events: drained unconditionally so live
         //     playing reaches the synth in every transport state.
+        //   - Host live events (UI param events): drained
+        //     unconditionally too — slider drags / preset application
+        //     work in Stopped & Paused.
         let drain_song_queue = matches!(transport, Transport::Playing);
         self.partition_events_for_block(&ctx, drain_song_queue);
 
@@ -341,26 +359,29 @@ impl AudioEngine {
         }
 
         let block_end = ctx.absolute_time_samples + ctx.block_size as u64;
-        // Two independent queues feed events. Drain only those whose
+        // Three independent queues feed events. Drain only those whose
         // `time` falls in this block's window. rtrb's `peek` lets us
         // look at the next event without consuming; when we see an
         // event past the window we stop and leave it queued for a
         // later block.
         //
-        //   - **Main (song) queue.** Realized song MIDI + parameter
-        //     changes from the host. Gated by `drain_song_queue` —
-        //     only Playing consumes; Paused leaves them queued for
-        //     resume; Stopped drained them already in step 1 of
-        //     `process_block`.
+        //   - **Main (song) queue.** Realized song MIDI from the
+        //     project. Gated by `drain_song_queue` — only Playing
+        //     consumes; Paused leaves them queued for resume; Stopped
+        //     drained them already in step 1 of `process_block`.
         //   - **MIDI input queue.** Live MIDI from `midir`. Always
         //     drained — pressing a key on a MIDI keyboard makes
         //     sound regardless of transport state.
+        //   - **Host event queue.** UI param events (slider drags,
+        //     preset application). Always drained — host control of
+        //     the graph is transport-independent.
         //
         // Each queue is individually time-sorted (realize() guarantees
-        // this for the main queue; live MIDI is monotonic by
-        // construction). The merged per-node sequence is sorted by
-        // `offset_in_block` below so consumers see one time-ordered
-        // stream.
+        // this for the main queue; live MIDI / host events are
+        // monotonic by construction since both schedule at
+        // `SampleTime::samples(0)`). The merged per-node sequence is
+        // sorted by `offset_in_block` below so consumers see one
+        // time-ordered stream.
         if drain_song_queue {
             Self::drain_queue_into_partition(
                 &mut self.event_rx,
@@ -371,6 +392,12 @@ impl AudioEngine {
         }
         Self::drain_queue_into_partition(
             &mut self.midi_event_rx,
+            &mut self.event_partition,
+            ctx,
+            block_end,
+        );
+        Self::drain_queue_into_partition(
+            &mut self.host_event_rx,
             &mut self.event_partition,
             ctx,
             block_end,

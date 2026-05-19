@@ -21,6 +21,25 @@ use crate::node::AudioNode;
 pub struct EngineHandle {
     pub(crate) command_tx: Producer<GraphCommand>,
     pub(crate) event_tx: Producer<BlockEvent>,
+    /// Second host-side producer dedicated to **host live events** —
+    /// parameter changes from the UI (slider drags, preset application,
+    /// future MIDI Learn). The audio thread drains this queue
+    /// **unconditionally** in every transport state, mirroring the
+    /// MIDI input queue.
+    ///
+    /// Why a separate queue and not the main `event_tx`: the main
+    /// queue is the *song* queue. Its semantics are anchored to the
+    /// song clock and gated by `Transport::Playing` — events are
+    /// drained-to-null on Stop (so a Stop → Play re-arm starts
+    /// clean), and not partitioned in Paused (so resume picks up
+    /// where you left off). Param events from the UI don't share
+    /// those semantics: a slider drag is a one-shot value change
+    /// that needs to apply regardless of transport. Mixing the two
+    /// in one queue would force the audio thread to peek-by-event-
+    /// type to honor both contracts — adding a queue costs one
+    /// extra SPSC drain per block and keeps the gating logic
+    /// declarative.
+    pub(crate) host_event_tx: Producer<BlockEvent>,
     pub(crate) garbage_rx: Consumer<Box<dyn AudioNode>>,
 }
 
@@ -111,6 +130,13 @@ impl EngineHandle {
     /// `path` is an opaque, synth-defined 8-byte address — see the
     /// [`ParamEvent`](crate::event::ParamEvent) docs. The engine never
     /// inspects it; the receiving node decodes its own `ParamPath`.
+    ///
+    /// Param events go through the **host live event queue** (not the
+    /// song queue), so they drain in every transport state. The host
+    /// should typically schedule at [`SampleTime::samples(0)`] so the
+    /// event lands at offset 0 of the next block regardless of the
+    /// audio thread's `sample_clock` — same convention live MIDI uses
+    /// (see `docs/midi-input-plan.md` K0).
     pub fn push_param(
         &mut self,
         time: SampleTime,
@@ -118,7 +144,7 @@ impl EngineHandle {
         path: [u8; 8],
         value: f32,
     ) -> Result<(), PushError<BlockEvent>> {
-        self.push_event(BlockEvent {
+        self.host_event_tx.push(BlockEvent {
             time,
             target,
             message: BlockMessage::Param(ParamEvent { path, value }),

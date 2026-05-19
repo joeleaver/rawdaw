@@ -210,8 +210,13 @@ fn set_env<F>(
     }
 }
 
-/// Decode a `ModSource` ordinal cast to `f32`. Ordinals match
-/// [`rawdaw_model::patch::wavetable::ModSourceData`] discriminants.
+/// Decode a `ModSource` ordinal cast to `f32`. Ordinals 0..=7 match
+/// [`rawdaw_model::patch::wavetable::ModSourceData`] discriminants
+/// 1:1. K5: ordinals 8..=135 encode `MidiCC(cc)` for `cc` ∈ 0..=127
+/// (`ordinal = 8 + cc`), keeping the single-`f32`-value wire format
+/// while making every CC number reachable from a `ParamEvent`. The
+/// gap (.5, etc.) is closed by `round()` — out-of-range values land
+/// on `None`.
 fn decode_mod_source(value: f32) -> Option<ModSource> {
     let n = value.round() as i32;
     match n {
@@ -223,6 +228,7 @@ fn decode_mod_source(value: f32) -> Option<ModSource> {
         5 => Some(ModSource::Osc0),
         6 => Some(ModSource::Osc1),
         7 => Some(ModSource::Osc2),
+        8..=135 => Some(ModSource::MidiCC((n - 8) as u8)),
         _ => None,
     }
 }
@@ -265,6 +271,7 @@ pub fn encode_mod_source(src: ModSource) -> f32 {
         ModSource::Osc0 => 5.0,
         ModSource::Osc1 => 6.0,
         ModSource::Osc2 => 7.0,
+        ModSource::MidiCC(cc) => 8.0 + cc as f32,
     }
 }
 
@@ -545,6 +552,31 @@ mod tests {
             let encoded = encode_mod_source(src);
             assert_eq!(decode_mod_source(encoded), Some(src));
         }
+    }
+
+    #[test]
+    fn mod_source_midi_cc_round_trips_every_cc() {
+        // K5: every MIDI CC (0..=127) must survive the f32 wire
+        // format. Boundaries 0 and 127, the curated subset, plus a
+        // sweep to catch any precision issue.
+        for cc in 0u8..=127 {
+            let src = ModSource::MidiCC(cc);
+            let encoded = encode_mod_source(src);
+            assert_eq!(
+                decode_mod_source(encoded),
+                Some(src),
+                "round trip failed for MidiCC({cc})",
+            );
+        }
+    }
+
+    #[test]
+    fn mod_source_decode_rejects_out_of_range_cc() {
+        // 136 = first ordinal past MidiCC(127); must decode to None
+        // so a malformed event leaves the slot's source unchanged.
+        assert_eq!(decode_mod_source(136.0), None);
+        assert_eq!(decode_mod_source(999.0), None);
+        assert_eq!(decode_mod_source(-1.0), None);
     }
 
     #[test]

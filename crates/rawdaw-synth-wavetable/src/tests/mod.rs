@@ -13,7 +13,9 @@
 //! `pub(super)` for submodule use.
 
 mod expression;
+mod live_tweaks;
 mod matrix;
+mod midi_cc;
 mod oscillators;
 mod playback;
 mod publishers;

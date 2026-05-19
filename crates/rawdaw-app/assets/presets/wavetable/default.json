@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "osc_params": [
     { "tune_semitones": 0,  "fine_cents": 0, "level": 1.0 },
     { "tune_semitones": 12, "fine_cents": 0, "level": 0.4 },
@@ -18,9 +18,9 @@
     { "source": "Env2", "destination": "FilterCutoff",       "amount":  0.60 },
     { "source": "Osc1", "destination": { "PmAmountOf": 0 },  "amount":  0.30 },
     { "source": "Osc2", "destination": { "PmAmountOf": 1 },  "amount":  0.15 },
-    { "source": "Env3", "destination": { "PmAmountOf": 0 },  "amount": -0.15 },
-    { "source": "None", "destination": "FilterCutoff",       "amount":  0.0 },
-    { "source": "None", "destination": "FilterCutoff",       "amount":  0.0 },
+    { "source": "Env3",          "destination": { "PmAmountOf": 0 },  "amount": -0.15 },
+    { "source": { "MidiCC": 1 }, "destination": "FilterCutoff",       "amount":  0.80 },
+    { "source": "None",          "destination": "FilterCutoff",       "amount":  0.0 },
     { "source": "None", "destination": "FilterCutoff",       "amount":  0.0 },
     { "source": "None", "destination": "FilterCutoff",       "amount":  0.0 },
     { "source": "None", "destination": "FilterCutoff",       "amount":  0.0 },

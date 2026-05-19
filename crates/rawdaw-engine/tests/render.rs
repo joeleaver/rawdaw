@@ -641,6 +641,104 @@ fn midi_input_plays_in_paused_transport() {
 }
 
 #[test]
+fn host_param_event_applies_in_stopped_transport() {
+    // K5 follow-on regression test: UI param events live on the host
+    // event queue and apply in every transport state. Pre-fix the
+    // main event queue was drained-to-null on Stopped (step 1 of
+    // process_block), so slider drags + preset application were
+    // silently dropped at the boot state — making the wavetable
+    // editor UI feel dead until the user pressed Play.
+    use rawdaw_engine::Transport;
+
+    let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let (mut audio, mut handle, _midi_input) = engine.split();
+
+    let target = NodeId::new(0);
+    let recorder = RecorderNode::new();
+    let received = Arc::clone(&recorder.received);
+    handle
+        .push_command(GraphCommand::AddNode {
+            id: target,
+            node: Box::new(recorder),
+        })
+        .expect("command queue had room");
+
+    handle
+        .push_param(SampleTime::samples(0), target, [42; 8], 0.7)
+        .expect("host event queue had room");
+
+    audio.transport_handle().set(Transport::Stopped);
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx = rawdaw_engine::ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 0,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: false,
+    };
+    audio.process_block(target, output, ctx);
+
+    let recv = received.lock().expect("recorder mutex");
+    assert_eq!(
+        recv.len(),
+        1,
+        "host param event must reach the node in Stopped state; got {recv:?}",
+    );
+    match &recv[0].1 {
+        BlockMessage::Param(p) => {
+            assert_eq!(p.path[0], 42);
+            assert_eq!(p.value, 0.7);
+        }
+        other => panic!("expected Param, got {other:?}"),
+    }
+}
+
+#[test]
+fn host_param_event_applies_in_paused_transport() {
+    // Same as the Stopped test but for Paused. Pre-fix, Paused didn't
+    // drain-to-null but DID skip song-queue partitioning (so the
+    // event stayed queued forever). Post-fix, host events live on a
+    // separate queue that always partitions — UI control works in
+    // Paused too.
+    use rawdaw_engine::Transport;
+
+    let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let (mut audio, mut handle, _midi_input) = engine.split();
+
+    let target = NodeId::new(0);
+    let recorder = RecorderNode::new();
+    let received = Arc::clone(&recorder.received);
+    handle
+        .push_command(GraphCommand::AddNode {
+            id: target,
+            node: Box::new(recorder),
+        })
+        .expect("command queue had room");
+
+    handle
+        .push_param(SampleTime::samples(0), target, [7; 8], 0.42)
+        .expect("host event queue had room");
+
+    audio.transport_handle().set(Transport::Paused);
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx = rawdaw_engine::ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 0,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: false,
+    };
+    audio.process_block(target, output, ctx);
+
+    let recv = received.lock().expect("recorder mutex");
+    assert_eq!(recv.len(), 1, "host param event must reach the node in Paused state");
+}
+
+#[test]
 fn paused_transport_does_not_consume_song_events() {
     // K1.fix contract: song events stay queued in Paused (the resume
     // behavior). Push a song event, set Paused, process a block —
@@ -1066,11 +1164,17 @@ fn midi_input_handle_respects_block_window() {
 }
 
 #[test]
-fn push_midi_and_push_param_interleave_in_push_order() {
-    // (c) push_param and push_midi at the same time arrive at the node in
-    //     push order. rtrb is FIFO; the engine's per-block partitioner
-    //     iterates the queue once and pushes into the per-target Vec in
-    //     order, so push order ≡ delivery order at the same target.
+fn push_param_preserves_push_order_within_queue() {
+    // Param events go through the host live-event queue; two pushes at
+    // the same time arrive at the node in push order. rtrb is FIFO and
+    // the partitioner walks each queue once, so push order ≡ delivery
+    // order *within* a queue.
+    //
+    // Cross-queue ordering (e.g. push_midi-then-push_param) is NOT a
+    // contract — song MIDI and host params live on separate queues
+    // that drain independently. Pre-split this test asserted a Param,
+    // Midi, Param interleave; with the queue split that's no longer
+    // meaningful, but the intra-queue ordering still is.
     let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
     let target = NodeId::new(0);
     let recorder = RecorderNode::new();
@@ -1080,7 +1184,38 @@ fn push_midi_and_push_param_interleave_in_push_order() {
         node: Box::new(recorder),
     });
 
-    // All three at sample 0 — interleaved order tests the FIFO contract.
+    engine.push_param(SampleTime::samples(0), target, [1; 8], 0.1);
+    engine.push_param(SampleTime::samples(0), target, [2; 8], 0.2);
+    engine.push_param(SampleTime::samples(0), target, [3; 8], 0.3);
+
+    let _ = engine.render_offline(target, SampleTime::samples(64), 64);
+
+    let recv = received.lock().expect("recorder mutex");
+    assert_eq!(recv.len(), 3, "all three param events should deliver");
+    for (i, expected_tag) in [1u8, 2, 3].iter().enumerate() {
+        match &recv[i].1 {
+            BlockMessage::Param(p) => assert_eq!(p.path[0], *expected_tag),
+            other => panic!("expected Param event at index {i}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn push_midi_and_push_param_both_deliver_to_same_target() {
+    // Song MIDI and host params arrive at the same target via separate
+    // queues. Pre-queue-split (K1.fix follow-on) the two interleaved by
+    // push order; post-split they merge by drain order (song first,
+    // then host events). All three events still reach the node — the
+    // delivery guarantee is preserved.
+    let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let target = NodeId::new(0);
+    let recorder = RecorderNode::new();
+    let received = Arc::clone(&recorder.received);
+    engine.push_command(GraphCommand::AddNode {
+        id: target,
+        node: Box::new(recorder),
+    });
+
     engine.push_param(SampleTime::samples(0), target, [1; 8], 0.1);
     engine.push_midi(
         SampleTime::samples(0),
@@ -1096,14 +1231,25 @@ fn push_midi_and_push_param_interleave_in_push_order() {
     let _ = engine.render_offline(target, SampleTime::samples(64), 64);
 
     let recv = received.lock().expect("recorder mutex");
-    assert_eq!(recv.len(), 3);
-    assert!(matches!(recv[0].1, BlockMessage::Param(_)));
-    assert!(matches!(recv[1].1, BlockMessage::Midi(_)));
-    assert!(matches!(recv[2].1, BlockMessage::Param(_)));
-    if let BlockMessage::Param(p) = &recv[0].1 {
-        assert_eq!(p.path[0], 1);
-    }
-    if let BlockMessage::Param(p) = &recv[2].1 {
-        assert_eq!(p.path[0], 2);
-    }
+    assert_eq!(recv.len(), 3, "all three events should reach the recorder");
+    let midi_count = recv
+        .iter()
+        .filter(|(_, m)| matches!(m, BlockMessage::Midi(_)))
+        .count();
+    let param_count = recv
+        .iter()
+        .filter(|(_, m)| matches!(m, BlockMessage::Param(_)))
+        .count();
+    assert_eq!(midi_count, 1, "exactly one MIDI event delivered");
+    assert_eq!(param_count, 2, "exactly two Param events delivered");
+    // Param events stay in push order *relative to each other* because
+    // they share a queue.
+    let param_tags: Vec<u8> = recv
+        .iter()
+        .filter_map(|(_, m)| match m {
+            BlockMessage::Param(p) => Some(p.path[0]),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(param_tags, vec![1, 2], "param events must keep push order within their queue");
 }

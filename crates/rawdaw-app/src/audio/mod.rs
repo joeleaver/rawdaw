@@ -508,15 +508,16 @@ impl AudioResources {
     /// fractional bar count from `MusicalTime`; arrangement code uses
     /// it for sub-bar percent positioning, the top-bar readout uses
     /// `(bar, beat)`.
-    /// Push a wavetable `ParamEvent` at the current sample clock +1.
+    /// Push a wavetable `ParamEvent` into the host live-event queue.
     /// `track_idx` selects the target synth via
     /// [`Self::wavetable_handles`]; returns `Err` when the index
     /// has no handle (e.g., it's a drum track).
     ///
-    /// Scheduling at `sample_clock + 1` is the audio-thread-safe
-    /// choice — the engine processes events at offsets within the
-    /// next block, so `+1` guarantees the event lands in that block
-    /// rather than being dropped as past-due.
+    /// Scheduled at [`SampleTime::samples(0)`] so the event lands at
+    /// offset 0 of the next block regardless of transport state —
+    /// same convention live MIDI uses (`docs/midi-input-plan.md` K0).
+    /// Reading `sample_clock` here would re-introduce the Stop-reset
+    /// race that K1.fix already solved for MIDI input.
     pub fn push_wavetable_param(
         &self,
         track_idx: usize,
@@ -528,17 +529,15 @@ impl AudioResources {
             .get(&track_idx)
             .ok_or_else(|| format!("no wavetable handle for track {track_idx}"))?;
         let path = param.encode();
-        let time = rawdaw_model::SampleTime::samples(
-            self.sample_clock.load(std::sync::atomic::Ordering::Acquire) + 1,
-        );
+        let time = rawdaw_model::SampleTime::samples(0);
         self.handle()
             .push_param(time, handle.node_id, path, value)
             .map_err(|e| format!("event queue overflow on push_wavetable_param: {e:?}"))
     }
 
     /// Drum equivalent of [`Self::push_wavetable_param`]. Same
-    /// scheduling contract (`sample_clock + 1`) and same Err shape
-    /// when the index doesn't resolve to a Drum track.
+    /// scheduling contract ([`SampleTime::samples(0)`]) and same Err
+    /// shape when the index doesn't resolve to a Drum track.
     pub fn push_drum_param(
         &self,
         track_idx: usize,
@@ -550,9 +549,7 @@ impl AudioResources {
             .get(&track_idx)
             .ok_or_else(|| format!("no drum handle for track {track_idx}"))?;
         let path = param.encode();
-        let time = rawdaw_model::SampleTime::samples(
-            self.sample_clock.load(std::sync::atomic::Ordering::Acquire) + 1,
-        );
+        let time = rawdaw_model::SampleTime::samples(0);
         self.handle()
             .push_param(time, handle.node_id, path, value)
             .map_err(|e| format!("event queue overflow on push_drum_param: {e:?}"))
@@ -591,9 +588,11 @@ impl AudioResources {
         // is one downcast + notify.
         handle.patch_signal.set(patch);
         let events = rawdaw_synth_wavetable::wavetable_patch_to_param_events(&patch);
-        let time = rawdaw_model::SampleTime::samples(
-            self.sample_clock.load(std::sync::atomic::Ordering::Acquire) + 1,
-        );
+        // All 72 events scheduled at samples(0) so they apply in the
+        // next block regardless of transport state. The synth applies
+        // them in order; the last write wins per field, which is the
+        // semantics callers expect from "load this preset".
+        let time = rawdaw_model::SampleTime::samples(0);
         let mut handle_mut = self.handle();
         for (param, value) in events {
             handle_mut
@@ -618,9 +617,10 @@ impl AudioResources {
         let patch: rawdaw_synth_drum::DrumPatch = patch_data.into();
         handle.patch_signal.set(patch);
         let events = rawdaw_synth_drum::drum_patch_to_param_events(&patch);
-        let time = rawdaw_model::SampleTime::samples(
-            self.sample_clock.load(std::sync::atomic::Ordering::Acquire) + 1,
-        );
+        // Same scheduling contract as the wavetable preset path:
+        // all events at samples(0) so the audio thread applies them
+        // in the next block regardless of transport state.
+        let time = rawdaw_model::SampleTime::samples(0);
         let mut handle_mut = self.handle();
         for (param, value) in events {
             handle_mut

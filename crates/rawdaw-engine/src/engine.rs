@@ -98,6 +98,7 @@ impl Engine {
         let (cmd_tx, cmd_rx) = RingBuffer::<GraphCommand>::new(caps.commands);
         let (ev_tx, ev_rx) = RingBuffer::<BlockEvent>::new(caps.events);
         let (midi_ev_tx, midi_ev_rx) = RingBuffer::<BlockEvent>::new(caps.events);
+        let (host_ev_tx, host_ev_rx) = RingBuffer::<BlockEvent>::new(caps.events);
         let (gar_tx, gar_rx) = RingBuffer::<Box<dyn AudioNode>>::new(caps.garbage);
 
         let audio = AudioEngine::new(
@@ -106,11 +107,13 @@ impl Engine {
             cmd_rx,
             ev_rx,
             midi_ev_rx,
+            host_ev_rx,
             gar_tx,
         );
         let host = EngineHandle {
             command_tx: cmd_tx,
             event_tx: ev_tx,
+            host_event_tx: host_ev_tx,
             garbage_rx: gar_rx,
         };
         let midi_input = MidiInputHandle {

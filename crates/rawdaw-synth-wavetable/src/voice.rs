@@ -17,7 +17,7 @@ use rawdaw_dsp::{
 };
 
 use crate::patch::WavetablePatch;
-use crate::{MOD_MATRIX_SLOTS, NUM_OSCS};
+use crate::{MIDI_CC_COUNT, MOD_MATRIX_SLOTS, NUM_OSCS};
 
 /// One synth voice — three wavetable oscillators, amp envelope, and
 /// per-voice filter integrators so retrigger doesn't blend tail
@@ -117,23 +117,59 @@ impl WavetableVoice {
         self.set_patch(patch);
     }
 
-    /// Install a patch's per-osc parameters + matrix slots + filter
-    /// cutoff base. Matrix slots flow through `ModMatrix::set_slots`
-    /// which runs its own validation + topo sort (cycles rejected in
-    /// debug, sanitized in release).
+    /// Install a complete patch snapshot into this voice. Called on
+    /// every `apply_param` so live tweaks (slider drags, MIDI Learn,
+    /// preset application) reach held notes immediately — matches the
+    /// behavior of every modern synth where any control reshapes the
+    /// sounding voice in real time.
+    ///
+    /// Mirrors `prepare()` field-for-field, minus the sample-rate
+    /// configuration (which never changes mid-session). Specifically:
+    ///
+    /// - Per-osc params + matrix + filter cutoff base — read each
+    ///   tick from the per-voice copies, so a plain write suffices.
+    /// - Envelope ADSR shapes — pushed into each ENV's `set_params`
+    ///   so the *remaining* envelope stages honor the new shape
+    ///   (e.g. lengthening release while a note is in sustain
+    ///   produces a longer tail).
+    /// - Filter resonance — pushed into the SVF. Cutoff is re-set
+    ///   every tick from `filter_cutoff_hz_base + offsets`, but
+    ///   resonance has no per-tick re-set, so it has to be poked
+    ///   here.
+    /// - Per-osc base frequency — re-derived from the (possibly
+    ///   new) tune/fine cents on the currently-held note so tune
+    ///   sliders re-pitch a sounding voice. Skipped for idle
+    ///   voices (their `note` is stale; the next `note_on` will
+    ///   re-derive correctly).
     pub(crate) fn set_patch(&mut self, patch: &WavetablePatch) {
         self.osc_params = patch.osc_params;
         self.matrix.set_slots(patch.matrix);
         self.filter_cutoff_hz_base = patch.filter_cutoff_hz;
+        self.filter.set_resonance(patch.filter_resonance);
+        self.amp.set_params(patch.env_params[0]);
+        self.env2.set_params(patch.env_params[1]);
+        self.env3.set_params(patch.env_params[2]);
+        if self.is_active() {
+            let ratio = bend_ratio(self.pitch_bend_semitones);
+            for i in 0..NUM_OSCS {
+                let hz = note_offset_hz(
+                    self.note,
+                    self.osc_params[i].tune_semitones,
+                    self.osc_params[i].fine_cents,
+                );
+                self.osc_hz_base[i] = hz;
+                self.oscs[i].set_frequency(hz * ratio);
+            }
+        }
     }
 
     /// Per-sample tick. Two-stage modulation evaluation:
     ///
     /// 1. **Control-rate pass.** Tick ENV1/2/3, then iterate the
-    ///    matrix's control-rate slots (Env*/Lfo* sources) into a
-    ///    fresh `Modulations` bag. The bag holds per-destination
-    ///    contributions in destination-native units (Hz, semitones,
-    ///    coefficients, …).
+    ///    matrix's control-rate slots (Env*/Lfo*/MidiCC sources)
+    ///    into a fresh `Modulations` bag. The bag holds per-
+    ///    destination contributions in destination-native units
+    ///    (Hz, semitones, coefficients, …).
     /// 2. **Per-osc render in topo-sorted order.** For each osc in
     ///    `matrix.audio_rate_osc_order()`, fold in audio-rate slot
     ///    contributions (`OscN → ...Of(i)`) by reading the source's
@@ -141,7 +177,19 @@ impl WavetableVoice {
     ///    sort ensures sources before destinations), then apply
     ///    pre-tick mods (PM offset, tune offset) and post-tick mods
     ///    (AM, RM coefficients) before storing the result.
-    pub(crate) fn tick(&mut self, wavetable: &Wavetable, lfo_value: f32) -> f32 {
+    ///
+    /// `cc_state` is the synth node's per-MIDI-CC normalized
+    /// `[0.0, 1.0]` table. K5 routes `ModSource::MidiCC(cc)` reads
+    /// directly into it; the per-event update in `apply_control_change`
+    /// happens *before* this tick on the same sample (the synth
+    /// node's process loop drains events at offset ≤ i for the i-th
+    /// sample), so sample-accuracy within a block is preserved.
+    pub(crate) fn tick(
+        &mut self,
+        wavetable: &Wavetable,
+        lfo_value: f32,
+        cc_state: &[f32; MIDI_CC_COUNT],
+    ) -> f32 {
         // ── Stage 1: tick envelopes + evaluate control-rate slots.
         let env1_value = self.amp.tick();
         let env2_value = self.env2.tick();
@@ -154,6 +202,16 @@ impl WavetableVoice {
                 ModSource::Env2 => env2_value,
                 ModSource::Env3 => env3_value,
                 ModSource::Lfo1 => lfo_value,
+                ModSource::MidiCC(cc) => {
+                    // `set_slots` already sanitized any cc > 127 to
+                    // ModSource::None, so the index is in-range. A
+                    // bounds-checked get() preserves safety against
+                    // a future caller that bypasses set_slots.
+                    match cc_state.get(cc as usize) {
+                        Some(v) => *v,
+                        None => continue,
+                    }
+                }
                 ModSource::Osc0 | ModSource::Osc1 | ModSource::Osc2 => {
                     // Audio-rate sources fold into `mods` inside the
                     // per-osc loop below — they need their source

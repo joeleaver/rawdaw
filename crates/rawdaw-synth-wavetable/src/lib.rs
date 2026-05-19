@@ -65,6 +65,11 @@ const SUSTAIN_PEDAL_DOWN_THRESHOLD: u8 = 64;
 /// default; future RPN handling can widen per-channel.
 const PITCH_BEND_RANGE_SEMITONES: f32 = 2.0;
 
+/// K5 — MIDI CC table width. All 128 CCs stored; the matrix-editor
+/// UI surfaces a curated subset (mod wheel CC1, breath CC2, volume
+/// CC7, pan CC10, expression CC11) for v1.
+pub(crate) const MIDI_CC_COUNT: usize = 128;
+
 /// Modulation matrix slot count. Generous for a small synth, RT-
 /// safe (no heap), well under the topo-sort scratch-buffer budget
 /// in `rawdaw-dsp::modulation`.
@@ -165,6 +170,14 @@ pub struct WavetableSynthNode {
     /// reusing across blocks is cheap. Drained when the pedal
     /// transitions back up.
     deferred_note_offs: Vec<u8>,
+    /// K5 — per-node MIDI CC table, normalized to `[0.0, 1.0]` (raw
+    /// 7-bit value divided by 127). All 128 entries stored even
+    /// though the editor UI surfaces a curated subset; preset
+    /// authors and future MIDI Learn need every CC reachable. Read
+    /// each per-sample tick by voices through their `ModSource::MidiCC(cc)`
+    /// matrix slots. Boots all-zero — MIDI controllers default to
+    /// 0 until the device sends a value.
+    midi_cc_state: [f32; MIDI_CC_COUNT],
 }
 
 impl WavetableSynthNode {
@@ -200,6 +213,7 @@ impl WavetableSynthNode {
             pitch_bend_semitones: 0.0,
             sustain_pedal_down: false,
             deferred_note_offs: Vec::with_capacity(NUM_VOICES),
+            midi_cc_state: [0.0; MIDI_CC_COUNT],
         }
     }
 
@@ -242,12 +256,20 @@ impl WavetableSynthNode {
         }
     }
 
-    /// K4 ControlChange dispatch. CC64 is the sustain pedal — see
-    /// the MIDI spec; ≥ 64 is "down", < 64 is "up". On pedal
-    /// release, fire every deferred note-off at once. All other
-    /// CCs are silently ignored at K4; K5 routes them to the mod
-    /// matrix.
+    /// K4 + K5 ControlChange dispatch. Two effects per event:
+    ///
+    /// 1. Store the value into `midi_cc_state[controller]` (K5) —
+    ///    normalized to `[0.0, 1.0]` so matrix slots reading
+    ///    `ModSource::MidiCC(cc)` get a consistent unit. The write
+    ///    happens for every CC, *including* CC64; routing the
+    ///    sustain pedal to e.g. FilterCutoff is a legitimate use.
+    /// 2. If the controller is CC64, latch the sustain pedal (K4) —
+    ///    ≥ 64 means down, < 64 means up. On release, drain every
+    ///    deferred note-off at once.
     fn apply_control_change(&mut self, controller: u8, value: u8) {
+        if (controller as usize) < MIDI_CC_COUNT {
+            self.midi_cc_state[controller as usize] = value as f32 / 127.0;
+        }
         if controller == CC_SUSTAIN_PEDAL {
             let was_down = self.sustain_pedal_down;
             self.sustain_pedal_down = value >= SUSTAIN_PEDAL_DOWN_THRESHOLD;
@@ -282,9 +304,13 @@ impl WavetableSynthNode {
     /// — a bad path is a host-side bug, not an audio-time recoverable
     /// condition. After mutation:
     ///
-    /// 1. Propagate the new patch to every voice so subsequent
-    ///    samples see the change.
-    /// 2. Write the new patch into `patch_snapshot` and bump
+    /// 1. Push the new LFO rate (node-level state — voices share one
+    ///    LFO so the propagation can't happen inside voice.set_patch).
+    /// 2. Propagate the new patch to every voice so subsequent
+    ///    samples see the change — including held notes whose
+    ///    envelopes, filter, and oscillators must re-read the
+    ///    current values.
+    /// 3. Write the new patch into `patch_snapshot` and bump
     ///    `patch_version` so host pollers can re-snapshot.
     fn apply_param(&mut self, path: &[u8; 8], value: f32) {
         let Some(param) = WavetableParam::decode(path) else {
@@ -292,6 +318,7 @@ impl WavetableSynthNode {
             return;
         };
         param.apply(&mut self.patch, value);
+        self.lfo.set_rate_hz(self.patch.lfo_rate_hz);
         self.propagate_patch_to_voices();
         self.publish_patch();
     }
@@ -383,7 +410,7 @@ impl AudioNode for WavetableSynthNode {
                 if !v.is_active() {
                     continue;
                 }
-                sample += v.tick(&self.wavetable, lfo_value);
+                sample += v.tick(&self.wavetable, lfo_value, &self.midi_cc_state);
             }
             l[i] = sample;
             r[i] = sample;

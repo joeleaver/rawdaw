@@ -163,10 +163,13 @@ fn pitch_bend_center_is_no_op() {
 }
 
 #[test]
-fn non_sustain_cc_is_ignored() {
-    // K4 ignores every CC other than 64. Sending volume (CC7) or
-    // mod wheel (CC1) should not affect output. (K5 will route
-    // these to the mod matrix.)
+fn cc_with_no_matrix_route_is_inaudible() {
+    // K5 stores every incoming CC into the per-node CC table, but
+    // only CCs that some matrix slot references actually influence
+    // audio. The M5 default routes CC1 (mod wheel) → FilterCutoff,
+    // so we test the *unrouted* CCs: CC7 (volume) and CC11
+    // (expression) shouldn't affect output until the user wires
+    // them up in the matrix editor.
     let mut node = make_node();
     let mut baseline = make_node();
 
@@ -176,9 +179,8 @@ fn non_sustain_cc_is_ignored() {
     render_block(
         &mut node,
         &[
-            ev(0, control_change(1, 100)),  // mod wheel
-            ev(0, control_change(7, 64)),   // volume
-            ev(0, control_change(11, 90)),  // expression
+            ev(0, control_change(7, 64)),  // volume
+            ev(0, control_change(11, 90)), // expression
             ev(1, note_on(60, U16Velocity::HALF)),
         ],
         &mut buf_cc,
@@ -189,12 +191,11 @@ fn non_sustain_cc_is_ignored() {
         &mut buf_baseline,
     );
 
-    // Non-sustain CCs are silently ignored, so the two should
-    // produce identical output.
+    // Unrouted CCs make no difference — bit-identical output.
     for i in 0..BLOCK {
         assert!(
             (buf_cc[i] - buf_baseline[i]).abs() < 1e-6,
-            "non-sustain CCs must be ignored at K4; differ at sample {i}",
+            "unrouted CCs must be inaudible; differ at sample {i}",
         );
     }
 }

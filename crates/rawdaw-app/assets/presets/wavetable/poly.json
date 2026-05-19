@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "osc_params": [
     { "tune_semitones":  0,  "fine_cents": -9, "level": 0.6 },
     { "tune_semitones":  0,  "fine_cents":  9, "level": 0.6 },

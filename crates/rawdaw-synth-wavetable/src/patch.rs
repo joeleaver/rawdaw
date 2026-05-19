@@ -109,6 +109,7 @@ impl FromData<ModSourceData> for ModSource {
             ModSourceData::Osc0 => Self::Osc0,
             ModSourceData::Osc1 => Self::Osc1,
             ModSourceData::Osc2 => Self::Osc2,
+            ModSourceData::MidiCC(cc) => Self::MidiCC(cc),
         }
     }
 }
@@ -169,13 +170,15 @@ mod tests {
             assert_eq!(runtime.env_params[i].release_s, data.env_params[i].release_s);
         }
 
-        // First five slots are the M5 routes; the rest are inactive.
+        // Slots [0..5] are the M5 routes; slot 5 is the K5 mod-wheel
+        // default; the rest are inactive.
         assert_eq!(runtime.matrix[0].source, ModSource::Lfo1);
         assert_eq!(runtime.matrix[1].source, ModSource::Env2);
         assert_eq!(runtime.matrix[2].source, ModSource::Osc1);
         assert_eq!(runtime.matrix[3].source, ModSource::Osc2);
         assert_eq!(runtime.matrix[4].source, ModSource::Env3);
-        for slot in &runtime.matrix[5..] {
+        assert_eq!(runtime.matrix[5].source, ModSource::MidiCC(1));
+        for slot in &runtime.matrix[6..] {
             assert_eq!(slot.source, ModSource::None);
         }
     }

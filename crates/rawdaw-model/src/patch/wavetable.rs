@@ -26,8 +26,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Current wavetable-patch format version.
-pub const WAVETABLE_PATCH_FORMAT_VERSION: u32 = 1;
+/// Current wavetable-patch format version. v2 adds the
+/// [`ModSourceData::MidiCC`] variant (K5 of the MIDI input plan).
+pub const WAVETABLE_PATCH_FORMAT_VERSION: u32 = 2;
 
 /// Number of oscillators per voice. Mirrors `rawdaw-dsp::NUM_OSCS_PER_VOICE`.
 pub const NUM_OSCS: usize = 3;
@@ -107,6 +108,11 @@ pub enum ModSourceData {
     Osc0,
     Osc1,
     Osc2,
+    /// K5 — incoming MIDI controller, by CC number (`0..=127`). The
+    /// runtime mirror is `rawdaw_dsp::ModSource::MidiCC(u8)`. CC
+    /// numbers outside `0..=127` are sanitized to
+    /// [`ModSourceData::None`] when the runtime matrix is built.
+    MidiCC(u8),
 }
 
 /// Modulation destination.
@@ -214,7 +220,8 @@ impl Default for WavetablePatchData {
             },
         ];
 
-        // Default matrix: five M5 slots, the remaining 11 empty.
+        // Default matrix: five M5 slots + one K5 expressive slot, the
+        // remaining 10 empty.
         let mut matrix = [ModSlotData::default(); MOD_MATRIX_SLOTS];
         matrix[0] = ModSlotData {
             source: ModSourceData::Lfo1,
@@ -240,6 +247,17 @@ impl Default for WavetablePatchData {
             source: ModSourceData::Env3,
             destination: ModDestinationData::PmAmountOf(0),
             amount: -0.15,
+        };
+        // K5 — mod wheel → filter cutoff is the universal default
+        // mapping every hardware/software synth ships with. At
+        // amount = 0.8 the mod wheel can lift the cutoff by ~3200 Hz,
+        // giving the user instant expressive control without having
+        // to touch the matrix editor. Slot is inert until the wheel
+        // moves (CC table boots at zero).
+        matrix[5] = ModSlotData {
+            source: ModSourceData::MidiCC(1),
+            destination: ModDestinationData::FilterCutoff,
+            amount: 0.8,
         };
 
         Self {
@@ -267,7 +285,7 @@ mod tests {
         // catch any miss in the unlikely event this one slips.
         let p = WavetablePatchData::default();
 
-        assert_eq!(p.format_version, 1);
+        assert_eq!(p.format_version, 2);
         assert_eq!(p.lfo_rate_hz, 4.0);
         assert_eq!(p.filter_cutoff_hz, 800.0);
         assert_eq!(p.filter_resonance, 2.5);
@@ -283,7 +301,8 @@ mod tests {
         assert_eq!(p.env_params[1].sustain_level, 0.0);
         assert_eq!(p.env_params[2].sustain_level, 0.3);
 
-        // Matrix slots [0..5] are the M5 routes; [5..16] are empty.
+        // Matrix slots [0..5] are the M5 routes; [5] is the K5 mod
+        // wheel slot; [6..16] are empty.
         assert_eq!(p.matrix[0].source, ModSourceData::Lfo1);
         assert_eq!(p.matrix[0].destination, ModDestinationData::FilterCutoff);
         assert_eq!(p.matrix[0].amount, 0.1);
@@ -292,7 +311,10 @@ mod tests {
         assert_eq!(p.matrix[4].source, ModSourceData::Env3);
         assert_eq!(p.matrix[4].destination, ModDestinationData::PmAmountOf(0));
         assert_eq!(p.matrix[4].amount, -0.15);
-        for slot in &p.matrix[5..] {
+        assert_eq!(p.matrix[5].source, ModSourceData::MidiCC(1));
+        assert_eq!(p.matrix[5].destination, ModDestinationData::FilterCutoff);
+        assert_eq!(p.matrix[5].amount, 0.8);
+        for slot in &p.matrix[6..] {
             assert_eq!(slot.source, ModSourceData::None);
         }
     }
@@ -330,5 +352,25 @@ mod tests {
         let s = ron::ser::to_string(&original).expect("serialize");
         let restored: WavetablePatchData = ron::de::from_str(&s).expect("deserialize");
         assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn ron_round_trip_preserves_midi_cc_source() {
+        // K5: a MidiCC source slot must survive serialization. Cover
+        // the keyboard-controller subset (mod wheel CC1, breath CC2,
+        // volume CC7, pan CC10, expression CC11) plus the boundary
+        // values 0 and 127.
+        for cc in [0u8, 1, 2, 7, 10, 11, 64, 127] {
+            let mut original = WavetablePatchData::default();
+            original.matrix[8] = ModSlotData {
+                source: ModSourceData::MidiCC(cc),
+                destination: ModDestinationData::FilterCutoff,
+                amount: 0.5,
+            };
+            let s = ron::ser::to_string(&original).expect("serialize");
+            let restored: WavetablePatchData = ron::de::from_str(&s).expect("deserialize");
+            assert_eq!(restored.matrix[8].source, ModSourceData::MidiCC(cc));
+            assert_eq!(original, restored);
+        }
     }
 }

@@ -231,31 +231,51 @@ fn MatrixSlotRow(track_idx: usize, slot_idx: u8, boot: WavetablePatch) -> NodeHa
 
 // ── ModSource <-> string ──────────────────────────────────────────
 
+/// K5 curated MIDI CC subset for the source dropdown — the keyboard
+/// controllers that turn up on essentially every MIDI controller.
+/// A full-128 picker is a follow-on UI piece; this five-item subset
+/// is what Joe's KeyLab MkII exposes by default. Pairs of
+/// (cc_number, display_label).
+const CURATED_CC_SUBSET: &[(u8, &str)] = &[
+    (1, "Mod Wheel (CC1)"),
+    (2, "Breath (CC2)"),
+    (7, "Volume (CC7)"),
+    (10, "Pan (CC10)"),
+    (11, "Expression (CC11)"),
+];
+
 /// Variant key used as the Select option `value`. Stable for
-/// onchange decoding.
-pub(super) fn mod_source_value(src: ModSource) -> &'static str {
+/// onchange decoding. `MidiCC(cc)` round-trips as `"midicc_{cc}"`,
+/// matching the destination-dropdown's indexed-prefix convention.
+pub(super) fn mod_source_value(src: ModSource) -> String {
     match src {
-        ModSource::None => "none",
-        ModSource::Env1 => "env1",
-        ModSource::Env2 => "env2",
-        ModSource::Env3 => "env3",
-        ModSource::Lfo1 => "lfo1",
-        ModSource::Osc0 => "osc0",
-        ModSource::Osc1 => "osc1",
-        ModSource::Osc2 => "osc2",
+        ModSource::None => "none".to_string(),
+        ModSource::Env1 => "env1".to_string(),
+        ModSource::Env2 => "env2".to_string(),
+        ModSource::Env3 => "env3".to_string(),
+        ModSource::Lfo1 => "lfo1".to_string(),
+        ModSource::Osc0 => "osc0".to_string(),
+        ModSource::Osc1 => "osc1".to_string(),
+        ModSource::Osc2 => "osc2".to_string(),
+        ModSource::MidiCC(cc) => format!("midicc_{cc}"),
     }
 }
 
-fn mod_source_label(src: ModSource) -> &'static str {
+fn mod_source_label(src: ModSource) -> String {
     match src {
-        ModSource::None => "—",
-        ModSource::Env1 => "ENV 1 (amp)",
-        ModSource::Env2 => "ENV 2",
-        ModSource::Env3 => "ENV 3",
-        ModSource::Lfo1 => "LFO 1",
-        ModSource::Osc0 => "OSC 1",
-        ModSource::Osc1 => "OSC 2",
-        ModSource::Osc2 => "OSC 3",
+        ModSource::None => "—".to_string(),
+        ModSource::Env1 => "ENV 1 (amp)".to_string(),
+        ModSource::Env2 => "ENV 2".to_string(),
+        ModSource::Env3 => "ENV 3".to_string(),
+        ModSource::Lfo1 => "LFO 1".to_string(),
+        ModSource::Osc0 => "OSC 1".to_string(),
+        ModSource::Osc1 => "OSC 2".to_string(),
+        ModSource::Osc2 => "OSC 3".to_string(),
+        ModSource::MidiCC(cc) => CURATED_CC_SUBSET
+            .iter()
+            .find(|(n, _)| *n == cc)
+            .map(|(_, label)| (*label).to_string())
+            .unwrap_or_else(|| format!("CC{cc}")),
     }
 }
 
@@ -269,12 +289,17 @@ pub(super) fn decode_source_str(s: &str) -> Option<ModSource> {
         "osc0" => Some(ModSource::Osc0),
         "osc1" => Some(ModSource::Osc1),
         "osc2" => Some(ModSource::Osc2),
+        s if s.starts_with("midicc_") => s
+            .strip_prefix("midicc_")
+            .and_then(|n| n.parse::<u8>().ok())
+            .filter(|n| *n < 128)
+            .map(ModSource::MidiCC),
         _ => None,
     }
 }
 
 fn source_options() -> Vec<SelectOption> {
-    [
+    let mut out: Vec<SelectOption> = [
         ModSource::None,
         ModSource::Env1,
         ModSource::Env2,
@@ -286,7 +311,12 @@ fn source_options() -> Vec<SelectOption> {
     ]
     .into_iter()
     .map(|s| SelectOption::new(mod_source_value(s), mod_source_label(s)))
-    .collect()
+    .collect();
+    for (cc, _) in CURATED_CC_SUBSET {
+        let src = ModSource::MidiCC(*cc);
+        out.push(SelectOption::new(mod_source_value(src), mod_source_label(src)));
+    }
+    out
 }
 
 // ── ModDestination <-> string ─────────────────────────────────────
@@ -402,7 +432,7 @@ mod tests {
 
     #[test]
     fn source_string_round_trips_every_variant() {
-        for src in [
+        let mut srcs = vec![
             ModSource::None,
             ModSource::Env1,
             ModSource::Env2,
@@ -411,9 +441,18 @@ mod tests {
             ModSource::Osc0,
             ModSource::Osc1,
             ModSource::Osc2,
-        ] {
+        ];
+        // K5: every curated CC plus a few off-list values to cover
+        // the `midicc_{cc}` parse path for arbitrary CC numbers.
+        for (cc, _) in CURATED_CC_SUBSET {
+            srcs.push(ModSource::MidiCC(*cc));
+        }
+        for cc in [0u8, 64, 127] {
+            srcs.push(ModSource::MidiCC(cc));
+        }
+        for src in srcs {
             let s = mod_source_value(src);
-            assert_eq!(decode_source_str(s), Some(src), "round trip failed for {s}");
+            assert_eq!(decode_source_str(&s), Some(src), "round trip failed for {s}");
         }
     }
 
@@ -463,12 +502,30 @@ mod tests {
     #[test]
     fn source_option_list_covers_every_variant() {
         let opts = source_options();
-        assert_eq!(opts.len(), 8);
+        // 8 base sources (None / Env*3 / Lfo1 / Osc*3) + 5 curated CCs.
+        assert_eq!(opts.len(), 8 + CURATED_CC_SUBSET.len());
         for opt in &opts {
             assert!(
                 decode_source_str(&opt.value).is_some(),
                 "source option {} must decode",
                 opt.value
+            );
+        }
+    }
+
+    #[test]
+    fn source_dropdown_lists_curated_cc_subset() {
+        // The five keyboard-controller CCs the matrix-editor surfaces
+        // by default. Catches the easy regression where the subset
+        // shrinks or drops one (would still compile + parse, but the
+        // user couldn't pick that CC from the dropdown).
+        let opts = source_options();
+        let values: Vec<&str> = opts.iter().map(|o| o.value.as_str()).collect();
+        for (cc, _) in CURATED_CC_SUBSET {
+            let key = format!("midicc_{cc}");
+            assert!(
+                values.contains(&key.as_str()),
+                "source dropdown must include {key}",
             );
         }
     }
