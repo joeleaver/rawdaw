@@ -15,6 +15,7 @@
 mod matrix;
 mod oscillators;
 mod playback;
+mod publishers;
 
 use rawdaw_engine::event::{BlockEventInBlock, EventBlock};
 use rawdaw_engine::node::{AudioNode, PortAccess};

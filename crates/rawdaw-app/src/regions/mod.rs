@@ -10,9 +10,11 @@ pub mod bottom_strip;
 pub mod inspector;
 pub mod library;
 pub mod topbar;
+pub mod tracks_pane;
 
 pub use arrangement::Arrangement;
 pub use bottom_strip::BottomStrip;
 pub use inspector::Inspector;
 pub use library::Library;
 pub use topbar::TopBar;
+pub use tracks_pane::TracksPane;

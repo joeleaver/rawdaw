@@ -557,6 +557,23 @@ explains both phrasings so future patch tuning can pick.
 
 ---
 
+## ✅ Resolved by `docs/synth-ui-integration-plan.md` (U6)
+
+The matrix editor landed in U6 of the synth-UI integration
+milestone (`crates/rawdaw-app/src/regions/inspector/matrix_editor.rs`).
+Vertical 16-slot list, each row `[idx] [Source ▾] → [Dest ▾]
+[Amount slider] [×]` using Rinch's built-in `Select`. The host's
+`mod_source_value` / `decode_source_str` (+ destination variants)
+bridge the string-keyed Select to typed `ModSource` /
+`ModDestination`. Cycle rejection stays audio-thread-side
+(`ModMatrix::set_slots` topo-sorts and disables cycle-creating
+slots); the UI doesn't pre-validate.
+
+The notes below are kept for historical context — they describe
+the gap before U6 landed.
+
+---
+
 ## Future plan needed: synth UI integration
 
 Carried over from the F-plan and amplified — v2 lands several new

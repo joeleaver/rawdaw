@@ -3063,6 +3063,7 @@ dependencies = [
  "rawdaw-synth-drum",
  "rawdaw-synth-wavetable",
  "rinch",
+ "serde_json",
 ]
 
 [[package]]

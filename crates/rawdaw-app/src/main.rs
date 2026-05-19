@@ -26,6 +26,7 @@ mod app;
 mod audio;
 mod fixture;
 mod parts;
+mod presets;
 mod regions;
 mod section_editor;
 mod state;

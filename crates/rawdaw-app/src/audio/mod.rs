@@ -62,9 +62,13 @@
 //! - Per track `i`, the sine instrument is `NodeId(i + 1)`. Its single
 //!   stereo output port (port `0`) is wired to mixer input port `i`.
 
+mod drum_poller;
+mod graph;
 mod poller;
+mod wavetable_poller;
 
 use std::cell::{RefCell, RefMut};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{self, Receiver};
@@ -72,22 +76,25 @@ use std::sync::Arc;
 
 use rinch::prelude::Signal;
 
+use drum_poller::DrumPoller;
+use graph::{
+    build_drum_handles, build_drum_pollers, build_wavetable_handles, build_wavetable_pollers,
+    configure_graph, extract_drum_publishers, extract_publishers, ConfiguredGraph,
+};
 use poller::PlayheadPoller;
+use wavetable_poller::WavetablePoller;
 
 use rawdaw_engine::cpal_driver::{CpalDriver, StreamError};
-use rawdaw_engine::node::AudioNode;
 use rawdaw_engine::{
-    translate_events, BlockEvent, Edge, Engine, EngineHandle, GraphCommand, MixerNode, NodeId,
-    NodePort, TrackRouting, Transport, TransportHandle,
+    BlockEvent, Engine, EngineHandle, NodeId, TrackRouting, Transport, TransportHandle,
 };
-use rawdaw_fx::GainNode;
 use rawdaw_model::fixtures::build_round1_project;
-use rawdaw_model::patch::SynthAssignment;
 use rawdaw_model::project::Project;
-use rawdaw_model::realize::realize;
 use rawdaw_model::tempo::TempoMap;
-use rawdaw_synth_drum::{DrumPatch, DrumSynthNode};
-use rawdaw_synth_wavetable::{WavetablePatch, WavetableSynthNode};
+use rawdaw_synth_drum::DrumPublishers;
+use rawdaw_synth_wavetable::WavetablePublishers;
+
+pub use graph::{DrumEditorHandle, WavetableEditorHandle};
 
 /// Fallback engine sample rate used when no cpal output device can be
 /// probed. Matches the engine-side render tests so unit tests that
@@ -181,6 +188,48 @@ pub struct AudioResources {
     /// realized stream every UI handler. `BlockEvent: Clone`, so the
     /// per-push iteration clones each event into the SPSC queue.
     realized_events: Rc<Vec<BlockEvent>>,
+    /// Owned snapshot of the project the engine was built from. UI
+    /// components read this to surface track names, kinds, and
+    /// per-track synth assignments — `tracks[idx].synth` drives the
+    /// U4 synth-editor dispatcher. `Rc` so the rinch store's `Clone`
+    /// of `AudioResources` doesn't deep-copy the project. The
+    /// per-parameter live patch state lives on the audio thread and
+    /// is mirrored to the UI via [`WavetableEditorHandle`] — this
+    /// snapshot is only the as-loaded boot patch.
+    pub project: Rc<Project>,
+    /// Per-pitched-track editor handles, keyed by `project.tracks`
+    /// index. Each handle carries the synth's NodeId (for addressing
+    /// `ParamEvent`s back at the right node) and a reactive
+    /// `Signal<WavetablePatch>` mirroring the audio-thread's
+    /// patch state. Populated for `TrackKind::Pitched` tracks
+    /// (Wavetable synth) only; drum tracks land their own handle
+    /// type in U7. `Rc` because the table is keyed by `usize` and
+    /// the values clone cheaply (Arcs + Signal).
+    pub wavetable_handles: Rc<BTreeMap<usize, WavetableEditorHandle>>,
+    /// Audio-thread publishers paired with each Wavetable handle.
+    /// Kept around so `build()` can spawn one [`WavetablePoller`]
+    /// per track (test path leaves the poller `Vec` empty). Private
+    /// because the publishers are an implementation detail — UI
+    /// callers go through [`WavetableEditorHandle`].
+    wavetable_publishers: Rc<BTreeMap<usize, WavetablePublishers>>,
+    /// Per-pitched-track pollers — one polling thread per Wavetable
+    /// synth, each watching its node's `patch_version` atomic. Held
+    /// in an `Rc<Vec<...>>` so dropping the last `AudioResources`
+    /// clone stops every poller (each poller's `Drop` joins its
+    /// thread; see [`WavetablePoller`]).
+    _wavetable_pollers: Rc<Vec<WavetablePoller>>,
+    /// Per-drum-track editor handles, keyed by `project.tracks` index.
+    /// Each handle carries the synth's NodeId and a reactive
+    /// `Signal<DrumPatch>` mirroring the audio-thread's drum patch.
+    /// Populated for `TrackKind::Drum` tracks only.
+    pub drum_handles: Rc<BTreeMap<usize, DrumEditorHandle>>,
+    /// Audio-thread publishers paired with each Drum handle. Kept
+    /// alongside the handles for the same reasons as the wavetable
+    /// publishers field above.
+    drum_publishers: Rc<BTreeMap<usize, DrumPublishers>>,
+    /// Per-drum-track pollers. Same lifecycle contract as the
+    /// wavetable pollers.
+    _drum_pollers: Rc<Vec<DrumPoller>>,
     /// Optional background poller. `Some` when [`Self::build`] was
     /// called inside a rinch runtime; `None` for unit tests. Dropping
     /// the last `Rc` clone stops the thread.
@@ -210,6 +259,20 @@ impl AudioResources {
             resources.playhead_samples,
             PLAYHEAD_POLL_INTERVAL_MS,
         )));
+        // One Wavetable patch poller per pitched track. Lives in
+        // `build()` rather than `build_from_project_and_rate`
+        // because `Signal::send` requires the rinch runtime's
+        // cross-thread dispatcher to be registered (which `build()`'s
+        // caller has already done, but the test-facing
+        // `build_from_project_and_rate` callers haven't).
+        resources._wavetable_pollers = Rc::new(build_wavetable_pollers(
+            &resources.wavetable_publishers,
+            &resources.wavetable_handles,
+        ));
+        resources._drum_pollers = Rc::new(build_drum_pollers(
+            &resources.drum_publishers,
+            &resources.drum_handles,
+        ));
         resources
     }
 
@@ -219,7 +282,13 @@ impl AudioResources {
     /// [`Self::build`].
     pub fn build_from_project_and_rate(project: &Project, sample_rate: u32) -> Self {
         let mut engine = Engine::new(sample_rate, MAX_BLOCK);
-        let (master, routing, realized_events) = configure_graph(&mut engine, project, sample_rate);
+        let ConfiguredGraph {
+            master,
+            routing,
+            realized_events,
+            wavetable_publishers,
+            drum_publishers,
+        } = configure_graph(&mut engine, project, sample_rate);
         let initial_event_count = realized_events.len();
         let sample_clock = engine.sample_clock();
         let transport = engine.transport_handle();
@@ -264,6 +333,17 @@ impl AudioResources {
             transport,
             transport_state: Signal::new(Transport::default()),
             realized_events: Rc::new(realized_events),
+            project: Rc::new(project.clone()),
+            wavetable_handles: Rc::new(build_wavetable_handles(&wavetable_publishers)),
+            wavetable_publishers: Rc::new(extract_publishers(&wavetable_publishers)),
+            // No pollers in the test path — they require the rinch
+            // runtime's cross-thread dispatcher to be registered, and
+            // unit tests run outside the runtime. `build()` overwrites
+            // these with the production pollers.
+            _wavetable_pollers: Rc::new(Vec::new()),
+            drum_handles: Rc::new(build_drum_handles(&drum_publishers)),
+            drum_publishers: Rc::new(extract_drum_publishers(&drum_publishers)),
+            _drum_pollers: Rc::new(Vec::new()),
             _poller: None,
         }
     }
@@ -372,6 +452,128 @@ impl AudioResources {
     /// fractional bar count from `MusicalTime`; arrangement code uses
     /// it for sub-bar percent positioning, the top-bar readout uses
     /// `(bar, beat)`.
+    /// Push a wavetable `ParamEvent` at the current sample clock +1.
+    /// `track_idx` selects the target synth via
+    /// [`Self::wavetable_handles`]; returns `Err` when the index
+    /// has no handle (e.g., it's a drum track).
+    ///
+    /// Scheduling at `sample_clock + 1` is the audio-thread-safe
+    /// choice — the engine processes events at offsets within the
+    /// next block, so `+1` guarantees the event lands in that block
+    /// rather than being dropped as past-due.
+    pub fn push_wavetable_param(
+        &self,
+        track_idx: usize,
+        param: rawdaw_synth_wavetable::WavetableParam,
+        value: f32,
+    ) -> Result<(), String> {
+        let handle = self
+            .wavetable_handles
+            .get(&track_idx)
+            .ok_or_else(|| format!("no wavetable handle for track {track_idx}"))?;
+        let path = param.encode();
+        let time = rawdaw_model::SampleTime::samples(
+            self.sample_clock.load(std::sync::atomic::Ordering::Acquire) + 1,
+        );
+        self.handle()
+            .push_param(time, handle.node_id, path, value)
+            .map_err(|e| format!("event queue overflow on push_wavetable_param: {e:?}"))
+    }
+
+    /// Drum equivalent of [`Self::push_wavetable_param`]. Same
+    /// scheduling contract (`sample_clock + 1`) and same Err shape
+    /// when the index doesn't resolve to a Drum track.
+    pub fn push_drum_param(
+        &self,
+        track_idx: usize,
+        param: rawdaw_synth_drum::DrumParam,
+        value: f32,
+    ) -> Result<(), String> {
+        let handle = self
+            .drum_handles
+            .get(&track_idx)
+            .ok_or_else(|| format!("no drum handle for track {track_idx}"))?;
+        let path = param.encode();
+        let time = rawdaw_model::SampleTime::samples(
+            self.sample_clock.load(std::sync::atomic::Ordering::Acquire) + 1,
+        );
+        self.handle()
+            .push_param(time, handle.node_id, path, value)
+            .map_err(|e| format!("event queue overflow on push_drum_param: {e:?}"))
+    }
+
+    /// Apply a wavetable preset to a Pitched track. Flattens the
+    /// patch into one `BlockMessage::Param` per field (~72 events)
+    /// and pushes them all at the same `sample_clock + 1`
+    /// timestamp so the audio thread applies them inside one
+    /// block — patches change atomically from the perspective of
+    /// any subsequent NoteOn.
+    ///
+    /// Also writes the new patch into the host-side
+    /// `handle.patch_signal` directly so editor sliders re-sync
+    /// immediately even when the engine is `Transport::Stopped`
+    /// (which silently drains pending Param events). The audio
+    /// thread will overwrite the host signal via its
+    /// `WavetablePoller` on the next playing block — the host
+    /// write is just a same-value shortcut for the visual case.
+    ///
+    /// Returns `Err` when the track index has no wavetable handle
+    /// (e.g., it's a Drum track) or when the event queue overflows
+    /// mid-push.
+    pub fn apply_wavetable_preset(
+        &self,
+        track_idx: usize,
+        patch_data: rawdaw_model::patch::wavetable::WavetablePatchData,
+    ) -> Result<(), String> {
+        let handle = self
+            .wavetable_handles
+            .get(&track_idx)
+            .ok_or_else(|| format!("no wavetable handle for track {track_idx}"))?;
+        let patch: rawdaw_synth_wavetable::WavetablePatch = patch_data.into();
+        // Update the host-side signal first so the editor sliders
+        // re-sync on the next reactive tick. Cheap — Signal::set
+        // is one downcast + notify.
+        handle.patch_signal.set(patch);
+        let events = rawdaw_synth_wavetable::wavetable_patch_to_param_events(&patch);
+        let time = rawdaw_model::SampleTime::samples(
+            self.sample_clock.load(std::sync::atomic::Ordering::Acquire) + 1,
+        );
+        let mut handle_mut = self.handle();
+        for (param, value) in events {
+            handle_mut
+                .push_param(time, handle.node_id, param.encode(), value)
+                .map_err(|e| format!("event queue overflow on apply_wavetable_preset: {e:?}"))?;
+        }
+        Ok(())
+    }
+
+    /// Drum equivalent of [`Self::apply_wavetable_preset`] — pushes
+    /// 29 events for a full drum patch + writes the host-side
+    /// signal for immediate slider re-sync.
+    pub fn apply_drum_preset(
+        &self,
+        track_idx: usize,
+        patch_data: rawdaw_model::patch::drum::DrumPatchData,
+    ) -> Result<(), String> {
+        let handle = self
+            .drum_handles
+            .get(&track_idx)
+            .ok_or_else(|| format!("no drum handle for track {track_idx}"))?;
+        let patch: rawdaw_synth_drum::DrumPatch = patch_data.into();
+        handle.patch_signal.set(patch);
+        let events = rawdaw_synth_drum::drum_patch_to_param_events(&patch);
+        let time = rawdaw_model::SampleTime::samples(
+            self.sample_clock.load(std::sync::atomic::Ordering::Acquire) + 1,
+        );
+        let mut handle_mut = self.handle();
+        for (param, value) in events {
+            handle_mut
+                .push_param(time, handle.node_id, param.encode(), value)
+                .map_err(|e| format!("event queue overflow on apply_drum_preset: {e:?}"))?;
+        }
+        Ok(())
+    }
+
     pub fn playhead_position(&self) -> PlayheadPosition {
         let samples = self.playhead_samples.get();
         let mt = self
@@ -403,222 +605,9 @@ pub struct PlayheadPosition {
     pub bars_f64: f64,
 }
 
-fn configure_graph(
-    engine: &mut Engine,
-    project: &Project,
-    sample_rate: u32,
-) -> (NodeId, TrackRouting, Vec<BlockEvent>) {
-    let track_count = project.tracks.len();
-    // Graph layout:
-    //   NodeId(0)         — MixerNode (sums all instrument outputs).
-    //   NodeId(1..=N)     — per-track instrument nodes.
-    //   NodeId(N+1)       — master GainNode. cpal reads from here.
-    // The mixer is no longer the master itself; the gain node sits
-    // between mixer and output so multi-voice chords don't pre-clip.
-    let mixer_id = NodeId::new(0);
-    let master_id = NodeId::new((track_count + 1) as u32);
-    let mut routing = TrackRouting::new();
-
-    // One mixer + one instrument per track + one Connect per track +
-    // master GainNode + Connect mixer → master. Batched so the
-    // engine recomputes topo order once after the whole
-    // reconfiguration.
-    //
-    // Per-track instrument picking is a stub for the round-3
-    // instrument-assignment UI. For now: every Pitched track gets the
-    // v0 wavetable synth, every Drum track gets the v0 drum synth.
-    // The physical modeller will land on a per-role basis later
-    // (Bass / Pad / Voicing will likely switch over).
-    let mut commands: Vec<GraphCommand> = Vec::with_capacity(2 * track_count + 3);
-    commands.push(GraphCommand::AddNode {
-        id: mixer_id,
-        node: Box::new(MixerNode::new(track_count)),
-    });
-    for (i, track) in project.tracks.iter().enumerate() {
-        // (kind, synth) is paired correctly by Track::new; this
-        // asserts the invariant at the audio-graph boundary so any
-        // hand-mutated track surfaces in debug builds.
-        debug_assert!(
-            track.kind_matches_synth(),
-            "track {:?} has kind/synth mismatch (kind = {:?})",
-            track.id,
-            track.kind,
-        );
-        let instrument_id = NodeId::new((i + 1) as u32);
-        let node: Box<dyn AudioNode> = match &track.synth {
-            SynthAssignment::Wavetable(data) => {
-                let patch = WavetablePatch::from(*data);
-                Box::new(WavetableSynthNode::with_patch(patch))
-            }
-            SynthAssignment::Drum(data) => {
-                let patch = DrumPatch::from(*data);
-                Box::new(DrumSynthNode::with_patch(patch))
-            }
-        };
-        commands.push(GraphCommand::AddNode {
-            id: instrument_id,
-            node,
-        });
-        commands.push(GraphCommand::Connect {
-            edge: Edge {
-                from: NodePort::new(instrument_id, 0),
-                to: NodePort::new(mixer_id, i as u8),
-            },
-        });
-        routing.insert(track.id, instrument_id);
-    }
-    // Master GainNode after the mixer.
-    commands.push(GraphCommand::AddNode {
-        id: master_id,
-        node: Box::new(GainNode::new(MASTER_GAIN)),
-    });
-    commands.push(GraphCommand::Connect {
-        edge: Edge {
-            from: NodePort::new(mixer_id, 0),
-            to: NodePort::new(master_id, 0),
-        },
-    });
-    engine.push_command(GraphCommand::Batch(commands));
-
-    // Realize → translate → push events. `translate_events` errors if
-    // any realized event targets a track not in the routing; for
-    // round-1 every track has a sine, so this is unreachable.
-    let realized = realize(project, sample_rate);
-    let block_events = translate_events(&realized, &routing)
-        .expect("AudioResources routing must cover every realized track");
-    for ev in &block_events {
-        engine.push_event(ev.clone());
-    }
-    (master_id, routing, block_events)
-}
+// `configure_graph` + its helpers + `WavetableEditorHandle` live in
+// `audio/graph.rs`; unit tests live in `audio/tests.rs` — both
+// split out under the workspace 700-line cap.
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn round_1_pushes_one_block_event_per_realized_event() {
-        let (project, _) = build_round1_project();
-        let realized = realize(&project, FALLBACK_SAMPLE_RATE);
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        assert_eq!(
-            resources.initial_event_count,
-            realized.len(),
-            "every realized TimedEvent should translate 1:1 to a BlockEvent"
-        );
-        assert!(
-            !realized.is_empty(),
-            "the round-1 fixture must produce at least one realized event"
-        );
-    }
-
-    #[test]
-    fn routing_covers_every_project_track() {
-        let (project, _) = build_round1_project();
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        assert_eq!(resources.routing.len(), project.tracks.len());
-        for track in &project.tracks {
-            assert!(
-                resources.routing.contains_key(&track.id),
-                "track {:?} must have a routing entry",
-                track.id
-            );
-        }
-    }
-
-    #[test]
-    fn node_layout_has_mixer_then_instruments_then_master_gain() {
-        let (project, _) = build_round1_project();
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        let n = project.tracks.len();
-        // Instrument NodeIds are 1..=n.
-        let mut instrument_ids: Vec<NodeId> = resources.routing.values().copied().collect();
-        instrument_ids.sort_by_key(|n| n.get());
-        let expected: Vec<NodeId> = (1..=n as u32).map(NodeId::new).collect();
-        assert_eq!(instrument_ids, expected);
-        // Mixer sits at NodeId(0) (not in routing — it's the bus, not
-        // an instrument), and the master GainNode sits at NodeId(n+1)
-        // and is the cpal output read.
-        assert_eq!(resources.master, NodeId::new((n + 1) as u32));
-    }
-
-    #[test]
-    fn handle_is_usable_after_build() {
-        // The handle should accept commands even when no audio device is
-        // available — the host stays free to mutate the (silent) graph.
-        let (project, _) = build_round1_project();
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        // A noop batch is the cheapest exercise of the command path.
-        let result = resources
-            .handle()
-            .push_command(GraphCommand::Batch(Vec::new()));
-        assert!(result.is_ok(), "empty command batch should not overflow");
-    }
-
-    #[test]
-    fn stream_errors_queue_is_empty_at_startup() {
-        let (project, _) = build_round1_project();
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        // Whether the driver opened or not, the error queue is empty
-        // at startup — errors only arrive in response to a running
-        // stream's mishaps.
-        assert!(resources.next_stream_error().is_none());
-    }
-
-    #[test]
-    fn sample_clock_starts_at_zero() {
-        let (project, _) = build_round1_project();
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        assert_eq!(
-            resources
-                .sample_clock
-                .load(std::sync::atomic::Ordering::Acquire),
-            0,
-        );
-    }
-
-    #[test]
-    fn tempo_map_matches_project() {
-        let (project, _) = build_round1_project();
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        assert_eq!(resources.tempo_map, project.tempo_map);
-    }
-
-    #[test]
-    fn build_from_project_and_rate_does_not_spawn_poller() {
-        // Unit tests run outside the rinch runtime — spawning the
-        // poller would mean a future Signal::send panic. Guarantee
-        // that the test entry leaves the field None.
-        let (project, _) = build_round1_project();
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        assert!(resources._poller.is_none());
-    }
-
-    #[test]
-    fn transport_starts_stopped_and_walks_the_state_machine() {
-        let (project, _) = build_round1_project();
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-
-        assert_eq!(resources.transport.get(), Transport::Stopped);
-
-        resources.play().expect("play succeeds");
-        assert_eq!(resources.transport.get(), Transport::Playing);
-
-        resources.pause().expect("pause succeeds");
-        assert_eq!(resources.transport.get(), Transport::Paused);
-
-        resources.play().expect("play resumes");
-        assert_eq!(resources.transport.get(), Transport::Playing);
-
-        resources.stop().expect("stop succeeds");
-        assert_eq!(resources.transport.get(), Transport::Stopped);
-    }
-
-    #[test]
-    fn realized_events_are_cached_for_replay() {
-        let (project, _) = build_round1_project();
-        let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-        assert_eq!(resources.realized_events.len(), resources.initial_event_count);
-        assert!(!resources.realized_events.is_empty());
-    }
-}
+mod tests;

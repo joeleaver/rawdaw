@@ -29,7 +29,7 @@ yet); U4–U7 are the "UI" half; U8 is persistence; U9 closes out.
 
 ---
 
-## Status — U3b DONE
+## Status — milestone CLOSED at U9
 
 - U0 ✅ this document, design decisions locked.
 - U1 ✅ `BlockMessage::{Midi, Param}` + `ParamEvent { path, value }`
@@ -59,7 +59,150 @@ yet); U4–U7 are the "UI" half; U8 is persistence; U9 closes out.
   via `FilterCutoffHz @ 8000` / `SnareNoiseMix @ 0`. Pre-U3b
   `tests.rs` (726 lines) split into `tests/{playback,oscillators,
   matrix}` in a refactor commit.
-- U4–U9 pending.
+- U4 ✅ `AppState.selected_track: Signal<Option<usize>>` axis
+  mutually exclusive with `selected_idx`; `regions/tracks_pane.rs`
+  hosts a TRACKS pane between Library and Arrangement (chosen
+  over the inspector-activation-table / section-editor-cell
+  alternatives so the inspector has a live render target without
+  the section editor's mode-switch). Inspector branches on
+  (section, track), pane widens to 600 px in synth mode via a
+  reactive `style:` closure. `regions/inspector/synth_editor.rs`
+  dispatches `SynthAssignment::Wavetable` → `WavetableEditor`
+  placeholder, `SynthAssignment::Drum` → `DrumEditor`
+  placeholder. `AudioResources` now carries `Rc<Project>` so the
+  UI can read per-track `synth` without re-running
+  `build_round1_project`. 7 new tests (workspace 272 → 279)
+  cover the selection mutex, pane width sentinel, and round-1
+  per-track dispatch (`[Wavetable, Wavetable, Drum, Wavetable]`).
+- U5 ✅ `WavetableSynthNode` gains `WavetablePublishers`
+  (`Arc<AtomicU64> patch_version` + `Arc<Mutex<WavetablePatch>>`
+  snapshot) and a `with_patch_publishers` constructor. Every
+  successful Param apply mutates the patch, writes the snapshot,
+  and bumps the version. Host side: `audio/wavetable_poller.rs`
+  spawns a 20 Hz polling thread per Pitched track that watches
+  the version atomic and `Signal::send`s patch snapshots into a
+  `Signal<WavetablePatch>` on each handle. `AudioResources` carries
+  per-track `WavetableEditorHandle`s + a `push_wavetable_param`
+  helper that targets the right NodeId at `sample_clock + 1`.
+  `wavetable_editor.rs` renders four sections (3 OSCs × tune/
+  fine/level, 3 ENVs × ADSR, filter cutoff/resonance, LFO rate)
+  using Rinch's built-in `Slider`; each slider owns a
+  `Signal<f64>` for instant visual feedback and pushes a
+  `WavetableParam` event on every onchange. Audio→UI poll path is
+  installed but not yet observed by sliders (U6+ when external
+  sources like MIDI Learn land). Filter-cutoff drag on the lead
+  track was verified end-to-end via the rinch MCP (round-1 loop
+  played continuously while a click on the cutoff track snapped
+  it to 15519 Hz). 7 new tests (workspace 279 → 286): publisher
+  contract (version + snapshot bump on Param apply, shared via
+  cloned publishers), push_wavetable_param ok/err for pitched vs
+  drum, NodeId routing matches handles. `audio/mod.rs` refactor
+  in the same drop: `configure_graph` + helpers → `audio/graph.rs`;
+  `mod tests` → `audio/tests.rs`. Both clear of the 700-line cap.
+- U6 ✅ `regions/inspector/matrix_editor.rs` renders 16 slot rows
+  inside the WavetableEditor (no collapse; the inspector scrolls).
+  Each row: `[idx] [Source ▾] → [Dest ▾] [Amount slider] [×]`
+  using Rinch's built-in `Select` (skipped the planned
+  `parts/select.rs` port — the bundled component covers the
+  use case). Dropdowns are string-keyed; `mod_source_value` /
+  `mod_destination_value` produce stable identifiers, decoders
+  decode on every change. `encode_mod_source` /
+  `encode_mod_destination` were `pub(crate)` in
+  `rawdaw-synth-wavetable::param`; now `pub` and re-exported
+  alongside `ModSource` / `ModDestination` from the synth crate
+  so the app crate doesn't take a direct `rawdaw-dsp` dep.
+  4 new tests (workspace 286 → 290): source/destination
+  string-round-trip + option-list coverage pins. Audio→UI poll
+  path still installed but not bound to per-slot signals;
+  external-source sync deferred until needed.
+- U7 ✅ Drum-synth parallel of U5: `DrumPublishers`
+  (`Arc<AtomicU64> version` + `Arc<Mutex<DrumPatch>> snapshot`)
+  on `DrumSynthNode` with a `with_patch_publishers` constructor;
+  audio thread writes the snapshot + bumps the version on every
+  Param apply. `DrumParam` gets `#[derive(Default)]` (KickStartHz)
+  so the rinch macro can carry it as a prop type. Host side:
+  `audio/drum_poller.rs` (mirror of wavetable_poller); per-track
+  `DrumEditorHandle { node_id, patch_signal }` on AudioResources;
+  `push_drum_param` helper that targets the right NodeId at
+  `sample_clock + 1`. `regions/inspector/drum_editor.rs` renders
+  four sections (Kick / Snare / Closed Hat / Open Hat) with all
+  29 sliders wired. MCP verification: selecting the drums track
+  shows the full editor with v0 default values (Kick start=110 Hz,
+  Snare noise mix=0.70, Closed Hat HP=6000 Hz, etc). 5 new tests
+  (workspace 290 → 295): drum-publishers contract (version +
+  snapshot bump on Param apply, multi-event in one block bumps
+  multiply), `push_drum_param` ok/err for Drum vs Pitched,
+  `drum_handles_exist_for_every_drum_track`. Audio→UI poll
+  installed (mirror of wavetable side), still not bound to
+  per-slider signals — same deferred-binding story as U5/U6.
+- U8 ✅ Factory preset bank +  per-track preset switcher.
+  `assets/presets/wavetable/{default,pluck,bass,bell,pad}.json`
+  and `assets/presets/drum/{default,acoustic,electronic}.json`
+  embedded via `include_str!` and parsed once at first call
+  (lazy OnceLock). `crates/rawdaw-app/src/presets.rs` exposes
+  `wavetable_presets()` / `drum_presets()` typed lists. Apply
+  path: synth crates gained `wavetable_patch_to_param_events` /
+  `drum_patch_to_param_events` flatteners (72 + 29 entries
+  exactly); `AudioResources::apply_wavetable_preset` /
+  `apply_drum_preset` iterate the flattened list and push each
+  as a `BlockMessage::Param` at `sample_clock + 1` (all events
+  land atomically in the next block). Inspector gets a
+  `PresetDropdown` row at the top of each editor body; picking
+  a preset triggers the apply call. MCP verification: picking
+  "Bell" on the lead track shows the dropdown change + audio
+  resources accept the push (Ok return); known cosmetic miss is
+  that the per-slider Signals aren't bound to the patch-poll
+  path (deferred from U5/U7), so the sliders display stale
+  values until re-mount — flagged in `preset_dropdown.rs` as a
+  future bind pass. 9 new tests (workspace 295 → 304): every
+  preset JSON parses, default JSON round-trips to
+  `PatchData::default()`, preset name uniqueness,
+  `wavetable_patch_to_param_events` + `drum_patch_to_param_events`
+  round-trip through apply, `apply_wavetable_preset` /
+  `apply_drum_preset` ok/err for the right vs wrong synth type.
+- U9 ✅ Milestone close-out. Per-phase ✅ markers + deviations
+  recorded above. Slider re-bind to `patch_signal` shipped as
+  part of this phase (was deferred from U5/U7/U8) so preset
+  swaps + future external pushes visually re-sync without an
+  editor remount. Cross-references in
+  `wavetable-synth-fm-plan.md` and
+  `wavetable-synth-mod-matrix-plan.md` "Future plan needed"
+  sections marked resolved. Project-status memory refreshed
+  with the post-U picklist (design pass, "save as preset",
+  MIDI Learn, automation lanes, more presets, round-2/3 pattern
+  editor, project save/load).
+
+## Deviations from the U0 plan
+
+- **Custom slider primitive (`parts/slider.rs`) skipped.**
+  Rinch ships a `Slider` component
+  (`rinch::Slider { min, max, value_signal, step, size, color,
+  onchange }`) that covers the v1 needs — drag, click-to-set,
+  step, label format. Lands at U5.
+- **Custom select primitive (`parts/select.rs`) skipped.**
+  Rinch ships a `Select` component with `value`/`value_fn` +
+  `data: Vec<SelectOption>` + `onchange` — string-keyed but
+  fine for typed-enum dropdowns when the host owns
+  `mod_source_value` / `decode_source_str` helpers either side
+  of the boundary. Lands at U6.
+- **Both planned `value: f32` synth-edit prop types extended
+  the rinch `#[component]` macro rules**. `WavetableParam` and
+  `DrumParam` had to gain `#[derive(Default)]` because the
+  macro emits a `Default` derive on the prop struct; saved at
+  U5 / U7.
+- **Audio→UI patch publication picked `Arc<Mutex<Patch>>`**
+  rather than `triple_buffer` / `arc-swap`. RT trade-off: audio
+  thread briefly blocks if UI is mid-poll. Worst-case ~µs given
+  the Mutex critical section is a memcpy of a few hundred
+  bytes; UI polls at 20 Hz. Documented as a known future
+  optimization (`WavetablePublishers` / `DrumPublishers`
+  doc-comments). Lands at U5 / U7.
+- **Apply-preset uses per-field Param events**, not a new
+  engine `LoadPatch` command. 72 events for a wavetable / 29
+  for a drum patch — well under the engine event queue's
+  capacity, scheduled at one `sample_clock + 1` timestamp so
+  the audio thread sees them as one atomic batch within a
+  block. Lands at U8.
 
 ---
 

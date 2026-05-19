@@ -41,12 +41,22 @@ pub enum EditorMode {
 
 /// Shared app state. Holds a single `Signal<EditorMode>` so navigation
 /// changes propagate reactively to every component that reads it, plus
-/// the currently-selected arrangement-block index.
+/// the currently-selected arrangement-block index and the currently-
+/// selected project-track index.
 ///
 /// `Copy` is intentional and load-bearing: `Signal` is `Copy` (per the
 /// rinch framework contract — never `.clone()` a Signal), and this
 /// struct only wraps Signals, so the whole struct is cheaply copyable
 /// into closures and props.
+///
+/// ## Selection axes
+///
+/// `selected_idx` (arrangement-block) and `selected_track` (project-
+/// track) are two distinct selection axes that the inspector branches
+/// on. They're mutually exclusive at the UI level — choosing one
+/// clears the other — so the inspector always has a single thing to
+/// render. `set_selected_idx` and `select_track` enforce this so
+/// callers don't have to coordinate clears at each click-handler site.
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub editor_mode: Signal<EditorMode>,
@@ -55,6 +65,12 @@ pub struct AppState {
     /// (verse@bar5) so the inspector lands populated; users can change
     /// it by clicking a SectionBlock in the arrangement.
     pub selected_idx: Signal<Option<usize>>,
+    /// Index into the model `Project.tracks` of the currently
+    /// selected project track. `None` by default; clicking a row in
+    /// the arrangement's TracksPane sets it (and clears
+    /// `selected_idx`). Drives the synth-editor branch of the
+    /// Inspector (U4+).
+    pub selected_track: Signal<Option<usize>>,
 }
 
 impl AppState {
@@ -62,6 +78,7 @@ impl AppState {
         Self {
             editor_mode: Signal::new(EditorMode::Arrangement),
             selected_idx: Signal::new(Some(1usize)),
+            selected_track: Signal::new(None),
         }
     }
 
@@ -92,8 +109,66 @@ impl AppState {
     }
 
     /// Set the currently-selected SectionRef index. `None` clears the
-    /// selection (inspector goes to its empty state).
+    /// selection (inspector goes to its empty state). Selecting a
+    /// section-block clears any track selection so the inspector
+    /// branches deterministically on a single axis.
     pub fn set_selected_idx(&self, idx: Option<usize>) {
+        if idx.is_some() {
+            self.selected_track.set(None);
+        }
         self.selected_idx.set(idx);
+    }
+
+    /// Set the currently-selected project-track index. `None` clears
+    /// the selection. Selecting a track clears any section-block
+    /// selection so the inspector branches deterministically on a
+    /// single axis (see [`Self::set_selected_idx`] for the mirror).
+    pub fn select_track(&self, idx: Option<usize>) {
+        if idx.is_some() {
+            self.selected_idx.set(None);
+        }
+        self.selected_track.set(idx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_track_clears_section_selection() {
+        let app = AppState::new();
+        app.selected_idx.set(Some(2));
+        assert_eq!(app.selected_idx.get(), Some(2));
+
+        app.select_track(Some(0));
+        assert_eq!(app.selected_track.get(), Some(0));
+        assert_eq!(app.selected_idx.get(), None);
+    }
+
+    #[test]
+    fn set_selected_idx_clears_track_selection() {
+        let app = AppState::new();
+        app.select_track(Some(1));
+        assert_eq!(app.selected_track.get(), Some(1));
+
+        app.set_selected_idx(Some(3));
+        assert_eq!(app.selected_idx.get(), Some(3));
+        assert_eq!(app.selected_track.get(), None);
+    }
+
+    #[test]
+    fn clearing_selection_does_not_touch_other_axis() {
+        // Setting either axis to `None` is a pure clear — it must
+        // never disturb the other axis. The mutex only fires on
+        // `Some(_)` selections.
+        let app = AppState::new();
+        app.select_track(Some(2));
+
+        app.set_selected_idx(None);
+        assert_eq!(app.selected_track.get(), Some(2));
+
+        app.select_track(None);
+        assert_eq!(app.selected_idx.get(), None);
     }
 }

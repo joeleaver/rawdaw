@@ -35,9 +35,49 @@ use rawdaw_engine::event::{BlockMessage, EventBlock, ParamEvent};
 use rawdaw_engine::node::{AudioNode, OutputDescriptor, PortAccess};
 use rawdaw_model::{Midi2Message, U16Velocity};
 
-pub use param::DrumParam;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+pub use param::{patch_to_param_events as drum_patch_to_param_events, DrumParam};
 pub use patch::{DrumPatch, HatPatch, KickPatch, SnarePatch};
 pub use voices::{HatVoice, KickVoice, SnareVoice};
+
+/// Audio-thread → host publishers for one [`DrumSynthNode`].
+///
+/// Parallel to
+/// [`WavetablePublishers`](rawdaw_synth_wavetable::WavetablePublishers).
+/// The audio thread bumps `version` + writes `snapshot` on every
+/// successful `ParamEvent` apply; the host's `DrumPoller` reads both
+/// to mirror the live patch into a UI signal.
+///
+/// `Clone` is cheap — both inner fields are `Arc`. The host keeps a
+/// clone after passing one into the synth node so it can subscribe
+/// to patch changes after the node has moved into the engine.
+///
+/// RT trade-off: the audio thread takes a brief `lock()` to write
+/// the snapshot on each Param event (Mutex<DrumPatch> contains a
+/// `Copy` payload of a few hundred bytes — the critical section is
+/// a memcpy). Triple-buffer / `arc-swap` cleanup is a known future
+/// optimization; measurement should justify it before we add a
+/// dependency.
+#[derive(Clone)]
+pub struct DrumPublishers {
+    pub version: Arc<AtomicU64>,
+    pub snapshot: Arc<Mutex<DrumPatch>>,
+}
+
+impl DrumPublishers {
+    /// Build a fresh publishers pair seeded with `initial`. Version
+    /// starts at 0; the snapshot starts at the initial patch so the
+    /// host can read the boot state without a `prepare()` callback
+    /// having fired.
+    pub fn new(initial: DrumPatch) -> Self {
+        Self {
+            version: Arc::new(AtomicU64::new(0)),
+            snapshot: Arc::new(Mutex::new(initial)),
+        }
+    }
+}
 
 /// Polyphony per drum type. Drum hits rarely overlap deeply, but a
 /// few simultaneous hits are common (e.g. open-hat + crash + ride
@@ -73,33 +113,54 @@ fn classify(midi_note: u8) -> Option<DrumKind> {
 }
 
 /// The drum synth node. Owns per-drum-type voice pools, a shared
-/// noise source, and the canonical [`DrumPatch`] that every voice
-/// copies from at `prepare()` and at per-note patch install (hats).
+/// noise source, the canonical [`DrumPatch`] that every voice copies
+/// from at `prepare()` and at per-note patch install (hats), plus
+/// patch publishers (`patch_version`, `patch_snapshot`) for host-side
+/// UI subscription. See [`DrumPublishers`].
 pub struct DrumSynthNode {
     kicks: VoicePool<KickVoice>,
     snares: VoicePool<SnareVoice>,
     hats: VoicePool<HatVoice>,
     noise: NoiseSource,
     patch: DrumPatch,
+    /// Bumped on every successful `ParamEvent` apply. Pollers watch
+    /// this to know when the snapshot is fresh.
+    patch_version: Arc<AtomicU64>,
+    /// Latest post-apply patch — mirrors `self.patch` after every
+    /// `ParamEvent`. Host reads via `lock()`.
+    patch_snapshot: Arc<Mutex<DrumPatch>>,
 }
 
 impl DrumSynthNode {
-    /// Build with the v0 default drum patch. Delegates to
-    /// `with_patch(DrumPatch::default())`.
+    /// Build with the v0 default drum patch. Publishers are created
+    /// internally and dropped when this node drops; tests and
+    /// historical callers that don't need them stay terse.
     pub fn new() -> Self {
         Self::with_patch(DrumPatch::default())
     }
 
-    /// Build with a specific runtime patch. Round-1's audio graph
-    /// constructs through this path so each `Track::synth`'s patch
-    /// flows into the voices.
+    /// Build with a specific runtime patch. Publishers are created
+    /// internally — callers that need to observe the patch from the
+    /// host side use [`Self::with_patch_publishers`] instead.
     pub fn with_patch(patch: DrumPatch) -> Self {
+        let pubs = DrumPublishers::new(patch);
+        Self::with_patch_publishers(patch, pubs)
+    }
+
+    /// Build with patch + host-owned publishers. The host keeps a
+    /// clone of `publishers` so it can subscribe to patch changes
+    /// after the node moves into the engine. The audio thread writes
+    /// to `publishers.snapshot` + bumps `publishers.version` on every
+    /// successful `ParamEvent` apply.
+    pub fn with_patch_publishers(patch: DrumPatch, publishers: DrumPublishers) -> Self {
         Self {
             kicks: VoicePool::new(POLYPHONY_PER_TYPE, KickVoice::new),
             snares: VoicePool::new(POLYPHONY_PER_TYPE, SnareVoice::new),
             hats: VoicePool::new(POLYPHONY_PER_TYPE, HatVoice::new),
             noise: NoiseSource::new(0xC0FFEE),
             patch,
+            patch_version: publishers.version,
+            patch_snapshot: publishers.snapshot,
         }
     }
 
@@ -152,9 +213,13 @@ impl DrumSynthNode {
     }
 
     /// Decode a parameter event and apply it to the runtime patch.
-    /// Unrecognized paths `debug_assert!` in debug + no-op in release.
-    /// After mutation, propagates the relevant sub-patch into the
-    /// matching voice pool so subsequent samples see the change.
+    /// Unrecognized paths `debug_assert!` in debug + no-op in
+    /// release. After mutation:
+    ///
+    /// 1. Propagate the relevant sub-patch into the matching voice
+    ///    pool so subsequent samples see the change.
+    /// 2. Write the new patch into `patch_snapshot` and bump
+    ///    `patch_version` so host pollers can re-snapshot.
     fn apply_param(&mut self, path: &[u8; 8], value: f32) {
         let Some(param) = DrumParam::decode(path) else {
             debug_assert!(false, "DrumSynthNode: unknown ParamEvent path {path:?}");
@@ -162,6 +227,19 @@ impl DrumSynthNode {
         };
         param.apply(&mut self.patch, value);
         self.propagate_patch_to_voices();
+        self.publish_patch();
+    }
+
+    /// Write the current `self.patch` into `patch_snapshot` and bump
+    /// `patch_version` so host pollers see a fresh version. Brief
+    /// `lock()` — `DrumPatch` is `Copy`, so the critical section is
+    /// a memcpy. Version bump is `Release` so a host reader doing an
+    /// `Acquire` load is guaranteed to see the snapshot write.
+    fn publish_patch(&self) {
+        if let Ok(mut slot) = self.patch_snapshot.lock() {
+            *slot = self.patch;
+        }
+        self.patch_version.fetch_add(1, Ordering::Release);
     }
 
     /// Push every voice pool's current sub-patch from the canonical
@@ -507,5 +585,121 @@ mod tests {
             diff_rms > 0.005,
             "SnareNoiseMix @ 0 should audibly change the snare; diff_rms = {diff_rms}",
         );
+    }
+
+    // ── U7 publishers contract ───────────────────────────────────
+
+    fn make_node_with_publishers(patch: DrumPatch) -> (DrumSynthNode, DrumPublishers) {
+        let pubs = DrumPublishers::new(patch);
+        let mut node = DrumSynthNode::with_patch_publishers(patch, pubs.clone());
+        node.prepare(SR, BLOCK);
+        (node, pubs)
+    }
+
+    fn param_event(param: DrumParam, value: f32) -> BlockEventInBlock {
+        BlockEventInBlock {
+            offset_in_block: 0,
+            message: BlockMessage::Param(rawdaw_engine::ParamEvent {
+                path: param.encode(),
+                value,
+            }),
+        }
+    }
+
+    #[test]
+    fn drum_publishers_seed_to_initial_patch_and_zero_version() {
+        let patch = DrumPatch::default();
+        let (_node, pubs) = make_node_with_publishers(patch);
+        assert_eq!(pubs.version.load(Ordering::Acquire), 0);
+        let snapshot = pubs.snapshot.lock().expect("snapshot lock");
+        assert_eq!(snapshot.kick.start_hz, patch.kick.start_hz);
+        assert_eq!(snapshot.snare.noise_mix, patch.snare.noise_mix);
+    }
+
+    #[test]
+    fn drum_param_apply_bumps_version_and_updates_snapshot() {
+        let patch = DrumPatch::default();
+        let (mut node, pubs) = make_node_with_publishers(patch);
+
+        let events = [param_event(DrumParam::KickStartHz, 200.0)];
+        let mut out = Vec::new();
+        render_block(&mut node, &events, &mut out);
+
+        assert!(pubs.version.load(Ordering::Acquire) >= 1);
+        let snapshot = pubs.snapshot.lock().expect("snapshot lock");
+        assert_eq!(snapshot.kick.start_hz, 200.0);
+    }
+
+    #[test]
+    fn drum_read_from_is_inverse_of_apply() {
+        // U9 audio→UI bind pin: DrumParam::read_from(patch) is the
+        // inverse of DrumParam::apply(patch, value). Spot-check
+        // one variant per voice/category.
+        let test_cases: Vec<(DrumParam, f32)> = vec![
+            (DrumParam::KickStartHz, 130.0),
+            (DrumParam::KickAmpDecayS, 0.42),
+            (DrumParam::SnareNoiseMix, 0.25),
+            (DrumParam::SnareAmpAttackS, 0.003),
+            (DrumParam::ClosedHatHpHz, 7500.0),
+            (DrumParam::ClosedHatAmpDecayS, 0.07),
+            (DrumParam::OpenHatHpHz, 4500.0),
+            (DrumParam::OpenHatAmpRelease, 0.05),
+        ];
+        for (param, value) in test_cases {
+            let mut patch = DrumPatch::default();
+            param.apply(&mut patch, value);
+            let read = param.read_from(&patch);
+            assert!(
+                (read - value).abs() < 0.001,
+                "{param:?} round trip failed: applied {value}, read {read}",
+            );
+        }
+    }
+
+    #[test]
+    fn drum_patch_to_param_events_round_trips_through_apply() {
+        // Mirror of the wavetable round-trip pin: every (param,
+        // value) emitted by drum_patch_to_param_events applied to a
+        // default patch must reproduce the source patch.
+        use crate::drum_patch_to_param_events;
+
+        let mut source = DrumPatch::default();
+        source.kick.start_hz = 150.0;
+        source.snare.noise_mix = 0.25;
+        source.closed_hat.hp_hz = 8500.0;
+        source.open_hat.amp.decay_s = 0.8;
+
+        let events = drum_patch_to_param_events(&source);
+        assert_eq!(events.len(), 29, "every drum-param variant must appear");
+
+        let mut target = DrumPatch::default();
+        for (param, value) in events {
+            param.apply(&mut target, value);
+        }
+
+        assert_eq!(target.kick.start_hz, 150.0);
+        assert_eq!(target.snare.noise_mix, 0.25);
+        assert_eq!(target.closed_hat.hp_hz, 8500.0);
+        assert_eq!(target.open_hat.amp.decay_s, 0.8);
+    }
+
+    #[test]
+    fn drum_multiple_param_events_in_one_block_bump_version_multiply() {
+        let patch = DrumPatch::default();
+        let (mut node, pubs) = make_node_with_publishers(patch);
+
+        let events = [
+            param_event(DrumParam::KickStartHz, 150.0),
+            param_event(DrumParam::SnareNoiseMix, 0.3),
+            param_event(DrumParam::ClosedHatHpHz, 5000.0),
+        ];
+        let mut out = Vec::new();
+        render_block(&mut node, &events, &mut out);
+
+        assert_eq!(pubs.version.load(Ordering::Acquire), 3);
+        let snapshot = pubs.snapshot.lock().expect("snapshot lock");
+        assert_eq!(snapshot.kick.start_hz, 150.0);
+        assert_eq!(snapshot.snare.noise_mix, 0.3);
+        assert_eq!(snapshot.closed_hat.hp_hz, 5000.0);
     }
 }

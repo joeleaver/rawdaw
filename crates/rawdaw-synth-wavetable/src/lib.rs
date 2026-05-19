@@ -19,7 +19,7 @@ mod voice;
 mod tests;
 
 #[cfg(test)]
-use rawdaw_dsp::{ModDestination, ModSlot, ModSource, WavetableOscParams};
+use rawdaw_dsp::{ModSlot, WavetableOscParams};
 use rawdaw_dsp::{SineLfo, Voice, VoicePool, Wavetable};
 use rawdaw_engine::buffer::ChannelCount;
 use rawdaw_engine::context::ProcessContext;
@@ -27,7 +27,20 @@ use rawdaw_engine::event::{BlockMessage, EventBlock, ParamEvent};
 use rawdaw_engine::node::{AudioNode, OutputDescriptor, PortAccess};
 use rawdaw_model::{Midi2Message, U16Velocity};
 
-pub use param::WavetableParam;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+pub use param::{
+    encode_mod_destination, encode_mod_source,
+    patch_to_param_events as wavetable_patch_to_param_events, WavetableParam,
+};
+
+/// Re-export the mod-matrix vocabulary so the UI editor can build
+/// dropdowns without adding a direct `rawdaw-dsp` dep on the app
+/// crate. Both enums are `pub` in `rawdaw-dsp::modulation::matrix`;
+/// surfacing them here lets `rawdaw-app` go through the synth crate
+/// as a single boundary.
+pub use rawdaw_dsp::{ModDestination, ModSource};
 pub use patch::WavetablePatch;
 use voice::WavetableVoice;
 
@@ -59,6 +72,49 @@ pub(crate) const EMPTY_SLOT: ModSlot = ModSlot {
 // WavetableVoice and `Voice for WavetableVoice` live in `voice.rs` —
 // split out to keep this file under the workspace ~700-line cap.
 
+/// Audio-thread → host publishers for one [`WavetableSynthNode`].
+///
+/// The synth node owns the canonical [`WavetablePatch`]; this struct
+/// publishes a snapshot for the UI to read so editor sliders can
+/// reflect the live patch state (including future updates driven by
+/// MIDI Learn / automation, not just by the editor itself).
+///
+/// - `version` increments on every successful `ParamEvent` apply.
+///   Pollers watch this to detect that they need to re-snapshot.
+/// - `snapshot` holds the most recent post-apply patch. The audio
+///   thread takes a brief `lock()` to write it on every Param event;
+///   the host takes a brief `lock()` to read it on each poll. The
+///   `WavetablePatch` is `Copy` (~few hundred bytes), so the
+///   critical section is a memcpy — fast enough that the worst-case
+///   audio-thread block (a ~µs while a poll is in flight) is well
+///   under one audio block at 44.1 kHz. The cleaner triple-buffer /
+///   `arc-swap` rework is a known future optimization; measurement
+///   should justify it before we add a dependency.
+///
+/// Constructed by the host via [`WavetablePublishers::new`] and
+/// passed into [`WavetableSynthNode::with_patch_publishers`]. The
+/// host keeps a clone (the Arcs make this cheap) so it can read the
+/// version + snapshot after the synth node has moved into the
+/// engine.
+#[derive(Clone)]
+pub struct WavetablePublishers {
+    pub version: Arc<AtomicU64>,
+    pub snapshot: Arc<Mutex<WavetablePatch>>,
+}
+
+impl WavetablePublishers {
+    /// Build a fresh publishers pair seeded with `initial`. Version
+    /// starts at 0; the snapshot starts at the initial patch so the
+    /// host can read the boot state without a `prepare()` callback
+    /// having fired.
+    pub fn new(initial: WavetablePatch) -> Self {
+        Self {
+            version: Arc::new(AtomicU64::new(0)),
+            snapshot: Arc::new(Mutex::new(initial)),
+        }
+    }
+}
+
 /// The Vital-class wavetable synth's `AudioNode`.
 ///
 /// Stateful: voices and shared LFO live across `process` calls. The
@@ -66,29 +122,54 @@ pub(crate) const EMPTY_SLOT: ModSlot = ModSlot {
 /// into each voice at `prepare()` time — voices read their own copy
 /// so the audio thread never crosses the patch-source ↔ voice
 /// boundary mid-tick.
+///
+/// Patch publishers (`patch_version`, `patch_snapshot`) sit alongside
+/// so the host's UI can observe the audio thread's patch state
+/// without holding a reference to the node itself (which moves into
+/// the engine after construction). See [`WavetablePublishers`].
 pub struct WavetableSynthNode {
     wavetable: Wavetable,
     lfo: SineLfo,
     voices: VoicePool<WavetableVoice>,
     patch: WavetablePatch,
+    /// Bumped on every successful `ParamEvent` apply. Pollers watch
+    /// this to know when the snapshot is fresh.
+    patch_version: Arc<AtomicU64>,
+    /// Latest post-apply patch — mirrors `self.patch` after every
+    /// `ParamEvent`. Host reads via `lock()`.
+    patch_snapshot: Arc<Mutex<WavetablePatch>>,
 }
 
 impl WavetableSynthNode {
     /// Build with the M5 default patch. Equivalent to
-    /// `with_patch(WavetablePatch::default())`.
+    /// `with_patch(WavetablePatch::default())`. Publishers are
+    /// created internally and dropped when this node drops; tests
+    /// and historical callers that don't need them stay terse.
     pub fn new() -> Self {
         Self::with_patch(WavetablePatch::default())
     }
 
-    /// Build with a specific runtime patch. Round-1's audio graph
-    /// constructs through this path so each `Track::synth`'s patch
-    /// becomes the voice's reading material.
+    /// Build with a specific runtime patch. Publishers are created
+    /// internally — callers that need to observe the patch from the
+    /// host side use [`Self::with_patch_publishers`] instead.
     pub fn with_patch(patch: WavetablePatch) -> Self {
+        let pubs = WavetablePublishers::new(patch);
+        Self::with_patch_publishers(patch, pubs)
+    }
+
+    /// Build with patch + host-owned publishers. The host keeps a
+    /// clone of `publishers` so it can subscribe to patch changes
+    /// after the node moves into the engine. The audio thread writes
+    /// to `publishers.snapshot` + bumps `publishers.version` on every
+    /// successful `ParamEvent` apply.
+    pub fn with_patch_publishers(patch: WavetablePatch, publishers: WavetablePublishers) -> Self {
         Self {
             wavetable: Wavetable::saw_default(),
             lfo: SineLfo::new(),
             voices: VoicePool::new(NUM_VOICES, WavetableVoice::new),
             patch,
+            patch_version: publishers.version,
+            patch_snapshot: publishers.snapshot,
         }
     }
 
@@ -110,8 +191,12 @@ impl WavetableSynthNode {
     /// Decode a parameter event and apply it to the runtime patch.
     /// Unrecognized paths `debug_assert!` in debug + no-op in release
     /// — a bad path is a host-side bug, not an audio-time recoverable
-    /// condition. After mutation, propagates the new patch to every
-    /// voice so subsequent samples see the change.
+    /// condition. After mutation:
+    ///
+    /// 1. Propagate the new patch to every voice so subsequent
+    ///    samples see the change.
+    /// 2. Write the new patch into `patch_snapshot` and bump
+    ///    `patch_version` so host pollers can re-snapshot.
     fn apply_param(&mut self, path: &[u8; 8], value: f32) {
         let Some(param) = WavetableParam::decode(path) else {
             debug_assert!(false, "WavetableSynthNode: unknown ParamEvent path {path:?}");
@@ -119,6 +204,19 @@ impl WavetableSynthNode {
         };
         param.apply(&mut self.patch, value);
         self.propagate_patch_to_voices();
+        self.publish_patch();
+    }
+
+    /// Write the current `self.patch` into `patch_snapshot` and bump
+    /// `patch_version` so host pollers see a fresh version. Brief
+    /// `lock()` — `WavetablePatch` is `Copy`, so the critical section
+    /// is a memcpy. Version bump is `Release` so a host reader doing
+    /// an `Acquire` load is guaranteed to see the snapshot write.
+    fn publish_patch(&self) {
+        if let Ok(mut slot) = self.patch_snapshot.lock() {
+            *slot = self.patch;
+        }
+        self.patch_version.fetch_add(1, Ordering::Release);
     }
 
     /// Push the canonical patch (osc params + matrix slots + filter

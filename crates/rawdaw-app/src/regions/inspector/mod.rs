@@ -2,19 +2,39 @@
 //! most-common edits inline.
 //!
 //! Translates `docs/design/mockups/round-1/components/inspector.jsx`.
-//! Round 1 takes a static `idx: Option<usize>` rather than a Signal —
-//! the MainWindow port will switch this to `Signal<Option<usize>>` once
-//! click handlers in the arrangement set it.
+//! Component props pass *primitive owned* data (`String`, `u32`,
+//! `bool`) rather than the full `Section`/`SectionRef` structs. The
+//! macro requires every field type to implement `Default`, and
+//! threading `Default` through every fixture struct + nested type
+//! would balloon. Doing one fixture lookup at the `SelectedInspector`
+//! boundary and passing primitives down also matches the way a real
+//! `Project` will be navigated — by id rather than by reference.
 //!
-//! Component props pass *primitive owned* data (`String`, `u32`, `bool`)
-//! rather than the full `Section`/`SectionRef` structs. The macro
-//! requires every field type to implement `Default`, and threading
-//! `Default` through every fixture struct + nested type would balloon.
-//! Doing one fixture lookup at the `SelectedInspector` boundary and
-//! passing primitives down also matches the way a real `Project` will
-//! be navigated — by id rather than by reference.
+//! ## Three selection states
+//!
+//! Inspector reads both selection axes off [`AppState`] and branches:
+//!
+//! 1. `selected_idx = Some(_)` — render the section/block detail (the
+//!    round-1 behavior; section-block selection takes precedence over
+//!    track selection so existing UX is preserved).
+//! 2. `selected_idx = None`, `selected_track = Some(_)` — render the
+//!    [`SynthEditor`] for the selected track (U4+).
+//! 3. Both `None` — render the empty state.
+//!
+//! The pane width grows from 320 px to 600 px when the synth editor
+//! is active (rule 14 of the rinch skill — the `style:` closure is
+//! itself a Fn effect, so it re-runs on selection-signal changes).
+//! The parent (`ArrangementSurface`) re-mounts the whole Inspector
+//! component on every selection change via its keyed for-loop, so
+//! the inner subtree always starts fresh — the reactive width still
+//! handles the per-mount initial paint.
 
 mod activation_table;
+mod drum_editor;
+mod matrix_editor;
+mod preset_dropdown;
+mod synth_editor;
+mod wavetable_editor;
 
 use rinch::prelude::*;
 
@@ -24,33 +44,62 @@ use crate::state::AppState;
 use crate::theme;
 
 use activation_table::ActivationTable;
+use synth_editor::SynthEditor;
 
-/// Inspector takes an optional selected SectionRef index. None →
-/// empty state; Some(idx) → populated with that section's content.
+/// Inspector — branches on (`selected_idx`, `selected_track`) and
+/// renders one of three subtrees. The pane width is reactive: 600 px
+/// while the synth editor is active, 320 px otherwise.
+///
+/// Parent (`ArrangementSurface`) re-mounts this component on every
+/// selection change via a keyed for-loop, so the inner match arm is
+/// evaluated once per mount. The reactive style closure on `aside`
+/// still handles per-mount initial paint via `pane_style`.
+///
+/// Uses an `if`/`else if` chain over the three states rather than an
+/// rsx `match` — the macro's match-arm codegen treats each pattern
+/// binding as if it were behind a `Fn` closure and refuses to forward
+/// non-`Copy` bindings to component props. Routing each state through
+/// a `bool` + sentinel mirrors the pattern that
+/// [`InspectorEmpty`]/[`SelectedInspector`] already uses.
 #[component]
-pub fn Inspector(idx: Option<usize>) -> NodeHandle {
-    let pane_style = format!(
-        "width: 320px; flex: 0 0 320px; \
-         background: {bg}; border-left: 1px solid {line}; \
-         display: flex; flex-direction: column; min-height: 0;",
-        bg = theme::BG1,
-        line = theme::LINE,
-    );
+pub fn Inspector() -> NodeHandle {
+    let app = use_store::<AppState>();
+    let section_sel = app.selected_idx.get();
+    let track_sel = app.selected_track.get();
 
-    let idx_value = idx.unwrap_or(usize::MAX);
-    let has_selection = idx.is_some();
+    let is_section = section_sel.is_some();
+    let is_track = !is_section && track_sel.is_some();
+    let section_idx = section_sel.unwrap_or(usize::MAX);
+    let track_idx = track_sel.unwrap_or(usize::MAX);
+
     rsx! {
-        aside { style: {pane_style.clone()},
-            // rsx's `if`/`if let` codegen confuses clippy's unused-binding
-            // analysis. Routing the option through a `bool` + sentinel
-            // keeps both branches obvious *and* clippy happy.
-            if has_selection {
-                SelectedInspector { idx: idx_value }
+        aside {
+            style: {|| pane_style(synth_mode_active())},
+            if is_section {
+                SelectedInspector { idx: section_idx }
+            } else if is_track {
+                SynthEditor { track_idx: track_idx }
             } else {
                 InspectorEmpty { }
             }
         }
     }
+}
+
+fn synth_mode_active() -> bool {
+    let app = use_store::<AppState>();
+    app.selected_idx.get().is_none() && app.selected_track.get().is_some()
+}
+
+fn pane_style(wide: bool) -> String {
+    let width = if wide { 600 } else { 320 };
+    format!(
+        "width: {width}px; flex: 0 0 {width}px; \
+         background: {bg}; border-left: 1px solid {line}; \
+         display: flex; flex-direction: column; min-height: 0;",
+        bg = theme::BG1,
+        line = theme::LINE,
+    )
 }
 
 #[component]
@@ -544,6 +593,21 @@ fn InspectorFooter(section_key: String, variant_id: String) -> NodeHandle {
                 onclick: move || app.open_section_editor(open_section.clone(), open_variant.clone()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pane_style_widens_for_synth_mode() {
+        let wide = pane_style(true);
+        let narrow = pane_style(false);
+        assert!(wide.contains("width: 600px"), "wide: {wide}");
+        assert!(wide.contains("flex: 0 0 600px"), "wide: {wide}");
+        assert!(narrow.contains("width: 320px"), "narrow: {narrow}");
+        assert!(narrow.contains("flex: 0 0 320px"), "narrow: {narrow}");
     }
 }
 

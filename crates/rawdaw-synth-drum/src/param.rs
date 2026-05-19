@@ -17,9 +17,20 @@ use crate::patch::DrumPatch;
 use rawdaw_dsp::AdsrParams;
 
 /// One typed parameter address on a [`DrumSynthNode`](crate::DrumSynthNode).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Default` exists so the host-side editor components can carry the
+/// variant as a `#[component]` prop (the rinch macro requires every
+/// prop type to implement `Default`). The default itself —
+/// `KickStartHz` — is harmless: it's never sent unless code explicitly
+/// constructs it, and clamping in `apply` keeps any accidental send a
+/// no-op against the current kick start frequency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DrumParam {
     // ── Kick (tags 0..=6) ────────────────────────────────────────
+    /// `kick.start_hz`. Marked `#[default]` because the rinch
+    /// `#[component]` macro requires Default on enum prop types;
+    /// the value itself is never sent unless explicitly constructed.
+    #[default]
     KickStartHz,
     KickEndHz,
     KickPitchDecayS,
@@ -180,6 +191,104 @@ where
     F: FnOnce(&mut AdsrParams) -> &mut f32,
 {
     *field(amp) = value.clamp(lo, hi);
+}
+
+impl DrumParam {
+    /// Read this parameter's current value out of a runtime patch.
+    /// Inverse of [`Self::apply`] — used by the U9 audio→UI
+    /// slider re-bind so drum-editor sliders track the audio
+    /// thread's patch state.
+    pub fn read_from(self, patch: &DrumPatch) -> f32 {
+        match self {
+            Self::KickStartHz => patch.kick.start_hz,
+            Self::KickEndHz => patch.kick.end_hz,
+            Self::KickPitchDecayS => patch.kick.pitch_decay_s,
+            Self::KickAmpAttackS => patch.kick.amp.attack_s,
+            Self::KickAmpDecayS => patch.kick.amp.decay_s,
+            Self::KickAmpSustain => patch.kick.amp.sustain_level,
+            Self::KickAmpRelease => patch.kick.amp.release_s,
+            Self::SnareBodyStartHz => patch.snare.body_start_hz,
+            Self::SnareBodyEndHz => patch.snare.body_end_hz,
+            Self::SnareBodyPitchDecayS => patch.snare.body_pitch_decay_s,
+            Self::SnareNoiseMix => patch.snare.noise_mix,
+            Self::SnareNoiseHpHz => patch.snare.noise_hp_hz,
+            Self::SnareNoiseHpQ => patch.snare.noise_hp_q,
+            Self::SnareAmpAttackS => patch.snare.amp.attack_s,
+            Self::SnareAmpDecayS => patch.snare.amp.decay_s,
+            Self::SnareAmpSustain => patch.snare.amp.sustain_level,
+            Self::SnareAmpRelease => patch.snare.amp.release_s,
+            Self::ClosedHatHpHz => patch.closed_hat.hp_hz,
+            Self::ClosedHatHpQ => patch.closed_hat.hp_q,
+            Self::ClosedHatAmpAttackS => patch.closed_hat.amp.attack_s,
+            Self::ClosedHatAmpDecayS => patch.closed_hat.amp.decay_s,
+            Self::ClosedHatAmpSustain => patch.closed_hat.amp.sustain_level,
+            Self::ClosedHatAmpRelease => patch.closed_hat.amp.release_s,
+            Self::OpenHatHpHz => patch.open_hat.hp_hz,
+            Self::OpenHatHpQ => patch.open_hat.hp_q,
+            Self::OpenHatAmpAttackS => patch.open_hat.amp.attack_s,
+            Self::OpenHatAmpDecayS => patch.open_hat.amp.decay_s,
+            Self::OpenHatAmpSustain => patch.open_hat.amp.sustain_level,
+            Self::OpenHatAmpRelease => patch.open_hat.amp.release_s,
+        }
+    }
+}
+
+/// Flatten a runtime [`DrumPatch`] into the full sequence of
+/// `(DrumParam, value)` pairs that recreates it. Used by the U8
+/// preset-application path: the host iterates the result and pushes
+/// one `BlockMessage::Param` per entry. Exactly 29 entries — one
+/// per `DrumParam` variant.
+pub fn patch_to_param_events(patch: &DrumPatch) -> Vec<(DrumParam, f32)> {
+    vec![
+        // Kick.
+        (DrumParam::KickStartHz, patch.kick.start_hz),
+        (DrumParam::KickEndHz, patch.kick.end_hz),
+        (DrumParam::KickPitchDecayS, patch.kick.pitch_decay_s),
+        (DrumParam::KickAmpAttackS, patch.kick.amp.attack_s),
+        (DrumParam::KickAmpDecayS, patch.kick.amp.decay_s),
+        (DrumParam::KickAmpSustain, patch.kick.amp.sustain_level),
+        (DrumParam::KickAmpRelease, patch.kick.amp.release_s),
+        // Snare.
+        (DrumParam::SnareBodyStartHz, patch.snare.body_start_hz),
+        (DrumParam::SnareBodyEndHz, patch.snare.body_end_hz),
+        (
+            DrumParam::SnareBodyPitchDecayS,
+            patch.snare.body_pitch_decay_s,
+        ),
+        (DrumParam::SnareNoiseMix, patch.snare.noise_mix),
+        (DrumParam::SnareNoiseHpHz, patch.snare.noise_hp_hz),
+        (DrumParam::SnareNoiseHpQ, patch.snare.noise_hp_q),
+        (DrumParam::SnareAmpAttackS, patch.snare.amp.attack_s),
+        (DrumParam::SnareAmpDecayS, patch.snare.amp.decay_s),
+        (DrumParam::SnareAmpSustain, patch.snare.amp.sustain_level),
+        (DrumParam::SnareAmpRelease, patch.snare.amp.release_s),
+        // Closed hat.
+        (DrumParam::ClosedHatHpHz, patch.closed_hat.hp_hz),
+        (DrumParam::ClosedHatHpQ, patch.closed_hat.hp_q),
+        (
+            DrumParam::ClosedHatAmpAttackS,
+            patch.closed_hat.amp.attack_s,
+        ),
+        (DrumParam::ClosedHatAmpDecayS, patch.closed_hat.amp.decay_s),
+        (
+            DrumParam::ClosedHatAmpSustain,
+            patch.closed_hat.amp.sustain_level,
+        ),
+        (
+            DrumParam::ClosedHatAmpRelease,
+            patch.closed_hat.amp.release_s,
+        ),
+        // Open hat.
+        (DrumParam::OpenHatHpHz, patch.open_hat.hp_hz),
+        (DrumParam::OpenHatHpQ, patch.open_hat.hp_q),
+        (DrumParam::OpenHatAmpAttackS, patch.open_hat.amp.attack_s),
+        (DrumParam::OpenHatAmpDecayS, patch.open_hat.amp.decay_s),
+        (
+            DrumParam::OpenHatAmpSustain,
+            patch.open_hat.amp.sustain_level,
+        ),
+        (DrumParam::OpenHatAmpRelease, patch.open_hat.amp.release_s),
+    ]
 }
 
 #[cfg(test)]

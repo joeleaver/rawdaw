@@ -28,7 +28,14 @@ use crate::patch::WavetablePatch;
 /// Discriminants are stable wire identifiers — adding new variants
 /// only appends; existing variants never renumber. The encoder uses
 /// `byte0 == discriminant ordinal`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Default` exists so the host-side editor components can carry
+/// the variant as a `#[component]` prop (the rinch macro requires
+/// every prop type to implement `Default`). The default itself —
+/// `FilterCutoffHz` — is harmless: it's never sent unless code
+/// explicitly constructs it, and clamping in `apply` keeps any
+/// accidental send a no-op against the current cutoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WavetableParam {
     /// `osc_params[i].tune_semitones`. `i` ∈ 0..=2.
     OscTune(u8),
@@ -46,7 +53,11 @@ pub enum WavetableParam {
     EnvReleaseS(u8),
     /// `lfo_rate_hz`.
     LfoRateHz,
-    /// `filter_cutoff_hz`.
+    /// `filter_cutoff_hz`. Marked `#[default]` because the rinch
+    /// `#[component]` macro requires the host-side prop type to
+    /// implement `Default`; the value itself is never sent unless
+    /// explicitly constructed.
+    #[default]
     FilterCutoffHz,
     /// `filter_resonance`.
     FilterResonance,
@@ -237,8 +248,14 @@ fn decode_mod_destination(value: f32) -> Option<ModDestination> {
     }
 }
 
-#[allow(dead_code)] // Used by U4+ UI code; kept here for symmetry.
-pub(crate) fn encode_mod_source(src: ModSource) -> f32 {
+/// Encode a [`ModSource`] as the ordinal `f32` value used by
+/// [`WavetableParam::MatrixSource`]'s payload.
+///
+/// The UI matrix editor calls this when translating a dropdown
+/// selection into the value field of a `ParamEvent`. Audio-thread
+/// decoding goes through `decode_mod_source` (private — the
+/// receiving synth owns the wire decoder).
+pub fn encode_mod_source(src: ModSource) -> f32 {
     match src {
         ModSource::None => 0.0,
         ModSource::Env1 => 1.0,
@@ -251,8 +268,13 @@ pub(crate) fn encode_mod_source(src: ModSource) -> f32 {
     }
 }
 
-#[allow(dead_code)] // Used by U4+ UI code; kept here for symmetry.
-pub(crate) fn encode_mod_destination(dst: ModDestination) -> f32 {
+/// Encode a [`ModDestination`] as the flat-index `f32` value used
+/// by [`WavetableParam::MatrixDestination`]'s payload.
+///
+/// Pairs with [`encode_mod_source`] for the UI matrix editor —
+/// dropdown change → variant → `f32` → `ParamEvent`. Audio-thread
+/// decoding lives in this module's private `decode_mod_destination`.
+pub fn encode_mod_destination(dst: ModDestination) -> f32 {
     match dst {
         ModDestination::FilterCutoff => 0.0,
         ModDestination::FilterResonance => 1.0,
@@ -278,6 +300,122 @@ pub(crate) fn apply_encoded(
     let param = WavetableParam::decode(path)?;
     param.apply(patch, value);
     Some(())
+}
+
+impl WavetableParam {
+    /// Read this parameter's current value out of a runtime patch.
+    /// Inverse of [`Self::apply`] for a single field — used by the
+    /// U9 audio→UI slider re-bind so editor sliders track the
+    /// authoritative audio-thread patch state. Matrix-source and
+    /// matrix-destination values are returned in their encoded
+    /// `f32` form (`encode_mod_source` / `encode_mod_destination`)
+    /// so the read is type-symmetric with the wire format.
+    pub fn read_from(self, patch: &WavetablePatch) -> f32 {
+        match self {
+            Self::OscTune(i) => patch
+                .osc_params
+                .get(i as usize)
+                .map(|p| p.tune_semitones as f32)
+                .unwrap_or(0.0),
+            Self::OscFineCents(i) => patch
+                .osc_params
+                .get(i as usize)
+                .map(|p| p.fine_cents as f32)
+                .unwrap_or(0.0),
+            Self::OscLevel(i) => patch
+                .osc_params
+                .get(i as usize)
+                .map(|p| p.level)
+                .unwrap_or(0.0),
+            Self::EnvAttackS(i) => patch
+                .env_params
+                .get(i as usize)
+                .map(|e| e.attack_s)
+                .unwrap_or(0.0),
+            Self::EnvDecayS(i) => patch
+                .env_params
+                .get(i as usize)
+                .map(|e| e.decay_s)
+                .unwrap_or(0.0),
+            Self::EnvSustain(i) => patch
+                .env_params
+                .get(i as usize)
+                .map(|e| e.sustain_level)
+                .unwrap_or(0.0),
+            Self::EnvReleaseS(i) => patch
+                .env_params
+                .get(i as usize)
+                .map(|e| e.release_s)
+                .unwrap_or(0.0),
+            Self::LfoRateHz => patch.lfo_rate_hz,
+            Self::FilterCutoffHz => patch.filter_cutoff_hz,
+            Self::FilterResonance => patch.filter_resonance,
+            Self::MatrixSource(s) => patch
+                .matrix
+                .get(s as usize)
+                .map(|slot| encode_mod_source(slot.source))
+                .unwrap_or(0.0),
+            Self::MatrixDestination(s) => patch
+                .matrix
+                .get(s as usize)
+                .map(|slot| encode_mod_destination(slot.destination))
+                .unwrap_or(0.0),
+            Self::MatrixAmount(s) => patch
+                .matrix
+                .get(s as usize)
+                .map(|slot| slot.amount)
+                .unwrap_or(0.0),
+        }
+    }
+}
+
+/// Flatten a runtime [`WavetablePatch`] into the full sequence of
+/// `(WavetableParam, value)` pairs that recreates it. Used by the U8
+/// preset-application path: the host iterates the result and pushes
+/// one `BlockMessage::Param` per entry. Order is: oscillators,
+/// envelopes, LFO + filter, matrix slots — applying in that order
+/// gives the audio thread one final consistent state after the last
+/// event lands.
+///
+/// Length is exactly 9 + 12 + 3 + 48 = 72 entries (every
+/// non-matrix patch field is one Param; every matrix slot
+/// contributes three).
+pub fn patch_to_param_events(patch: &WavetablePatch) -> Vec<(WavetableParam, f32)> {
+    let mut out: Vec<(WavetableParam, f32)> = Vec::with_capacity(72);
+
+    for (i, osc) in patch.osc_params.iter().enumerate() {
+        let i = i as u8;
+        out.push((WavetableParam::OscTune(i), osc.tune_semitones as f32));
+        out.push((WavetableParam::OscFineCents(i), osc.fine_cents as f32));
+        out.push((WavetableParam::OscLevel(i), osc.level));
+    }
+
+    for (i, env) in patch.env_params.iter().enumerate() {
+        let i = i as u8;
+        out.push((WavetableParam::EnvAttackS(i), env.attack_s));
+        out.push((WavetableParam::EnvDecayS(i), env.decay_s));
+        out.push((WavetableParam::EnvSustain(i), env.sustain_level));
+        out.push((WavetableParam::EnvReleaseS(i), env.release_s));
+    }
+
+    out.push((WavetableParam::LfoRateHz, patch.lfo_rate_hz));
+    out.push((WavetableParam::FilterCutoffHz, patch.filter_cutoff_hz));
+    out.push((WavetableParam::FilterResonance, patch.filter_resonance));
+
+    for (s, slot) in patch.matrix.iter().enumerate() {
+        let s = s as u8;
+        out.push((
+            WavetableParam::MatrixSource(s),
+            encode_mod_source(slot.source),
+        ));
+        out.push((
+            WavetableParam::MatrixDestination(s),
+            encode_mod_destination(slot.destination),
+        ));
+        out.push((WavetableParam::MatrixAmount(s), slot.amount));
+    }
+
+    out
 }
 
 #[cfg(test)]

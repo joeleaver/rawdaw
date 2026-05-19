@@ -10,7 +10,7 @@ use rinch::prelude::*;
 use rawdaw_engine::Transport;
 
 use crate::audio::AudioResources;
-use crate::regions::{Arrangement, BottomStrip, Inspector, Library, TopBar};
+use crate::regions::{Arrangement, BottomStrip, Inspector, Library, TopBar, TracksPane};
 use crate::section_editor::SectionEditor;
 use crate::state::{AppState, EditorMode};
 use crate::theme;
@@ -88,9 +88,17 @@ fn ArrangementSurface() -> NodeHandle {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
             div { style: {row_style},
                 Library { }
+                TracksPane { }
                 Arrangement { }
-                for sel in inspector_selection_keys() {
-                    Inspector { key: sel.0, idx: sel.1 }
+                // The for-loop drives an Inspector re-mount whenever
+                // `inspector_selection_keys()` returns a different
+                // string. The macro's key-fallback path Debug-formats
+                // the iteration variable for `for_each_dom_typed`'s
+                // identity, so the loop body itself never has to
+                // reference `sel` directly — the `_` prefix mirrors
+                // that intent and silences rustc's unused warning.
+                for _sel in inspector_selection_keys() {
+                    Inspector { }
                 }
             }
             BottomStrip { }
@@ -98,17 +106,20 @@ fn ArrangementSurface() -> NodeHandle {
     }
 }
 
-/// Singleton iterator used by `ArrangementSurface` to force an Inspector
-/// re-mount on every selection change. Returns a 1-element vec of
-/// `(key, idx)` — `key` is the for-loop identity used by rsx
-/// reconciliation (`usize::MAX` stands in for `None`), and `idx` is the
-/// actual prop value passed into Inspector. When the user clicks a
-/// different SectionBlock, the key changes → rsx unmounts the old
-/// Inspector and mounts a new one with fresh content. Pulled out as a
-/// free function because the rsx `for` source must be `Fn() -> Vec<T>`
+/// Singleton iterator used by `ArrangementSurface` to force an
+/// Inspector re-mount on every selection change. Returns a 1-element
+/// vec of a string key derived from both selection axes — section-
+/// block (`selected_idx`) and project-track (`selected_track`). When
+/// either changes, the key changes and rsx unmounts the old Inspector
+/// and mounts a new one with fresh content. Pulled out as a free
+/// function because the rsx `for` source must be a `Fn() -> Vec<T>`
 /// callable.
-fn inspector_selection_keys() -> Vec<(usize, Option<usize>)> {
+fn inspector_selection_keys() -> Vec<String> {
     let app = use_store::<AppState>();
-    let sel = app.selected_idx.get();
-    vec![(sel.unwrap_or(usize::MAX), sel)]
+    let key = match (app.selected_idx.get(), app.selected_track.get()) {
+        (Some(idx), _) => format!("s{idx}"),
+        (None, Some(t)) => format!("t{t}"),
+        (None, None) => "none".to_string(),
+    };
+    vec![key]
 }

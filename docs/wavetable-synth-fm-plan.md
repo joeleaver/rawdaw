@@ -378,6 +378,17 @@ The starting-point patch numbers held up — no tuning needed.
 
 ---
 
+## ✅ Resolved by `docs/synth-ui-integration-plan.md` (U0–U9)
+
+The synth-UI integration milestone (closed at U9) ships every item
+listed below: parameter event protocol (U1), two-layer patch types
+(U2/U3), per-synth UI dispatch + WavetableEditor + DrumEditor
+(U4/U5/U7), mod-matrix editor (U6), factory preset bank (U8).
+The notes below are kept for historical context — they describe
+the gap before the U-milestone landed.
+
+---
+
 ## Future plan needed: synth UI integration
 
 A v1-shaped synth that exposes a patch via UI knobs (or even a patch
