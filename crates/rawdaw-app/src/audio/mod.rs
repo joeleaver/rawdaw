@@ -316,12 +316,30 @@ impl AudioResources {
             return;
         };
         let bridge = MidiInputBridge::new(handle, Arc::clone(&self.sample_clock), target);
+        // Diagnostic: list every device midir can see, so a missing
+        // keyboard is obvious from the launch log. The auto-pick
+        // filters out "Midi Through" (see midi_input::auto_pick_input
+        // doc); this listing is unfiltered so Joe can spot whether
+        // the device is even being enumerated.
+        match midi_input::enumerate_inputs() {
+            Ok(devices) if !devices.is_empty() => {
+                eprintln!("audio: MIDI input devices found ({}):", devices.len());
+                for (i, d) in devices.iter().enumerate() {
+                    eprintln!("  [{i}] {}", d.name);
+                }
+            }
+            Ok(_) => eprintln!("audio: no MIDI input devices found"),
+            Err(e) => eprintln!("audio: enumerating MIDI input devices failed: {e}"),
+        }
         match midi_input::auto_pick_input() {
             Ok(Some(device)) => {
                 let device_name = device.name.clone();
                 match midi_input::open(&device, bridge) {
                     Ok(connection) => {
-                        eprintln!("audio: opened MIDI input '{device_name}'");
+                        eprintln!(
+                            "audio: opened MIDI input '{device_name}' routed to NodeId({})",
+                            target.0
+                        );
                         *self._midi_connection.borrow_mut() = Some(connection);
                     }
                     Err(e) => {
@@ -330,9 +348,10 @@ impl AudioResources {
                 }
             }
             Ok(None) => {
-                // No MIDI device connected. Quietly continue without
-                // live input — the round-1 song still plays.
-                eprintln!("audio: no MIDI input devices found; live input disabled");
+                // No MIDI device connected (or only Midi Through was
+                // present). Quietly continue without live input — the
+                // round-1 song still plays.
+                eprintln!("audio: no non-loopback MIDI input devices; live input disabled");
             }
             Err(e) => {
                 eprintln!("audio: enumerating MIDI input devices failed: {e}");

@@ -103,8 +103,27 @@ pub fn enumerate_inputs() -> Result<Vec<MidiInputDevice>, MidiInputError> {
 /// Pick the first MIDI input device midir can see, if any. Returns
 /// `Ok(None)` (not an error) when zero devices are connected — the
 /// host runs without MIDI input.
+///
+/// Filters out the ALSA "Midi Through" virtual loopback device: it's
+/// always present on Linux but never carries a real instrument's
+/// notes (it's a software bridge for routing MIDI between
+/// applications). Auto-picking it would mean a USB keyboard goes
+/// unheard on a machine that has the loopback enumerated first.
+/// K2 surfaces a full picker that includes Midi Through for users
+/// who specifically want to route through it.
 pub fn auto_pick_input() -> Result<Option<MidiInputDevice>, MidiInputError> {
-    Ok(enumerate_inputs()?.into_iter().next())
+    Ok(enumerate_inputs()?
+        .into_iter()
+        .find(|d| !is_virtual_loopback(&d.name)))
+}
+
+/// True for ALSA "Midi Through" / equivalents on other platforms.
+/// Conservative — only filters the well-known loopback names. Other
+/// virtual devices (PipeWire bridges, named loopback patchbays) pass
+/// through so users running real MIDI through a router still get
+/// auto-picked.
+fn is_virtual_loopback(name: &str) -> bool {
+    name.starts_with("Midi Through")
 }
 
 /// State captured by midir's callback. Owned by midir's thread for
