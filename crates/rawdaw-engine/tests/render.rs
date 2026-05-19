@@ -520,6 +520,193 @@ fn sample_clock_handles_are_shared() {
 }
 
 #[test]
+fn midi_input_plays_in_stopped_transport() {
+    // K1.fix regression test: the node graph runs in every transport
+    // state so live MIDI input is audible when the song is Stopped.
+    // Pre-K1.fix, `process_block` exited early in Stopped after
+    // silencing output — MIDI events arrived in the dedicated queue
+    // but the audio graph never ran, so the user heard nothing.
+    use rawdaw_engine::Transport;
+
+    let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let (mut audio, mut handle, mut midi_input) = engine.split();
+
+    let target = NodeId::new(0);
+    handle
+        .push_command(GraphCommand::AddNode {
+            id: target,
+            node: Box::new(ImpulseNode::new()),
+        })
+        .expect("command queue had room");
+
+    // Audio side runs explicit blocks in Stopped (default state).
+    // Push a MIDI NoteOn into the dedicated queue and process one
+    // block — the impulse should fire (at offset 0 by the
+    // schedule-at-time-0 convention).
+    midi_input
+        .push_midi(
+            SampleTime::samples(0),
+            target,
+            Midi2Message::NoteOn {
+                channel: MidiChannel::default(),
+                note: MidiNote::new(60).unwrap(),
+                velocity: U16Velocity::HALF,
+            },
+        )
+        .expect("midi input queue had room");
+
+    audio.transport_handle().set(Transport::Stopped);
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx = rawdaw_engine::ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 0,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: false,
+    };
+    audio.process_block(target, output, ctx);
+
+    // ImpulseNode writes 1.0 at the NoteOn offset; everywhere else is 0.
+    let nonzero: Vec<usize> = buf[..64]
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| **s != 0.0)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        nonzero,
+        vec![0],
+        "live MIDI must produce one impulse at offset 0 in Stopped; buf {:?}",
+        &buf[..8]
+    );
+}
+
+#[test]
+fn midi_input_plays_in_paused_transport() {
+    // Parallel to the Stopped test — the graph runs in Paused too,
+    // so live MIDI is audible. Pre-K1.fix, Paused also short-circuited
+    // node processing.
+    use rawdaw_engine::Transport;
+
+    let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let (mut audio, mut handle, mut midi_input) = engine.split();
+
+    let target = NodeId::new(0);
+    handle
+        .push_command(GraphCommand::AddNode {
+            id: target,
+            node: Box::new(ImpulseNode::new()),
+        })
+        .expect("command queue had room");
+
+    midi_input
+        .push_midi(
+            SampleTime::samples(0),
+            target,
+            Midi2Message::NoteOn {
+                channel: MidiChannel::default(),
+                note: MidiNote::new(60).unwrap(),
+                velocity: U16Velocity::HALF,
+            },
+        )
+        .expect("midi input queue had room");
+
+    audio.transport_handle().set(Transport::Paused);
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx = rawdaw_engine::ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 1000, // Paused with a frozen non-zero clock
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: false,
+    };
+    audio.process_block(target, output, ctx);
+
+    let nonzero: Vec<usize> = buf[..64]
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| **s != 0.0)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        nonzero,
+        vec![0],
+        "live MIDI must produce one impulse at offset 0 in Paused; buf {:?}",
+        &buf[..8]
+    );
+}
+
+#[test]
+fn paused_transport_does_not_consume_song_events() {
+    // K1.fix contract: song events stay queued in Paused (the resume
+    // behavior). Push a song event, set Paused, process a block —
+    // the event must NOT fire. Then flip to Playing and the event
+    // fires.
+    use rawdaw_engine::Transport;
+
+    let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let (mut audio, mut handle, _midi) = engine.split();
+
+    let target = NodeId::new(0);
+    handle
+        .push_command(GraphCommand::AddNode {
+            id: target,
+            node: Box::new(ImpulseNode::new()),
+        })
+        .expect("command queue had room");
+    // Song event at time 5 — would fire on a Playing block window
+    // [0, 64).
+    handle
+        .push_event(BlockEvent {
+            time: SampleTime::samples(5),
+            target,
+            message: note_on(),
+        })
+        .expect("event queue had room");
+
+    audio.transport_handle().set(Transport::Paused);
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx_paused = rawdaw_engine::ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 0,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: false,
+    };
+    audio.process_block(target, output, ctx_paused);
+    assert!(
+        buf[..64].iter().all(|s| *s == 0.0),
+        "song event must stay queued in Paused; buf {:?}",
+        &buf[..8]
+    );
+
+    // Flip to Playing, process again. Event drains and fires.
+    audio.transport_handle().set(Transport::Playing);
+    let mut buf2 = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output2 = rawdaw_engine::BufferMut::new(&mut buf2, 2, 64, MAX_BLOCK);
+    let ctx_playing = rawdaw_engine::ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 0,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: true,
+    };
+    audio.process_block(target, output2, ctx_playing);
+    assert_eq!(
+        buf2[5], 1.0,
+        "queued song event must fire on resume; buf {:?}",
+        &buf2[..8]
+    );
+}
+
+#[test]
 fn stopped_transport_silences_output_and_resets_clock() {
     use rawdaw_engine::Transport;
     use std::sync::atomic::Ordering;

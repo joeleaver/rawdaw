@@ -38,7 +38,7 @@
 //! - Device disappears mid-session → midir's callback stops firing;
 //!   the connection stays open. Manual reconnect lands with K2.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use midir::{MidiInput, MidiInputConnection, MidiInputPort};
@@ -134,9 +134,14 @@ fn is_virtual_loopback(name: &str) -> bool {
 /// next without re-allocating.
 pub struct MidiInputBridge {
     pub handle: MidiInputHandle,
-    /// Reads the engine's current sample position. Each MIDI event
-    /// schedules at `load() + 1` so it lands in the next block.
-    pub sample_clock: Arc<std::sync::atomic::AtomicU64>,
+    /// Engine sample clock. Currently unused (K1.fix moved
+    /// scheduling to `SampleTime::samples(0)` — see
+    /// [`handle_midi_message`] for the rationale). Retained on the
+    /// bridge so future expressive-control features (K4 pitch bend,
+    /// K5 CC routing) can opt back into sample-accurate scheduling
+    /// if they need it.
+    #[allow(dead_code)] // reserved for K4/K5
+    pub sample_clock: Arc<AtomicU64>,
     /// Routing target — which NodeId receives the MIDI. K1 sets this
     /// once at startup; K3 makes it dynamic by mutating the atomic
     /// from the host thread on track selection.
@@ -146,7 +151,7 @@ pub struct MidiInputBridge {
 impl MidiInputBridge {
     pub fn new(
         handle: MidiInputHandle,
-        sample_clock: Arc<std::sync::atomic::AtomicU64>,
+        sample_clock: Arc<AtomicU64>,
         target: NodeId,
     ) -> Self {
         Self {
@@ -186,14 +191,28 @@ pub fn open(
 
 /// Parse one MIDI 1.0 message and forward to the engine queue.
 ///
-/// Inlined here (rather than a separate `parse_midi` returning
-/// `Option<BlockEvent>`) so it's directly testable via
-/// [`parse_for_test`] without spinning up a real bridge.
+/// Live MIDI events are pushed at **`SampleTime::samples(0)`**, not
+/// at `sample_clock + 1`. Reasoning:
+///
+/// - A human key-press is "now-ish"; sub-block sample-accuracy
+///   doesn't matter (one block at 256/48 kHz is ~5 ms; humans don't
+///   perceive that).
+/// - Scheduling at `sample_clock + 1` was racy under transport
+///   changes — if the user hit Stop between midir's read of
+///   `sample_clock` and the audio thread's reset of it, events
+///   pushed at the old high value got stuck above `block_end` and
+///   never fired.
+/// - The engine's partition step computes
+///   `offset_in_block = saturating_sub(time, ctx.absolute_time)`.
+///   With `time = 0`, this always saturates to 0, so live MIDI
+///   events fire at offset 0 of the next block they're partitioned
+///   into. The block-window check `time < block_end` is also always
+///   true since `block_end ≥ 1`, so events always drain on the next
+///   block regardless of transport state.
 fn handle_midi_message(message: &[u8], bridge: &mut MidiInputBridge) {
     let Some(translated) = translate(message) else {
         return;
     };
-    let when = bridge.sample_clock.load(Ordering::Acquire).saturating_add(1);
     let target = NodeId::new(bridge.target.load(Ordering::Acquire));
     // The MIDI input queue is sized at DEFAULT_EVENT_QUEUE_CAPACITY
     // (16,384). Even a stuck-key trill can't realistically fill it;
@@ -201,7 +220,7 @@ fn handle_midi_message(message: &[u8], bridge: &mut MidiInputBridge) {
     // the error rather than panicking from midir's callback.
     let _ = bridge
         .handle
-        .push_midi(SampleTime::samples(when), target, translated);
+        .push_midi(SampleTime::samples(0), target, translated);
 }
 
 /// Pure MIDI 1.0 → [`Midi2Message`] translation. v1 covers Note On

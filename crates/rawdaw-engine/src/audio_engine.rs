@@ -152,13 +152,32 @@ impl AudioEngine {
     /// single-threaded in topo order.
     ///
     /// Transport state gates per-block behavior — see [`Transport`] for
-    /// the per-variant contract. In short:
+    /// the per-variant contract. The node graph runs in **every**
+    /// transport state so live MIDI input (from the dedicated MIDI
+    /// input queue) always produces sound. Transport only controls
+    /// song-event consumption and sample-clock state.
     ///
-    /// - **Playing**: full path (this comment's main flow).
-    /// - **Paused**: commands drain, events stay queued, nodes don't
-    ///   process, output is silenced, sample clock isn't touched.
-    /// - **Stopped**: commands drain, events drain too, nodes don't
-    ///   process, output is silenced, sample clock is forced back to 0.
+    /// - **Playing**: song events drain, all nodes process, output is
+    ///   live, sample clock advances.
+    /// - **Paused**: song events stay queued (resume from where you
+    ///   left off), all nodes still process so live MIDI is audible,
+    ///   sample clock is frozen.
+    /// - **Stopped**: song events drain (host re-arms before the next
+    ///   Play), all nodes still process so live MIDI is audible, sample
+    ///   clock is forced back to 0.
+    ///
+    /// **Live MIDI is unconditional.** The dedicated MIDI input queue
+    /// (fed by [`MidiInputHandle`](crate::MidiInputHandle)) drains and
+    /// partitions on every block in every transport state. Pressing
+    /// a key on a MIDI keyboard always makes sound.
+    ///
+    /// Voices that are already playing continue to render until they
+    /// release on a NoteOff. There's no panic / all-notes-off path in
+    /// v1 — a NoteOn delivered while Playing that doesn't get a
+    /// matching NoteOff before Stop will keep sounding in Stopped
+    /// until its envelope releases naturally (sustain=1 patches
+    /// hold forever). Future work: send synthetic AllNotesOff on
+    /// Stop transitions.
     pub fn process_block(
         &mut self,
         master: NodeId,
@@ -176,41 +195,36 @@ impl AudioEngine {
             self.graph.recompute_topology();
         }
 
-        // 1. Transport gating. Paused / Stopped exit early after writing
-        //    silence. Stopped additionally drains the event queue so the
-        //    host can re-arm cleanly before the next play.
+        // 1. Transport bookkeeping. Stopped: drain pending *song* events
+        //    (so the host's Stop → Play re-arm starts from an empty
+        //    queue) and snap sample_clock back to 0. Paused: no-op here
+        //    (events stay queued, clock frozen by skipping step 5). The
+        //    MIDI input queue is *never* drained on transport change —
+        //    live MIDI is independent of song state.
         let transport = self.transport.get();
-        if matches!(transport, Transport::Paused | Transport::Stopped) {
-            if matches!(transport, Transport::Stopped) {
-                // Drain pending events so the host's re-arm push starts
-                // from an empty queue. Bounded-time loop in the steady
-                // state (queue holds at most `event_queue_capacity`).
-                // The MIDI input queue gets drained too — Stopped means
-                // we're tearing down all pending audio-thread input,
-                // including external live MIDI that hasn't been
-                // processed yet (it'd be confusing to hear a stale note
-                // when transport resumes).
-                while self.event_rx.pop().is_ok() {}
-                while self.midi_event_rx.pop().is_ok() {}
-                // Sample clock snaps back to 0 so the UI playhead jumps
-                // to bar 1 on the next signal poll.
-                self.sample_clock.store(0, Ordering::Release);
-            }
-            // Either way the output for this block is silent.
-            output.clear();
-            return;
+        if matches!(transport, Transport::Stopped) {
+            while self.event_rx.pop().is_ok() {}
+            self.sample_clock.store(0, Ordering::Release);
         }
 
         // 2. Partition events for this block.
-        self.partition_events_for_block(&ctx);
-
-        // 3. Process every node in topo order.
         //
-        // Snapshot the topo order into `topo_scratch` so we can iterate
-        // without holding a borrow on `self.graph` (each node needs
-        // `&mut self.graph` via `process_node`). The scratch is reused
-        // across blocks; only the first few blocks (until it's large
-        // enough) cause an allocation.
+        //   - Song events (main queue): drained only while Playing.
+        //     Paused keeps them queued for resume; Stopped already
+        //     drained them in step 1.
+        //   - MIDI input events: drained unconditionally so live
+        //     playing reaches the synth in every transport state.
+        let drain_song_queue = matches!(transport, Transport::Playing);
+        self.partition_events_for_block(&ctx, drain_song_queue);
+
+        // 3. Process every node in topo order, *always*. Live MIDI
+        //    input partitioned in step 2 reaches the synth here.
+        //
+        //    Snapshot the topo order into `topo_scratch` so we can
+        //    iterate without holding a borrow on `self.graph` (each
+        //    node needs `&mut self.graph` via `process_node`). The
+        //    scratch is reused across blocks; only the first few
+        //    blocks (until it's large enough) cause an allocation.
         self.topo_scratch.clear();
         self.topo_scratch.extend_from_slice(self.graph.topo_order());
         for i in 0..self.topo_scratch.len() {
@@ -218,17 +232,22 @@ impl AudioEngine {
             self.process_node(node_id, &ctx);
         }
 
-        // 4. Copy master output to the host's output buffer.
+        // 4. Copy master output to the host's output buffer. Always —
+        //    the graph is responsible for producing silence when
+        //    nothing is making sound, not the transport gate.
         Self::copy_master_to_output(&self.graph, master, &mut output, ctx.block_size);
 
-        // 5. Publish the next-block sample position so the host can mirror
-        //    the playhead reactively. `Release` pairs with the host's
-        //    `Acquire` load — when the load sees this value, all of the
-        //    output writes above are visible too. Allocation-free.
-        let next_block_start = ctx
-            .absolute_time_samples
-            .saturating_add(ctx.block_size as u64);
-        self.sample_clock.store(next_block_start, Ordering::Release);
+        // 5. Publish the next-block sample position only while Playing.
+        //    Paused freezes the clock; Stopped already snapped it to 0
+        //    in step 1. `Release` pairs with the host's `Acquire` load
+        //    — when the load sees this value, all of the output writes
+        //    above are visible too. Allocation-free.
+        if matches!(transport, Transport::Playing) {
+            let next_block_start = ctx
+                .absolute_time_samples
+                .saturating_add(ctx.block_size as u64);
+            self.sample_clock.store(next_block_start, Ordering::Release);
+        }
     }
 
     /// Render the graph offline for a fixed duration, returning planar L/R
@@ -311,36 +330,45 @@ impl AudioEngine {
 
     // ---------- Internal helpers ----------
 
-    fn partition_events_for_block(&mut self, ctx: &ProcessContext) {
+    fn partition_events_for_block(
+        &mut self,
+        ctx: &ProcessContext,
+        drain_song_queue: bool,
+    ) {
         // Clear existing partitions but keep their Vec capacity.
         for events in self.event_partition.values_mut() {
             events.clear();
         }
 
         let block_end = ctx.absolute_time_samples + ctx.block_size as u64;
-        // Drain only events whose `time` falls in this block's window.
-        // Two independent queues feed this — the host's main event
-        // queue (realized song MIDI + parameter changes) and the MIDI
-        // input queue (external live MIDI from midir). Each is
-        // individually time-sorted (realize() guarantees this for the
-        // main queue; live MIDI is monotonic by construction). The
-        // merged per-node sequence is then sorted by
-        // `offset_in_block` at the end of this function so consumers
-        // see a single time-ordered stream.
+        // Two independent queues feed events. Drain only those whose
+        // `time` falls in this block's window. rtrb's `peek` lets us
+        // look at the next event without consuming; when we see an
+        // event past the window we stop and leave it queued for a
+        // later block.
         //
-        // rtrb's `peek` lets us look at the next event without consuming;
-        // when we see an event past the window we stop and leave it
-        // queued for a later block.
+        //   - **Main (song) queue.** Realized song MIDI + parameter
+        //     changes from the host. Gated by `drain_song_queue` —
+        //     only Playing consumes; Paused leaves them queued for
+        //     resume; Stopped drained them already in step 1 of
+        //     `process_block`.
+        //   - **MIDI input queue.** Live MIDI from `midir`. Always
+        //     drained — pressing a key on a MIDI keyboard makes
+        //     sound regardless of transport state.
         //
-        // `.map(|ev| ev.time.as_samples())` extracts the timestamp as a
-        // Copy value so the peek borrow is dropped before the matching
-        // `pop()`, satisfying the borrow checker without a workaround.
-        Self::drain_queue_into_partition(
-            &mut self.event_rx,
-            &mut self.event_partition,
-            ctx,
-            block_end,
-        );
+        // Each queue is individually time-sorted (realize() guarantees
+        // this for the main queue; live MIDI is monotonic by
+        // construction). The merged per-node sequence is sorted by
+        // `offset_in_block` below so consumers see one time-ordered
+        // stream.
+        if drain_song_queue {
+            Self::drain_queue_into_partition(
+                &mut self.event_rx,
+                &mut self.event_partition,
+                ctx,
+                block_end,
+            );
+        }
         Self::drain_queue_into_partition(
             &mut self.midi_event_rx,
             &mut self.event_partition,

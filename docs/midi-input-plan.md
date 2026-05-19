@@ -10,8 +10,10 @@ add expressive control (pitch bend, sustain, full CCs).
 
 ## Status
 
-- K0 ◀ this document.
-- K1 — not started.
+- K0 ✅ — this document. Updated 2026-05-19 with K1.fix design
+  revisions (time=0 scheduling, all-states node processing).
+- K1 ✅ — landed as commits `ab8ba9c` + `8f9cf5a` (initial midir
+  wiring) + K1.fix (transport-state model rewrite).
 - K2 — not started.
 - K3 — not started.
 - K4 — not started.
@@ -219,19 +221,51 @@ to keep the architecture honest.
 by move; midir spawns its own thread for the callback. No mpsc
 intermediary needed.
 
-### Sample-accurate scheduling = `sample_clock + 1`.
+### Live MIDI schedules at `SampleTime::samples(0)`, NOT `sample_clock + 1`.
 
-MIDI events from external hardware are "now-ish" but the engine
-schedules in SampleTime. The simplest faithful translation: read
-the engine's `sample_clock` atomic, schedule the event at
-`sample_clock + 1` so it lands in the next block. Latency ceiling
-= one block at the configured block size (≤ 5.4 ms at 256/48k).
+**Revised in K1.fix** after Joe testing surfaced a transport-state
+race. The original plan said `sample_clock + 1`; that broke under
+Stop → Play transitions because midir would read `sample_clock` at
+its pre-Stop value, push an event at that high time, and then the
+audio thread would reset `sample_clock` to 0 — leaving the event
+stuck above `block_end` forever.
 
-Considered: scheduling at the engine's *current* sample time
-(zero-latency in theory) — but then the audio thread might already
-be processing that block, and the event lands one block later
-*anyway* without the explicit + 1. The +1 makes the contract
-explicit.
+The fix: push live MIDI events at `SampleTime::samples(0)`. The
+engine's partition step computes
+`offset_in_block = saturating_sub(time, ctx.absolute_time)`. With
+`time = 0`, this always saturates to 0, so live MIDI events fire
+at offset 0 of the next block they're partitioned into. The
+block-window check `time < block_end` is also always true since
+`block_end ≥ 1`, so events always drain on the next block
+regardless of transport state.
+
+What's lost: sample-accuracy within a block. A human key-press is
+already "now-ish" — sub-block latency (≤ 5.4 ms at 256/48k) isn't
+perceivable. K4/K5 features that *do* want sample-accurate
+scheduling (e.g. a multi-CC sweep within a block) can still opt
+in by reading `sample_clock` themselves.
+
+### Transport-state model: graph runs in all states; transport gates only song events + clock.
+
+**Revised in K1.fix.** The original engine model short-circuited
+node processing in Paused / Stopped (output silenced, nodes
+skipped). That made live MIDI silent outside Playing — a fatal
+UX issue for "play notes through the synth".
+
+New contract:
+
+- **Playing**: song events drain, all nodes process, output is
+  live, sample clock advances.
+- **Paused**: song events stay queued (resume from where you left
+  off), all nodes still process so live MIDI is audible, sample
+  clock is frozen.
+- **Stopped**: song events drain (host re-arms before next Play),
+  all nodes still process so live MIDI is audible, sample clock
+  forced back to 0.
+
+Live MIDI is **unconditional** — the dedicated MIDI input queue
+drains and partitions in every block in every transport state.
+Pressing a key on a MIDI keyboard always makes sound.
 
 ### Routing target = sticky last-track-edited.
 
