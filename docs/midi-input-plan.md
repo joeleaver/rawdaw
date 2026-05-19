@@ -12,8 +12,22 @@ add expressive control (pitch bend, sustain, full CCs).
 
 - K0 ✅ — this document. Updated 2026-05-19 with K1.fix design
   revisions (time=0 scheduling, all-states node processing).
-- K1 ✅ — landed as commits `ab8ba9c` + `8f9cf5a` (initial midir
-  wiring) + K1.fix (transport-state model rewrite).
+- K1 ✅ — landed 2026-05-19. End-to-end verified with Joe's KeyLab
+  MkII 49.
+  - `ab8ba9c` core midir wiring + dedicated MIDI input SPSC queue.
+  - `8f9cf5a` skip ALSA 'Midi Through' loopback in auto-pick + log
+    devices.
+  - `d0959a8` K1.fix: graph runs in all transport states (was
+    silenced in Stopped/Paused, so the boot state Stopped had no
+    live MIDI). Schedule live MIDI at `SampleTime::samples(0)`
+    (was racing against Stopped's clock reset at sample_clock+1).
+  - `ad99682` K1 diagnostic: `RAWDAW_MIDI_DEBUG=1` traces every
+    incoming MIDI message for keyboard / translator debugging.
+  - `6b4effe` K1.fix2: `VoicePool::note_off` releases all matching
+    voices (was bailing after the first match; voices in Release
+    stage are still `is_active()`, so the second press would
+    orphan voice 1 in Sustain when the second NoteOff hit
+    already-releasing voice 0).
 - K2 — not started.
 - K3 — not started.
 - K4 — not started.
