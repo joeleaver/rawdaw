@@ -1,29 +1,17 @@
 //! Kick voice.
 //!
 //! Pitched sine with a dramatic pitch drop on each hit. The pitch
-//! envelope falls from `KICK_START_HZ` to `KICK_END_HZ` over
-//! `KICK_PITCH_DECAY_S`; the amp envelope is a sharp attack into a
-//! medium-length release that decays to silence.
+//! envelope falls from the patch's `start_hz` to `end_hz` over
+//! `pitch_decay_s`; the amp envelope is sharp attack + decay-only.
 //!
-//! Patch values are hardcoded for v0; the round-3 drum-kit format
-//! will expose them as per-kit / per-voice parameters.
+//! Patch values live in [`KickPatch`](crate::patch::KickPatch); the
+//! synth node hands the patch to `prepare` at construction time.
 
 use core::f32::consts::TAU;
 
-use rawdaw_dsp::{Adsr, AdsrParams, PitchEnvelope, Voice};
+use rawdaw_dsp::{Adsr, PitchEnvelope, Voice};
 
-const KICK_START_HZ: f32 = 110.0;
-const KICK_END_HZ: f32 = 45.0;
-const KICK_PITCH_DECAY_S: f32 = 0.060;
-/// Sharp attack so the hit is immediate; the amp curve below is
-/// effectively decay-only.
-const KICK_ATTACK_S: f32 = 0.001;
-/// Drum amp envelopes don't sustain; the "sustain level" is 0 so
-/// after decay the voice idles into the release. Decay = the
-/// audible body length.
-const KICK_DECAY_S: f32 = 0.250;
-const KICK_SUSTAIN: f32 = 0.0;
-const KICK_RELEASE_S: f32 = 0.020;
+use crate::patch::KickPatch;
 
 #[derive(Debug, Clone, Copy)]
 pub struct KickVoice {
@@ -48,20 +36,14 @@ impl KickVoice {
         }
     }
 
-    /// Configure sample rate and load the hardcoded patch. Called
-    /// once per voice when the node is `prepare`d.
-    pub fn prepare(&mut self, sample_rate: u32) {
+    /// Configure sample rate + install the runtime kick patch.
+    pub fn prepare(&mut self, sample_rate: u32, patch: &KickPatch) {
         self.sample_rate = sample_rate as f32;
         self.pitch_env.prepare(sample_rate);
         self.pitch_env
-            .set_shape(KICK_START_HZ, KICK_END_HZ, KICK_PITCH_DECAY_S);
+            .set_shape(patch.start_hz, patch.end_hz, patch.pitch_decay_s);
         self.amp_env.prepare(sample_rate);
-        self.amp_env.set_params(AdsrParams {
-            attack_s: KICK_ATTACK_S,
-            decay_s: KICK_DECAY_S,
-            sustain_level: KICK_SUSTAIN,
-            release_s: KICK_RELEASE_S,
-        });
+        self.amp_env.set_params(patch.amp);
     }
 
     /// Tick one sample. Returns the kick's output for this sample.

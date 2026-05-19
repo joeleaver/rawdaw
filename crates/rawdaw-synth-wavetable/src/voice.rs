@@ -12,11 +12,12 @@
 //! note_on / note_off / is_active contract.
 
 use rawdaw_dsp::{
-    note_offset_hz, Adsr, ModMatrix, ModSlot, ModSource, Modulations, SvfLowpass, Voice,
-    Wavetable, WavetableOsc, WavetableOscParams,
+    note_offset_hz, Adsr, ModMatrix, ModSource, Modulations, SvfLowpass, Voice, Wavetable,
+    WavetableOsc, WavetableOscParams,
 };
 
-use crate::{MOD_MATRIX_SLOTS, NUM_OSCS, PATCH_FILTER_CUTOFF_HZ};
+use crate::patch::WavetablePatch;
+use crate::{MOD_MATRIX_SLOTS, NUM_OSCS};
 
 /// One synth voice — three wavetable oscillators, amp envelope, and
 /// per-voice filter integrators so retrigger doesn't blend tail
@@ -46,6 +47,12 @@ pub(crate) struct WavetableVoice {
     /// matrix, refreshed at patch-apply time).
     matrix: ModMatrix<MOD_MATRIX_SLOTS>,
     pub(crate) filter: SvfLowpass,
+    /// Filter cutoff base in Hz. Read every sample as
+    /// `filter_cutoff_hz_base + mods.filter_cutoff_hz_offset`. Copied
+    /// from the node's [`WavetablePatch::filter_cutoff_hz`] at
+    /// [`set_patch`](Self::set_patch) time so the audio thread never
+    /// crosses the patch boundary mid-tick.
+    filter_cutoff_hz_base: f32,
     velocity_amp: f32,
 }
 
@@ -61,22 +68,39 @@ impl WavetableVoice {
             env3: Adsr::new(),
             matrix: ModMatrix::default(),
             filter: SvfLowpass::new(),
+            filter_cutoff_hz_base: 0.0,
             velocity_amp: 0.0,
         }
     }
 
-    /// Install a patch's per-osc parameters + matrix slots. Matrix
-    /// slots flow through `ModMatrix::set_slots` which runs its own
-    /// validation + topo sort (cycles rejected in debug, sanitized
-    /// in release). v1's per-osc routing fields are gone — all
-    /// modulation routing lives in the matrix as of M4.
-    pub(crate) fn set_patch(
-        &mut self,
-        params: &[WavetableOscParams; NUM_OSCS],
-        matrix_slots: &[ModSlot; MOD_MATRIX_SLOTS],
-    ) {
-        self.osc_params = *params;
-        self.matrix.set_slots(*matrix_slots);
+    /// Configure sample rate + install the runtime patch. Called by
+    /// the node's [`prepare`](crate::WavetableSynthNode::prepare) once
+    /// per voice before the active graph runs. Folds in `set_patch`'s
+    /// work so the per-voice state lands in one call.
+    pub(crate) fn prepare(&mut self, sample_rate: u32, patch: &WavetablePatch) {
+        for osc in &mut self.oscs {
+            osc.prepare(sample_rate);
+        }
+        self.amp.prepare(sample_rate);
+        self.amp.set_params(patch.env_params[0]);
+        self.env2.prepare(sample_rate);
+        self.env2.set_params(patch.env_params[1]);
+        self.env3.prepare(sample_rate);
+        self.env3.set_params(patch.env_params[2]);
+        self.filter.prepare(sample_rate);
+        self.filter.set_cutoff(patch.filter_cutoff_hz);
+        self.filter.set_resonance(patch.filter_resonance);
+        self.set_patch(patch);
+    }
+
+    /// Install a patch's per-osc parameters + matrix slots + filter
+    /// cutoff base. Matrix slots flow through `ModMatrix::set_slots`
+    /// which runs its own validation + topo sort (cycles rejected in
+    /// debug, sanitized in release).
+    pub(crate) fn set_patch(&mut self, patch: &WavetablePatch) {
+        self.osc_params = patch.osc_params;
+        self.matrix.set_slots(patch.matrix);
+        self.filter_cutoff_hz_base = patch.filter_cutoff_hz;
     }
 
     /// Per-sample tick. Two-stage modulation evaluation:
@@ -123,7 +147,7 @@ impl WavetableVoice {
         // The default patch's `Lfo1 → FilterCutoff @ 0.1` slot
         // reproduces v1's `lfo * 400 Hz` swing exactly (0.1 ×
         // 4000 Hz scale = 400).
-        let cutoff_hz = PATCH_FILTER_CUTOFF_HZ + mods.filter_cutoff_hz_offset;
+        let cutoff_hz = self.filter_cutoff_hz_base + mods.filter_cutoff_hz_offset;
         self.filter.set_cutoff(cutoff_hz);
 
         // ── Stage 2: per-osc render in topo-sorted order.

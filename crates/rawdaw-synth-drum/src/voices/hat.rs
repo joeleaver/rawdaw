@@ -3,26 +3,12 @@
 //! High-passed white noise with a short amp envelope. The closed-hat
 //! patch uses a fast decay (~30 ms); the open-hat patch uses a much
 //! longer decay (~300 ms) to give the "tsssss" sustain. Both share
-//! the same HP filter shape.
+//! the same HP filter shape. The synth node installs the right sub-
+//! patch via [`HatVoice::set_patch`] before triggering each note.
 
-use rawdaw_dsp::{Adsr, AdsrParams, SvfHighpass, Voice};
+use rawdaw_dsp::{Adsr, SvfHighpass, Voice};
 
-const HAT_HP_HZ: f32 = 6000.0;
-const HAT_HP_Q: f32 = 0.7;
-const HAT_ATTACK_S: f32 = 0.0005;
-const HAT_CLOSED_DECAY_S: f32 = 0.040;
-const HAT_OPEN_DECAY_S: f32 = 0.300;
-const HAT_SUSTAIN: f32 = 0.0;
-const HAT_RELEASE_S: f32 = 0.020;
-
-/// Distinguishes closed-vs-open at note_on time so the same voice
-/// type covers both MIDI mappings (42 vs 46) — saves an extra pool
-/// in `DrumSynthNode`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HatStyle {
-    Closed,
-    Open,
-}
+use crate::patch::HatPatch;
 
 #[derive(Debug, Clone, Copy)]
 pub struct HatVoice {
@@ -31,7 +17,6 @@ pub struct HatVoice {
     velocity_amp: f32,
     amp_env: Adsr,
     noise_hp: SvfHighpass,
-    style: HatStyle,
 }
 
 impl HatVoice {
@@ -42,34 +27,29 @@ impl HatVoice {
             velocity_amp: 0.0,
             amp_env: Adsr::new(),
             noise_hp: SvfHighpass::new(),
-            style: HatStyle::Closed,
         }
     }
 
-    pub fn prepare(&mut self, sample_rate: u32) {
+    /// Configure sample rate + install a default patch. The drum
+    /// node passes its `closed_hat` patch at prepare time; per-note
+    /// `set_patch` swaps in `open_hat` when an open-hat MIDI note
+    /// arrives.
+    pub fn prepare(&mut self, sample_rate: u32, patch: &HatPatch) {
         self.sample_rate = sample_rate as f32;
         self.amp_env.prepare(sample_rate);
-        // Default to closed shape; `set_style` swaps it.
-        self.set_style(HatStyle::Closed);
         self.noise_hp.prepare(sample_rate);
-        self.noise_hp.set_cutoff(HAT_HP_HZ);
-        self.noise_hp.set_resonance(HAT_HP_Q);
+        self.set_patch(patch);
     }
 
-    /// Choose closed-vs-open shape. Called by the parent node based
-    /// on the MIDI note before triggering `note_on`.
-    pub fn set_style(&mut self, style: HatStyle) {
-        self.style = style;
-        let decay_s = match style {
-            HatStyle::Closed => HAT_CLOSED_DECAY_S,
-            HatStyle::Open => HAT_OPEN_DECAY_S,
-        };
-        self.amp_env.set_params(AdsrParams {
-            attack_s: HAT_ATTACK_S,
-            decay_s,
-            sustain_level: HAT_SUSTAIN,
-            release_s: HAT_RELEASE_S,
-        });
+    /// Install a hat sub-patch (closed or open). Called by the parent
+    /// node based on the incoming MIDI note before triggering
+    /// `note_on`. Setting params mid-tick is safe — `Adsr::set_params`
+    /// installs the new ramps for subsequent samples without
+    /// resetting envelope state.
+    pub fn set_patch(&mut self, patch: &HatPatch) {
+        self.amp_env.set_params(patch.amp);
+        self.noise_hp.set_cutoff(patch.hp_hz);
+        self.noise_hp.set_resonance(patch.hp_q);
     }
 
     /// Tick one sample with the shared noise input.

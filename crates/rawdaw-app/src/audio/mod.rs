@@ -82,12 +82,12 @@ use rawdaw_engine::{
 };
 use rawdaw_fx::GainNode;
 use rawdaw_model::fixtures::build_round1_project;
+use rawdaw_model::patch::SynthAssignment;
 use rawdaw_model::project::Project;
 use rawdaw_model::realize::realize;
 use rawdaw_model::tempo::TempoMap;
-use rawdaw_model::track::TrackKind;
-use rawdaw_synth_drum::DrumSynthNode;
-use rawdaw_synth_wavetable::WavetableSynthNode;
+use rawdaw_synth_drum::{DrumPatch, DrumSynthNode};
+use rawdaw_synth_wavetable::{WavetablePatch, WavetableSynthNode};
 
 /// Fallback engine sample rate used when no cpal output device can be
 /// probed. Matches the engine-side render tests so unit tests that
@@ -437,10 +437,7 @@ fn configure_graph(
     for (i, track) in project.tracks.iter().enumerate() {
         // (kind, synth) is paired correctly by Track::new; this
         // asserts the invariant at the audio-graph boundary so any
-        // hand-mutated track surfaces in debug builds (release does
-        // nothing — U3 will read track.synth here regardless of the
-        // invariant; configure_graph trusts the track's `kind` as the
-        // source of truth for node selection).
+        // hand-mutated track surfaces in debug builds.
         debug_assert!(
             track.kind_matches_synth(),
             "track {:?} has kind/synth mismatch (kind = {:?})",
@@ -448,9 +445,15 @@ fn configure_graph(
             track.kind,
         );
         let instrument_id = NodeId::new((i + 1) as u32);
-        let node: Box<dyn AudioNode> = match &track.kind {
-            TrackKind::Pitched { .. } => Box::new(WavetableSynthNode::new()),
-            TrackKind::Drum { .. } => Box::new(DrumSynthNode::new()),
+        let node: Box<dyn AudioNode> = match &track.synth {
+            SynthAssignment::Wavetable(data) => {
+                let patch = WavetablePatch::from(*data);
+                Box::new(WavetableSynthNode::with_patch(patch))
+            }
+            SynthAssignment::Drum(data) => {
+                let patch = DrumPatch::from(*data);
+                Box::new(DrumSynthNode::with_patch(patch))
+            }
         };
         commands.push(GraphCommand::AddNode {
             id: instrument_id,

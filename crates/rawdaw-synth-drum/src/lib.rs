@@ -24,6 +24,7 @@
 
 #![forbid(unsafe_code)]
 
+mod patch;
 mod voices;
 
 use rawdaw_dsp::{NoiseSource, VoicePool};
@@ -33,9 +34,8 @@ use rawdaw_engine::event::{BlockMessage, EventBlock};
 use rawdaw_engine::node::{AudioNode, OutputDescriptor, PortAccess};
 use rawdaw_model::{Midi2Message, U16Velocity};
 
+pub use patch::{DrumPatch, HatPatch, KickPatch, SnarePatch};
 pub use voices::{HatVoice, KickVoice, SnareVoice};
-
-use voices::HatStyle;
 
 /// Polyphony per drum type. Drum hits rarely overlap deeply, but a
 /// few simultaneous hits are common (e.g. open-hat + crash + ride
@@ -47,35 +47,57 @@ const POLYPHONY_PER_TYPE: usize = 4;
 enum DrumKind {
     Kick,
     Snare,
-    Hat(HatStyle),
+    Hat(HatRole),
+}
+
+/// Closed vs open hat — selects which sub-patch to install on the
+/// hat voice before triggering. Replaces the previous public
+/// `HatStyle` enum from `voices::hat`; now an internal classifier
+/// detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HatRole {
+    Closed,
+    Open,
 }
 
 fn classify(midi_note: u8) -> Option<DrumKind> {
     match midi_note {
         36 => Some(DrumKind::Kick),
         38 => Some(DrumKind::Snare),
-        42 => Some(DrumKind::Hat(HatStyle::Closed)),
-        46 => Some(DrumKind::Hat(HatStyle::Open)),
+        42 => Some(DrumKind::Hat(HatRole::Closed)),
+        46 => Some(DrumKind::Hat(HatRole::Open)),
         _ => None,
     }
 }
 
-/// The drum synth node. Owns per-drum-type voice pools and a shared
-/// noise source.
+/// The drum synth node. Owns per-drum-type voice pools, a shared
+/// noise source, and the canonical [`DrumPatch`] that every voice
+/// copies from at `prepare()` and at per-note patch install (hats).
 pub struct DrumSynthNode {
     kicks: VoicePool<KickVoice>,
     snares: VoicePool<SnareVoice>,
     hats: VoicePool<HatVoice>,
     noise: NoiseSource,
+    patch: DrumPatch,
 }
 
 impl DrumSynthNode {
+    /// Build with the v0 default drum patch. Delegates to
+    /// `with_patch(DrumPatch::default())`.
     pub fn new() -> Self {
+        Self::with_patch(DrumPatch::default())
+    }
+
+    /// Build with a specific runtime patch. Round-1's audio graph
+    /// constructs through this path so each `Track::synth`'s patch
+    /// flows into the voices.
+    pub fn with_patch(patch: DrumPatch) -> Self {
         Self {
             kicks: VoicePool::new(POLYPHONY_PER_TYPE, KickVoice::new),
             snares: VoicePool::new(POLYPHONY_PER_TYPE, SnareVoice::new),
             hats: VoicePool::new(POLYPHONY_PER_TYPE, HatVoice::new),
             noise: NoiseSource::new(0xC0FFEE),
+            patch,
         }
     }
 
@@ -89,18 +111,20 @@ impl DrumSynthNode {
                 match kind {
                     DrumKind::Kick => self.kicks.note_on(note.get(), amp),
                     DrumKind::Snare => self.snares.note_on(note.get(), amp),
-                    DrumKind::Hat(style) => {
-                        // Set the hat voice's open/closed shape on
-                        // the slot it lands in. The pool allocates
-                        // first, then we adjust style via the voice
-                        // we just claimed — the pool exposes
-                        // voices_mut for iteration but allocate is
-                        // private, so locate the matching slot
-                        // post-hoc.
+                    DrumKind::Hat(role) => {
+                        // Install the right sub-patch on the slot
+                        // we're about to claim. The pool allocates,
+                        // then we find the just-claimed voice and
+                        // update its patch — same post-allocation
+                        // shape as the previous `set_style` flow.
+                        let hat_patch = match role {
+                            HatRole::Closed => &self.patch.closed_hat,
+                            HatRole::Open => &self.patch.open_hat,
+                        };
                         self.hats.note_on(note.get(), amp);
                         for v in self.hats.voices_mut() {
                             if v.is_active_recent(note.get()) {
-                                v.set_style(style);
+                                v.set_patch(hat_patch);
                                 break;
                             }
                         }
@@ -120,13 +144,13 @@ impl DrumSynthNode {
                 }
             }
             BlockMessage::Param(_) => {
-                // U1 ships the event channel; U3 wires the drum synth's
+                // U1 ships the event channel; U3b wires the drum synth's
                 // parameter decoder onto this arm. Until then a Param
                 // event arriving here is a host-side bug — flag it in
                 // debug, no-op in release.
                 debug_assert!(
                     false,
-                    "DrumSynthNode received a Param event before U3; \
+                    "DrumSynthNode received a Param event before U3b; \
                      host should not be pushing params yet",
                 );
             }
@@ -199,13 +223,15 @@ impl AudioNode for DrumSynthNode {
 
     fn prepare(&mut self, sample_rate: u32, _max_block_size: usize) {
         for v in self.kicks.voices_mut() {
-            v.prepare(sample_rate);
+            v.prepare(sample_rate, &self.patch.kick);
         }
         for v in self.snares.voices_mut() {
-            v.prepare(sample_rate);
+            v.prepare(sample_rate, &self.patch.snare);
         }
+        // Hats default to the closed shape at prepare time; per-note
+        // dispatch overrides to the open shape on MIDI 46.
         for v in self.hats.voices_mut() {
-            v.prepare(sample_rate);
+            v.prepare(sample_rate, &self.patch.closed_hat);
         }
     }
 }
@@ -400,8 +426,8 @@ mod tests {
     fn classifier_covers_v0_voices() {
         assert_eq!(classify(36), Some(DrumKind::Kick));
         assert_eq!(classify(38), Some(DrumKind::Snare));
-        assert_eq!(classify(42), Some(DrumKind::Hat(HatStyle::Closed)));
-        assert_eq!(classify(46), Some(DrumKind::Hat(HatStyle::Open)));
+        assert_eq!(classify(42), Some(DrumKind::Hat(HatRole::Closed)));
+        assert_eq!(classify(46), Some(DrumKind::Hat(HatRole::Open)));
         assert_eq!(classify(60), None);
     }
 }

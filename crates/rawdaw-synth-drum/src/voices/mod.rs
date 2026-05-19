@@ -9,6 +9,6 @@ mod hat;
 mod kick;
 mod snare;
 
-pub use hat::{HatStyle, HatVoice};
+pub use hat::HatVoice;
 pub use kick::KickVoice;
 pub use snare::SnareVoice;

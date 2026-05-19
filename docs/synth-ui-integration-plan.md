@@ -29,32 +29,38 @@ yet); U4–U7 are the "UI" half; U8 is persistence; U9 closes out.
 
 ---
 
-## Status — U2 DONE
+## Status — U3a DONE (U3 split into U3a + U3b)
 
 - U0 ✅ this document, design decisions locked.
-- U1 ✅ `BlockMessage::{Midi, Param}` + `ParamEvent { path: [u8; 8],
-  value: f32 }` ship across `rawdaw-engine`. `EngineHandle::push_midi`
-  / `push_param` ergonomic helpers; opaque 8-byte path decoded per
-  synth. Five audio nodes thread through the enum tag; synth-crate
-  `apply_event` arms `debug_assert!` on Param pending U3's decoders.
-  3 new tests via a test-only `RecorderNode` pin round-trip,
-  unknown-path-no-crash, and push-order interleave. Deviation: tests
-  use the recorder instead of real synth crates because U1 synths
-  debug_assert on every Param path (all are "unrecognized" before U3).
-- U2 ✅ `rawdaw-model::patch` ships serialized patch types:
-  `WavetablePatchData`, `DrumPatchData`, `SynthAssignment`, and the
-  per-synth mirror enums (`ModSourceData`, `ModDestinationData`,
-  `AdsrParamsData`, `WavetableOscParamsData`, `ModSlotData`,
-  `KickPatchData`, `SnarePatchData`, `HatPatchData`). No
-  `rawdaw-dsp` dep — model stays leaf-domain. `Track` gains
-  `synth: SynthAssignment` plus a `new` constructor that defaults
-  from `kind` via `SynthAssignment::default_for_kind`. The
-  (kind, synth) invariant is checked via `Track::kind_matches_synth`
-  and `debug_assert!`ed in `configure_graph`. Four direct
-  `Track { … }` construction sites migrated. 15 new tests (workspace
-  233 → 248); ron round-trip + default-value pins on every patch
-  type. Audio unchanged — defaults sit unused until U3.
-- U3–U9 pending.
+- U1 ✅ `BlockMessage::{Midi, Param}` + `ParamEvent { path, value }`
+  ship across `rawdaw-engine`; `push_midi` / `push_param` helpers;
+  3 round-trip tests via a `RecorderNode`. Synth `apply_event` arms
+  `debug_assert!` on Param pending U3b's decoders.
+- U2 ✅ `rawdaw-model::patch` ships serialized types
+  (`WavetablePatchData`, `DrumPatchData`, `SynthAssignment` + per-
+  synth mirror enums). `Track` gains `synth` + `Track::new` defaults
+  from `kind`. 15 new tests; ron round-trip + default-value pins.
+- U3a ✅ Runtime patch types ship in the synth crates:
+  `WavetablePatch` (rawdaw-synth-wavetable) + `DrumPatch` /
+  `KickPatch` / `SnarePatch` / `HatPatch` (rawdaw-synth-drum) with
+  `From<…PatchData>` conversions. Constants lifted to patch fields:
+  `WavetableSynthNode` owns one `WavetablePatch`; voices read their
+  filter base / env params / matrix from it. Drum voices' per-voice
+  prepare now takes their sub-patch (kick/snare/hat). `HatStyle`
+  collapsed into an internal `HatRole`; per-note dispatch installs
+  the right sub-patch on the just-claimed voice. New constructors:
+  `WavetableSynthNode::with_patch` / `DrumSynthNode::with_patch`;
+  `new()` delegates with the M5/v0 defaults. `configure_graph` reads
+  each `Track::synth` and constructs synth nodes via `with_patch`.
+  Wavetable lib.rs was 1232 lines — split into `lib.rs` (~190),
+  `voice.rs`, `patch.rs`, `tests.rs` (separate commit). 5 new tests
+  (workspace 248 → 253) pin runtime↔data default equivalence, custom
+  patch differs from default, `new == with_patch(default)`. Audio
+  byte-identical for round-1.
+- U3b — pending. Wire `WavetableParam` / `DrumParam` decoders into
+  each synth's `apply_event` Param arm so live parameter events
+  mutate the runtime patch + propagate to voices.
+- U4–U9 pending.
 
 ---
 
@@ -357,69 +363,64 @@ depends on ron for `Project::save_ron`.
 
 ---
 
-## Phase U3 — Synth nodes consume runtime patches + parameter events
+## Phase U3a — Synth nodes consume runtime patch data
 
-**Goal.** Replace `PATCH_OSC_PARAMS` and friends in the synth crates
-with runtime `WavetablePatch` / `DrumPatch` types constructed from
-the model's `WavetablePatchData` / `DrumPatchData` at node
-construction. Parameter events arriving on the audio thread update
-the runtime patch + propagate to voices.
+**Goal.** Replace each synth crate's `PATCH_*` constants with a
+runtime patch type constructed from the model's serialized data at
+node construction. No parameter event consumption yet (that's U3b).
 
 **Steps.**
 
-- `rawdaw-synth-wavetable::WavetablePatch` lands as the runtime
-  patch type:
-  ```text
-  pub struct WavetablePatch {
-      pub osc_params: [WavetableOscParams; 3],
-      pub env_params: [AdsrParams; 3],
-      pub lfo_rate_hz: f32,
-      pub filter_cutoff_hz: f32,
-      pub filter_resonance: f32,
-      pub matrix: [ModSlot; 16],
-  }
-  ```
-  `From<WavetablePatchData>` impl converts model → runtime.
-  Constructors: `WavetablePatch::default()` (matches today's
-  hardcoded patch), `WavetablePatch::from_data(&WavetablePatchData)`.
-- `WavetableSynthNode` takes the patch at construction:
-  `WavetableSynthNode::with_patch(patch: WavetablePatch)`.
-  `WavetableSynthNode::new()` delegates to `with_patch(default())`.
-  The `PATCH_*` constants in the synth crate's `lib.rs` are
-  **removed** — patches are data now.
-- `WavetableSynthNode` implements `apply_event` for
-  `BlockMessage::Param`: decodes `WavetableParam`, mutates the
-  relevant field on the node's patch, and pushes the change into
-  all voices via `propagate_patch_to_voices()`. The propagation
-  cost is small (16 voices × patch size); the audio thread does it
-  per-event, not per-sample.
-- `WavetableParam` enum + `encode`/`decode` helpers land in
-  `rawdaw-synth-wavetable::param`. ~13 variants (see U0 design
-  decisions for the inventory).
-- Mirror: `DrumPatch` in `rawdaw-synth-drum` + `DrumParam` + the
-  per-voice param routing.
-- `AudioResources::configure_graph` reads each track's
-  `SynthAssignment` and constructs the synth node with the lifted
-  patch:
-  ```text
-  TrackKind::Pitched { .. } => {
-      let SynthAssignment::Wavetable(data) = &track.synth else {
-          unreachable!("Track::new_* enforces the invariant");
-      };
-      WavetableSynthNode::with_patch(WavetablePatch::from_data(data))
-  }
-  ```
-  Same shape for Drum.
+- `WavetablePatch` runtime type in
+  `rawdaw-synth-wavetable::patch` with `From<WavetablePatchData>`.
+  Mirror: `DrumPatch` / `KickPatch` / `SnarePatch` / `HatPatch` in
+  `rawdaw-synth-drum::patch`. The `PATCH_*` constants in the synth
+  lib files are **removed** — patches are data now.
+- `WavetableSynthNode::with_patch(patch)` / `DrumSynthNode::with_patch(patch)`
+  take a runtime patch at construction; `new()` delegates with the
+  M5/v0 defaults. Voice `prepare(sample_rate, &patch)` folds patch
+  installation into voice setup.
+- `configure_graph` reads each `Track::synth` variant and
+  constructs the matching synth node via `with_patch`.
 
-**Done when.** Round-1 audio byte-identical to pre-U3 (the lifted
-patches resolve to the same constants). Workspace tests pass; the
-existing `WavetableSynthNode` tests still hold. New tests pin: (a)
-`WavetableSynthNode::with_patch(custom)` actually uses the custom
-patch (rendered audio differs from default); (b) a synthetic
+**Done when (✅ met).** Round-1 audio byte-identical to pre-U3a
+(the lifted defaults resolve to the same numbers). 5 new tests
+(workspace 248 → 253) pin: (a) `WavetablePatch::default()` matches
+`WavetablePatchData::default()` field-for-field; (b) custom
+`with_patch` yields different audio than default; (c)
+`new == with_patch(default)`. Drum mirror of (a). Wavetable lib.rs
+hit 1232 lines pre-split — refactored into lib/voice/patch/tests
+in a separate refactor commit. Deviation: `HatStyle` enum dropped
+in favor of an internal `HatRole` classifier + per-note
+`HatVoice::set_patch` — same audio behaviour, simpler call site.
+
+## Phase U3b — Parameter event decoders
+
+**Goal.** Wire `WavetableParam` / `DrumParam` enums + per-synth
+`apply_event` Param-arm decoders so live parameter events mutate
+the runtime patch on the audio thread + propagate to voices.
+
+**Steps.**
+
+- `WavetableParam` enum (~13 variants per the U0 design decisions)
+  + `encode([u8; 8]) / decode(&[u8; 8])` helpers in
+  `rawdaw-synth-wavetable::param`.
+- Mirror `DrumParam` in `rawdaw-synth-drum::param`.
+- Each synth's `apply_event` `BlockMessage::Param` arm replaces its
+  `debug_assert!(false)` with a decode-then-apply: decode the path,
+  mutate `self.patch`, call `propagate_patch_to_voices` (or a more
+  surgical per-param propagation).
+- Bad paths still `debug_assert!` in debug + no-op in release —
+  the existing U1 fallback shape, just with successful paths
+  routed first.
+
+**Done when.** Workspace audio byte-identical when no Param
+events are pushed. New tests pin: (a) a synthetic
 `WavetableParam::FilterCutoffHz @ 2000.0` event arriving at the
-node updates the next voice's filter (rendered audio diverges from
-no-event baseline); (c) `WavetableParam` round-trips through
-`encode/decode` byte-for-byte for every variant.
+node updates the next voice's filter (audio diverges from
+no-event baseline); (b) `WavetableParam` / `DrumParam` round-trip
+through `encode/decode` byte-for-byte for every variant; (c)
+unrecognized path doesn't crash (release path).
 
 ---
 

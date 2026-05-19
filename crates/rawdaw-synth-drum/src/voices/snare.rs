@@ -3,30 +3,18 @@
 //! A tonal body (sine with fast pitch drop) mixed with a noise burst
 //! (filtered to emphasize the snare-wire register). The body gives
 //! the "thwack" of the drumhead; the noise gives the "tssss" of the
-//! wires.
+//! wires. Patch values live in
+//! [`SnarePatch`](crate::patch::SnarePatch).
 //!
 //! The noise sample is supplied by the parent `DrumSynthNode`'s
 //! shared `NoiseSource` — passed in to `tick` so simultaneous snare
-//! hits don't each pull from their own private streams (the v0
-//! perceptual difference is nil, and shared noise costs nothing).
+//! hits don't each pull from their own private streams.
 
 use core::f32::consts::TAU;
 
-use rawdaw_dsp::{Adsr, AdsrParams, PitchEnvelope, SvfHighpass, Voice};
+use rawdaw_dsp::{Adsr, PitchEnvelope, SvfHighpass, Voice};
 
-const SNARE_BODY_START_HZ: f32 = 240.0;
-const SNARE_BODY_END_HZ: f32 = 130.0;
-const SNARE_BODY_PITCH_DECAY_S: f32 = 0.030;
-const SNARE_ATTACK_S: f32 = 0.001;
-const SNARE_DECAY_S: f32 = 0.140;
-const SNARE_SUSTAIN: f32 = 0.0;
-const SNARE_RELEASE_S: f32 = 0.020;
-
-/// Mix between body sine and noise. 0 = pure body, 1 = pure noise.
-/// 0.7 gives a snare-like sound with the noise dominant.
-const SNARE_NOISE_MIX: f32 = 0.7;
-/// Noise is high-passed so the bottom end doesn't muddy the body.
-const SNARE_NOISE_HP_HZ: f32 = 1500.0;
+use crate::patch::SnarePatch;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SnareVoice {
@@ -37,6 +25,9 @@ pub struct SnareVoice {
     pitch_env: PitchEnvelope,
     amp_env: Adsr,
     noise_hp: SvfHighpass,
+    /// Crossfade between body sine (0.0) and filtered noise (1.0).
+    /// Copied from the patch at `prepare`.
+    noise_mix: f32,
 }
 
 impl SnareVoice {
@@ -49,27 +40,24 @@ impl SnareVoice {
             pitch_env: PitchEnvelope::new(),
             amp_env: Adsr::new(),
             noise_hp: SvfHighpass::new(),
+            noise_mix: 0.0,
         }
     }
 
-    pub fn prepare(&mut self, sample_rate: u32) {
+    pub fn prepare(&mut self, sample_rate: u32, patch: &SnarePatch) {
         self.sample_rate = sample_rate as f32;
         self.pitch_env.prepare(sample_rate);
         self.pitch_env.set_shape(
-            SNARE_BODY_START_HZ,
-            SNARE_BODY_END_HZ,
-            SNARE_BODY_PITCH_DECAY_S,
+            patch.body_start_hz,
+            patch.body_end_hz,
+            patch.body_pitch_decay_s,
         );
         self.amp_env.prepare(sample_rate);
-        self.amp_env.set_params(AdsrParams {
-            attack_s: SNARE_ATTACK_S,
-            decay_s: SNARE_DECAY_S,
-            sustain_level: SNARE_SUSTAIN,
-            release_s: SNARE_RELEASE_S,
-        });
+        self.amp_env.set_params(patch.amp);
         self.noise_hp.prepare(sample_rate);
-        self.noise_hp.set_cutoff(SNARE_NOISE_HP_HZ);
-        self.noise_hp.set_resonance(0.7);
+        self.noise_hp.set_cutoff(patch.noise_hp_hz);
+        self.noise_hp.set_resonance(patch.noise_hp_q);
+        self.noise_mix = patch.noise_mix;
     }
 
     /// Tick one sample. `noise_sample` is the next sample from the
@@ -94,7 +82,7 @@ impl SnareVoice {
         // Noise: high-passed.
         let noise = self.noise_hp.tick(noise_sample);
 
-        let mixed = body * (1.0 - SNARE_NOISE_MIX) + noise * SNARE_NOISE_MIX;
+        let mixed = body * (1.0 - self.noise_mix) + noise * self.noise_mix;
         let amp = self.amp_env.tick();
         mixed * amp * self.velocity_amp
     }
