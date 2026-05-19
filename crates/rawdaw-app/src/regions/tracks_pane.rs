@@ -177,6 +177,16 @@ fn TrackRow(
         role_label,
     );
 
+    // K3: badge style for the current MIDI input target row. The
+    // ♪ glyph + accent color signals "live MIDI is wired here."
+    // Sticky against section-block selection — `midi_target_track`
+    // doesn't clear when the user clicks away to a section block.
+    let badge_style = format!(
+        "font-size: 11px; color: {accent}; \
+         padding: 0 4px; line-height: 1; opacity: 0.9;",
+        accent = stripe_color,
+    );
+
     rsx! {
         div {
             style: {
@@ -199,6 +209,16 @@ fn TrackRow(
             div { style: "display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px;",
                 span { style: {name_style.to_string()}, {name.clone()} }
                 span { style: {kind_style.to_string()}, {kind_caption.clone()} }
+            }
+            // Reactive ♪ badge: shows when this row is the active
+            // MIDI input target. `display:` is the toggle so the row
+            // layout doesn't shift when the badge appears/disappears.
+            span {
+                style: {|| format!(
+                    "{badge_style}; display: {};",
+                    if use_store::<AppState>().midi_target_track.get() == Some(idx) { "inline" } else { "none" },
+                )},
+                "\u{266A}"
             }
         }
     }

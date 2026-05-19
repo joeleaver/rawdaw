@@ -122,8 +122,16 @@ pub fn auto_pick_input() -> Result<Option<MidiInputDevice>, MidiInputError> {
 /// virtual devices (PipeWire bridges, named loopback patchbays) pass
 /// through so users running real MIDI through a router still get
 /// auto-picked.
-fn is_virtual_loopback(name: &str) -> bool {
+pub fn is_virtual_loopback(name: &str) -> bool {
     name.starts_with("Midi Through")
+}
+
+/// Look up a MIDI input device by exact name. Used by K2's device
+/// picker when the user selects an entry from the dropdown.
+/// Returns `Ok(None)` if no device with the given name is currently
+/// enumerable.
+pub fn find_input_by_name(name: &str) -> Result<Option<MidiInputDevice>, MidiInputError> {
+    Ok(enumerate_inputs()?.into_iter().find(|d| d.name == name))
 }
 
 /// State captured by midir's callback. Owned by midir's thread for
@@ -149,23 +157,20 @@ pub struct MidiInputBridge {
 }
 
 impl MidiInputBridge {
+    /// `target` is shared with the host (`AudioResources`) — host
+    /// keeps its own clone and `.store()`s a new NodeId on
+    /// track-selection changes (K3 routing). The bridge reads the
+    /// atomic on every incoming MIDI message via [`handle_midi_message`].
     pub fn new(
         handle: MidiInputHandle,
         sample_clock: Arc<AtomicU64>,
-        target: NodeId,
+        target: Arc<AtomicU32>,
     ) -> Self {
         Self {
             handle,
             sample_clock,
-            target: Arc::new(AtomicU32::new(target.0)),
+            target,
         }
-    }
-
-    /// Clone of the routing atomic. K3 will hold this on AppState
-    /// and `.store()` whenever the user picks a new track.
-    #[allow(dead_code)] // wired by K3
-    pub fn target_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.target)
     }
 }
 

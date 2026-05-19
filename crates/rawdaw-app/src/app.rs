@@ -6,6 +6,7 @@
 //! `state::EditorMode`. The top bar persists across both modes.
 
 use rinch::core::events::set_keyboard_interceptor;
+use rinch::core::reactive::Effect;
 use rinch::prelude::*;
 use rawdaw_engine::Transport;
 
@@ -22,7 +23,21 @@ pub fn main_window() -> NodeHandle {
     // audio resources are installed alongside so handlers (E6
     // transport, future MIDI) can consume them from any closure.
     let app = create_store(AppState::new());
-    let _audio = create_store(AudioResources::build());
+    let audio = create_store(AudioResources::build());
+
+    // K3: seed the MIDI routing target from the first Pitched track
+    // (matches the boot-time `midi_target` atomic on AudioResources)
+    // and wire an Effect that propagates AppState selection changes
+    // back to the audio side. The Effect runs once on creation with
+    // the seeded value, then on every `midi_target_track.get()`
+    // change. AudioResources::set_midi_target_track stores into the
+    // `Arc<AtomicU32>` shared with midir's callback thread; the next
+    // incoming MIDI message gets routed to the new NodeId.
+    app.midi_target_track.set(audio.first_pitched_track_index());
+    let _ = Effect::new(move || {
+        let target = app.midi_target_track.get();
+        audio.set_midi_target_track(target);
+    });
 
     // Global Space → Play/Pause shortcut. Rinch's keyboard interceptor
     // is a global singleton — only one can be active at a time — so

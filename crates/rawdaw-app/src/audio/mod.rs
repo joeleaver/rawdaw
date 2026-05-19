@@ -64,19 +64,21 @@
 
 mod drum_poller;
 mod graph;
+mod midi;
 mod poller;
 mod wavetable_poller;
 
 use std::cell::{RefCell, RefMut};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
 use rinch::prelude::Signal;
 
 use drum_poller::DrumPoller;
+use midi::first_pitched_track_node_id;
 use graph::{
     build_drum_handles, build_drum_pollers, build_wavetable_handles, build_wavetable_pollers,
     configure_graph, extract_drum_publishers, extract_publishers, ConfiguredGraph,
@@ -90,13 +92,12 @@ use rawdaw_engine::{
     TransportHandle,
 };
 use rawdaw_model::fixtures::build_round1_project;
-use rawdaw_model::patch::SynthAssignment;
 use rawdaw_model::project::Project;
 use rawdaw_model::tempo::TempoMap;
 use rawdaw_synth_drum::DrumPublishers;
 use rawdaw_synth_wavetable::WavetablePublishers;
 
-use crate::midi_input::{self, MidiInputBridge};
+use crate::midi_input::MidiInputBridge;
 use midir::MidiInputConnection;
 
 pub use graph::{DrumEditorHandle, WavetableEditorHandle};
@@ -248,13 +249,27 @@ pub struct AudioResources {
     ///
     /// `Rc<RefCell<>>` because AudioResources is `Clone` (rinch store
     /// contract) and the handle is `!Sync + !Clone`.
-    midi_input_handle: Rc<RefCell<Option<MidiInputHandle>>>,
+    pub(super) midi_input_handle: Rc<RefCell<Option<MidiInputHandle>>>,
     /// Active midir input connection, when a device is open. Held to
     /// keep the connection alive — when this drops, midir closes the
     /// port. `None` when no device was found at auto-pick (the host
-    /// runs without MIDI input silently). K2 surfaces a UI picker
-    /// that can `take()` and replace this on device switch.
-    _midi_connection: Rc<RefCell<Option<MidiInputConnection<MidiInputBridge>>>>,
+    /// runs without MIDI input silently). K2's UI picker
+    /// `take()`s and replaces this on device switch.
+    pub(super) _midi_connection: Rc<RefCell<Option<MidiInputConnection<MidiInputBridge>>>>,
+    /// MIDI input routing target — the NodeId of the synth that
+    /// receives incoming MIDI events. Shared `Arc` with the
+    /// [`MidiInputBridge`] inside midir's callback. K3 writes to this
+    /// atomic from the host (via [`Self::set_midi_target_track`])
+    /// whenever the user picks a different track; the bridge reads
+    /// on every event. Initialized to the first Pitched track's
+    /// NodeId by `build_from_project_and_rate`.
+    pub(super) midi_target: Arc<AtomicU32>,
+    /// Reactive mirror of the currently-open MIDI input device's
+    /// name. `None` when nothing's open (no device found at boot,
+    /// or user disconnected via K2's picker). The MidiPicker
+    /// component reads this to render the dropdown's selected
+    /// option; [`Self::set_midi_device`] updates it.
+    pub current_midi_device: Signal<Option<String>>,
 }
 
 impl AudioResources {
@@ -304,70 +319,6 @@ impl AudioResources {
     /// returns `None`) or when midir reports an error (printed to
     /// stderr; the UI still works). K2 will surface device selection
     /// in the UI; K3 makes the routing target dynamic.
-    fn open_default_midi_input(&mut self) {
-        let Some(target) = self.first_pitched_track_node_id() else {
-            // No Pitched track to route MIDI at — leave the handle
-            // alone and skip the device open. (Shouldn't happen with
-            // the round-1 fixture, but handle it gracefully so future
-            // all-drum projects don't crash.)
-            return;
-        };
-        let Some(handle) = self.midi_input_handle.borrow_mut().take() else {
-            return;
-        };
-        let bridge = MidiInputBridge::new(handle, Arc::clone(&self.sample_clock), target);
-        // Diagnostic: list every device midir can see, so a missing
-        // keyboard is obvious from the launch log. The auto-pick
-        // filters out "Midi Through" (see midi_input::auto_pick_input
-        // doc); this listing is unfiltered so Joe can spot whether
-        // the device is even being enumerated.
-        match midi_input::enumerate_inputs() {
-            Ok(devices) if !devices.is_empty() => {
-                eprintln!("audio: MIDI input devices found ({}):", devices.len());
-                for (i, d) in devices.iter().enumerate() {
-                    eprintln!("  [{i}] {}", d.name);
-                }
-            }
-            Ok(_) => eprintln!("audio: no MIDI input devices found"),
-            Err(e) => eprintln!("audio: enumerating MIDI input devices failed: {e}"),
-        }
-        match midi_input::auto_pick_input() {
-            Ok(Some(device)) => {
-                let device_name = device.name.clone();
-                match midi_input::open(&device, bridge) {
-                    Ok(connection) => {
-                        eprintln!(
-                            "audio: opened MIDI input '{device_name}' routed to NodeId({})",
-                            target.0
-                        );
-                        *self._midi_connection.borrow_mut() = Some(connection);
-                    }
-                    Err(e) => {
-                        eprintln!("audio: opening MIDI input '{device_name}' failed: {e}");
-                    }
-                }
-            }
-            Ok(None) => {
-                // No MIDI device connected (or only Midi Through was
-                // present). Quietly continue without live input — the
-                // round-1 song still plays.
-                eprintln!("audio: no non-loopback MIDI input devices; live input disabled");
-            }
-            Err(e) => {
-                eprintln!("audio: enumerating MIDI input devices failed: {e}");
-            }
-        }
-    }
-
-    fn first_pitched_track_node_id(&self) -> Option<NodeId> {
-        for (i, track) in self.project.tracks.iter().enumerate() {
-            if matches!(track.synth, SynthAssignment::Wavetable(_)) {
-                return Some(NodeId::new((i + 1) as u32));
-            }
-        }
-        None
-    }
-
     /// Build for a specific project at a specific sample rate, *without*
     /// the playhead polling thread. Used directly by tests (which run
     /// outside the rinch runtime); production callers go through
@@ -439,6 +390,17 @@ impl AudioResources {
             _poller: None,
             midi_input_handle: Rc::new(RefCell::new(Some(midi_input_handle))),
             _midi_connection: Rc::new(RefCell::new(None)),
+            // Seed the routing atomic with the first Pitched track's
+            // NodeId so MIDI input has a sensible default target
+            // before the user picks a track. K3's
+            // `set_midi_target_track` overwrites this when the user
+            // selects a different track; the bridge's
+            // `Arc::clone(&self.midi_target)` keeps the host and
+            // midir-thread views in sync.
+            midi_target: Arc::new(AtomicU32::new(
+                first_pitched_track_node_id(project).map(|n| n.0).unwrap_or(0),
+            )),
+            current_midi_device: Signal::new(None),
         }
     }
 

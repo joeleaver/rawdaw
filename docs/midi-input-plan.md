@@ -28,8 +28,18 @@ add expressive control (pitch bend, sustain, full CCs).
     stage are still `is_active()`, so the second press would
     orphan voice 1 in Sustain when the second NoteOff hit
     already-releasing voice 0).
-- K2 — not started.
-- K3 — not started.
+- K2 ✅ + K3 ✅ — landed together 2026-05-19. Device picker
+  dropdown in top bar (`MidiPicker` reads
+  `AudioResources::available_midi_inputs` + `current_midi_device`,
+  calls `set_midi_device(Option<&str>)` on selection). Sticky
+  routing target via new `AppState::midi_target_track` signal +
+  matching `AudioResources::midi_target: Arc<AtomicU32>`; an
+  Effect in `main_window` propagates signal changes to the
+  atomic, midir's callback reads the atomic on every event.
+  TracksPane shows a "♪" badge on the active MIDI target row
+  (sticky against section-block selection). `audio/mod.rs` was
+  at 707 lines; split out `audio/midi.rs` (247 lines) for all
+  MIDI-input AudioResources impls before adding K2/K3.
 - K4 — not started.
 - K5 — not started.
 
