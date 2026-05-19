@@ -123,6 +123,13 @@ impl SineNode {
                 self.note_on(*note, *velocity)
             }
             BlockMessage::Midi(Midi2Message::NoteOff { note, .. }) => self.note_off(*note),
+            // SineNode is the engine's stub voice manager — no
+            // pitch-bend, no sustain. Live CC/PitchBend from K4
+            // are silently ignored when the master happens to be
+            // routed through it (the round-1 graph uses
+            // WavetableSynthNode, so this arm only fires in tests).
+            BlockMessage::Midi(Midi2Message::ControlChange { .. })
+            | BlockMessage::Midi(Midi2Message::PitchBend { .. }) => {}
             BlockMessage::Param(_) => {
                 // SineNode has no parameters. U1 ships the event
                 // channel; a Param event arriving here is a host-side

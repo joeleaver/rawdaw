@@ -206,6 +206,13 @@ impl DrumSynthNode {
                     DrumKind::Hat(_) => self.hats.note_off(note.get()),
                 }
             }
+            // Drums are unpitched one-shots — pitch wheel has no
+            // meaningful effect, and sustain pedal would just hold
+            // already-completed envelopes. Silently ignore both at
+            // K4. (K5 may route CCs to drum-side mod-matrix-equivalents
+            // when those exist.)
+            BlockMessage::Midi(Midi2Message::ControlChange { .. })
+            | BlockMessage::Midi(Midi2Message::PitchBend { .. }) => {}
             BlockMessage::Param(ParamEvent { path, value }) => {
                 self.apply_param(path, *value);
             }

@@ -54,6 +54,11 @@ pub(crate) struct WavetableVoice {
     /// crosses the patch boundary mid-tick.
     filter_cutoff_hz_base: f32,
     velocity_amp: f32,
+    /// K4 — current pitch-bend offset in semitones (signed). The
+    /// synth node calls [`set_pitch_bend_semitones`] on every
+    /// `PitchBend` event; the value is also read at `note_on` so
+    /// fresh notes inherit the pedal-held bend.
+    pitch_bend_semitones: f32,
 }
 
 impl WavetableVoice {
@@ -70,6 +75,25 @@ impl WavetableVoice {
             filter: SvfLowpass::new(),
             filter_cutoff_hz_base: 0.0,
             velocity_amp: 0.0,
+            pitch_bend_semitones: 0.0,
+        }
+    }
+
+    /// K4 — set the pitch-bend offset (in semitones) and re-derive
+    /// each oscillator's frequency from its cached
+    /// [`osc_hz_base`](Self::osc_hz_base) so the change applies
+    /// instantly without waiting for the next note-on. Idle voices
+    /// store the new bend but skip the frequency update (their
+    /// `osc_hz_base` is stale from the prior note); the next
+    /// `note_on` reads `pitch_bend_semitones` and applies the bend
+    /// then.
+    pub(crate) fn set_pitch_bend_semitones(&mut self, semitones: f32) {
+        self.pitch_bend_semitones = semitones;
+        if self.is_active() {
+            let ratio = bend_ratio(semitones);
+            for i in 0..NUM_OSCS {
+                self.oscs[i].set_frequency(self.osc_hz_base[i] * ratio);
+            }
         }
     }
 
@@ -227,6 +251,7 @@ impl Voice for WavetableVoice {
 
     fn note_on(&mut self, note: u8, velocity: f32) {
         self.note = note;
+        let bend_ratio = bend_ratio(self.pitch_bend_semitones);
         for i in 0..NUM_OSCS {
             let hz = note_offset_hz(
                 note,
@@ -237,8 +262,13 @@ impl Voice for WavetableVoice {
             // re-derive frequency from it without re-running
             // `note_offset_hz` (avoids one extra powf per tune-
             // modulated sample).
+            //
+            // K4: oscillators play at base * pitch-bend ratio. The
+            // base stays unbent so set_pitch_bend_semitones can
+            // re-derive frequency on every wheel move without
+            // re-running note_offset_hz.
             self.osc_hz_base[i] = hz;
-            self.oscs[i].set_frequency(hz);
+            self.oscs[i].set_frequency(hz * bend_ratio);
             self.oscs[i].reset_phase();
         }
         self.filter.reset_state();
@@ -259,5 +289,17 @@ impl Voice for WavetableVoice {
         self.amp.note_off();
         self.env2.note_off();
         self.env3.note_off();
+    }
+}
+
+/// K4 helper: convert pitch-bend semitones to a frequency-multiplier
+/// ratio. Equal-temperament: each semitone is 2^(1/12) ≈ 1.0595.
+/// Inlined-friendly + cheap on modern CPUs (one `powf`); called once
+/// per note-on and once per `set_pitch_bend_semitones`.
+fn bend_ratio(semitones: f32) -> f32 {
+    if semitones == 0.0 {
+        1.0
+    } else {
+        2.0_f32.powf(semitones / 12.0)
     }
 }

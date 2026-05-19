@@ -35,6 +35,13 @@ fn every_note_on_has_a_matching_note_off() {
         match e.message {
             Midi2Message::NoteOn { .. } => note_ons += 1,
             Midi2Message::NoteOff { .. } => note_offs += 1,
+            // realize() does not synthesize CC or pitch-bend events
+            // — those come from live MIDI input and pass through
+            // translate_events untouched. Any in the realized
+            // stream is a bug.
+            Midi2Message::ControlChange { .. } | Midi2Message::PitchBend { .. } => {
+                panic!("realize() emitted an unexpected control event: {:?}", e.message)
+            }
         }
     }
     assert!(note_ons > 0);

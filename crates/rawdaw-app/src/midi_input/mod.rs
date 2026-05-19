@@ -244,9 +244,12 @@ fn midi_debug_enabled() -> bool {
     std::env::var_os("RAWDAW_MIDI_DEBUG").is_some()
 }
 
-/// Pure MIDI 1.0 → [`Midi2Message`] translation. v1 covers Note On
-/// and Note Off only; other statuses return `None` and are silently
-/// dropped at K1. K4 / K5 extend the match arms.
+/// Pure MIDI 1.0 → [`Midi2Message`] translation. v1 covers Note On,
+/// Note Off, Control Change (CC), and Pitch Bend. Per-note
+/// pressure / poly aftertouch / RPN / MPE remain out-of-scope.
+///
+/// All four supported statuses are 3-byte messages; shorter
+/// payloads (system realtime, program change) return `None`.
 pub fn translate(message: &[u8]) -> Option<Midi2Message> {
     if message.len() < 3 {
         return None;
@@ -255,27 +258,55 @@ pub fn translate(message: &[u8]) -> Option<Midi2Message> {
     let channel = MidiChannel::new(message[0] & 0x0F)?;
     let data1 = message[1];
     let data2 = message[2];
-    let note = MidiNote::new(data1)?;
-    let velocity_u7 = U7::new(data2)?;
     match status {
-        0x90 if data2 > 0 => Some(Midi2Message::NoteOn {
-            channel,
-            note,
-            velocity: U16Velocity::from_u7(velocity_u7),
-        }),
-        // Note On with velocity 0 is the canonical "Note Off" alias —
-        // MIDI 1.0 hardware often uses it to avoid a status-byte
-        // switch in running-status mode.
-        0x90 => Some(Midi2Message::NoteOff {
-            channel,
-            note,
-            velocity: U16Velocity::from_u7(velocity_u7),
-        }),
-        0x80 => Some(Midi2Message::NoteOff {
-            channel,
-            note,
-            velocity: U16Velocity::from_u7(velocity_u7),
-        }),
+        0x80 => {
+            let note = MidiNote::new(data1)?;
+            let velocity = U7::new(data2)?;
+            Some(Midi2Message::NoteOff {
+                channel,
+                note,
+                velocity: U16Velocity::from_u7(velocity),
+            })
+        }
+        0x90 => {
+            let note = MidiNote::new(data1)?;
+            let velocity = U7::new(data2)?;
+            // Note On with velocity 0 is the canonical "Note Off"
+            // alias — MIDI 1.0 hardware often uses it to avoid a
+            // status-byte switch in running-status mode.
+            if data2 > 0 {
+                Some(Midi2Message::NoteOn {
+                    channel,
+                    note,
+                    velocity: U16Velocity::from_u7(velocity),
+                })
+            } else {
+                Some(Midi2Message::NoteOff {
+                    channel,
+                    note,
+                    velocity: U16Velocity::from_u7(velocity),
+                })
+            }
+        }
+        // K4: Control Change. Both data bytes are U7; the
+        // controller number and value carry forward as-is. The synth
+        // node decides how to interpret them (CC64 = sustain at K4,
+        // mod-matrix routing at K5).
+        0xB0 => {
+            let controller = U7::new(data1)?;
+            let value = U7::new(data2)?;
+            Some(Midi2Message::ControlChange {
+                channel,
+                controller,
+                value,
+            })
+        }
+        // K4: Pitch Bend. The 14-bit value is data2:msb + data1:lsb
+        // (each contributes 7 bits). Center = 8192, range = 0..16383.
+        0xE0 => {
+            let value_14 = ((data2 as u16) << 7) | (data1 as u16);
+            Some(Midi2Message::PitchBend { channel, value_14 })
+        }
         _ => None,
     }
 }
@@ -332,18 +363,64 @@ mod tests {
     }
 
     #[test]
-    fn translate_returns_none_for_control_change_v1() {
-        // 0xB_ is Control Change. K5 will route these to the mod
-        // matrix; v1 drops them silently.
+    fn translate_parses_control_change() {
+        // K4: CC 7 (volume) on channel 0 with value 100.
         let msg = [0xB0, 7, 100];
-        assert!(translate(&msg).is_none());
+        let parsed = translate(&msg).expect("parse CC");
+        match parsed {
+            Midi2Message::ControlChange {
+                channel,
+                controller,
+                value,
+            } => {
+                assert_eq!(channel.get(), 0);
+                assert_eq!(controller.get(), 7);
+                assert_eq!(value.get(), 100);
+            }
+            _ => panic!("expected ControlChange, got {parsed:?}"),
+        }
     }
 
     #[test]
-    fn translate_returns_none_for_pitch_bend_v1() {
-        // 0xE_ is Pitch Bend. K4 will handle these; v1 drops.
+    fn translate_parses_sustain_pedal() {
+        // K4: CC 64 (sustain pedal) — pedal down.
+        let msg = [0xB0, 64, 127];
+        let parsed = translate(&msg).expect("parse sustain pedal");
+        match parsed {
+            Midi2Message::ControlChange { controller, value, .. } => {
+                assert_eq!(controller.get(), 64);
+                assert_eq!(value.get(), 127);
+            }
+            _ => panic!("expected ControlChange CC64, got {parsed:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_parses_pitch_bend_center() {
+        // K4: Pitch Bend at MIDI center (8192). data2=0x40 (msb),
+        // data1=0x00 (lsb) → (0x40 << 7) | 0x00 = 8192.
         let msg = [0xE0, 0x00, 0x40];
-        assert!(translate(&msg).is_none());
+        let parsed = translate(&msg).expect("parse pitch bend center");
+        match parsed {
+            Midi2Message::PitchBend { channel, value_14 } => {
+                assert_eq!(channel.get(), 0);
+                assert_eq!(value_14, 8192);
+            }
+            _ => panic!("expected PitchBend, got {parsed:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_parses_pitch_bend_full_positive() {
+        // Pitch wheel fully up: 14-bit max = 16383.
+        // data2=0x7F (msb=127), data1=0x7F (lsb=127) →
+        // (0x7F << 7) | 0x7F = 16383.
+        let msg = [0xE0, 0x7F, 0x7F];
+        let parsed = translate(&msg).expect("parse pitch bend max");
+        match parsed {
+            Midi2Message::PitchBend { value_14, .. } => assert_eq!(value_14, 16383),
+            _ => panic!("expected PitchBend max, got {parsed:?}"),
+        }
     }
 
     #[test]

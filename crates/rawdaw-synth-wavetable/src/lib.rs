@@ -55,6 +55,16 @@ const NUM_VOICES: usize = 16;
 /// index > carrier index) keeps render order trivial at this width.
 pub(crate) const NUM_OSCS: usize = 3;
 
+/// K4 — MIDI standard CC number for the sustain pedal.
+const CC_SUSTAIN_PEDAL: u8 = 64;
+
+/// K4 — sustain pedal threshold (MIDI spec: ≥ 64 means down).
+const SUSTAIN_PEDAL_DOWN_THRESHOLD: u8 = 64;
+
+/// K4 — default pitch-bend range in semitones (±). MIDI's de-facto
+/// default; future RPN handling can widen per-channel.
+const PITCH_BEND_RANGE_SEMITONES: f32 = 2.0;
+
 /// Modulation matrix slot count. Generous for a small synth, RT-
 /// safe (no heap), well under the topo-sort scratch-buffer budget
 /// in `rawdaw-dsp::modulation`.
@@ -138,6 +148,23 @@ pub struct WavetableSynthNode {
     /// Latest post-apply patch — mirrors `self.patch` after every
     /// `ParamEvent`. Host reads via `lock()`.
     patch_snapshot: Arc<Mutex<WavetablePatch>>,
+    /// K4 pitch-wheel offset in semitones (signed). Updated on every
+    /// `PitchBend` event; propagated to every voice (active or not)
+    /// so subsequent note-ons inherit the current bend. Default 0.0
+    /// (no bend) at construction. The ±2 semitone range matches the
+    /// MIDI default; future RPN handling can widen it per-channel.
+    pitch_bend_semitones: f32,
+    /// K4 sustain pedal state. `true` between CC64 ≥ 64 and the
+    /// matching CC64 < 64. While `true`, [`Self::apply_note_off`]
+    /// queues note-offs in `deferred_note_offs` instead of releasing
+    /// the voice immediately. The release fires when the pedal goes
+    /// back up.
+    sustain_pedal_down: bool,
+    /// Note numbers waiting for sustain-pedal release. Bounded by
+    /// `VoicePool` polyphony (16 in v1) so the Vec is small and
+    /// reusing across blocks is cheap. Drained when the pedal
+    /// transitions back up.
+    deferred_note_offs: Vec<u8>,
 }
 
 impl WavetableSynthNode {
@@ -170,6 +197,9 @@ impl WavetableSynthNode {
             patch,
             patch_version: publishers.version,
             patch_snapshot: publishers.snapshot,
+            pitch_bend_semitones: 0.0,
+            sustain_pedal_down: false,
+            deferred_note_offs: Vec::with_capacity(NUM_VOICES),
         }
     }
 
@@ -180,11 +210,70 @@ impl WavetableSynthNode {
                 self.voices.note_on(note.get(), amp);
             }
             BlockMessage::Midi(Midi2Message::NoteOff { note, .. }) => {
-                self.voices.note_off(note.get());
+                self.apply_note_off(note.get());
+            }
+            BlockMessage::Midi(Midi2Message::ControlChange {
+                controller, value, ..
+            }) => {
+                self.apply_control_change(controller.get(), value.get());
+            }
+            BlockMessage::Midi(Midi2Message::PitchBend { value_14, .. }) => {
+                self.apply_pitch_bend(*value_14);
             }
             BlockMessage::Param(ParamEvent { path, value }) => {
                 self.apply_param(path, *value);
             }
+        }
+    }
+
+    /// K4 NoteOff with sustain-pedal latching. When the pedal is
+    /// down (`sustain_pedal_down == true`), the note-off is
+    /// deferred until the pedal goes back up; the voice continues
+    /// to sound. Deduplicated against existing deferrals so
+    /// rapid key-press repeats while the pedal is held don't grow
+    /// the queue unbounded.
+    fn apply_note_off(&mut self, note: u8) {
+        if self.sustain_pedal_down {
+            if !self.deferred_note_offs.contains(&note) {
+                self.deferred_note_offs.push(note);
+            }
+        } else {
+            self.voices.note_off(note);
+        }
+    }
+
+    /// K4 ControlChange dispatch. CC64 is the sustain pedal — see
+    /// the MIDI spec; ≥ 64 is "down", < 64 is "up". On pedal
+    /// release, fire every deferred note-off at once. All other
+    /// CCs are silently ignored at K4; K5 routes them to the mod
+    /// matrix.
+    fn apply_control_change(&mut self, controller: u8, value: u8) {
+        if controller == CC_SUSTAIN_PEDAL {
+            let was_down = self.sustain_pedal_down;
+            self.sustain_pedal_down = value >= SUSTAIN_PEDAL_DOWN_THRESHOLD;
+            if was_down && !self.sustain_pedal_down {
+                // Drain the deferred queue with `take()`-equivalent
+                // semantics; the Vec keeps its capacity for the
+                // next sustain cycle.
+                let pending = std::mem::take(&mut self.deferred_note_offs);
+                for note in pending {
+                    self.voices.note_off(note);
+                }
+            }
+        }
+    }
+
+    /// K4 PitchBend dispatch. Convert MIDI's 14-bit unsigned value
+    /// (center 8192) to signed semitones with the default ±2-semitone
+    /// range. Push the new bend to every voice (active or not) so
+    /// future note-ons inherit the current bend.
+    fn apply_pitch_bend(&mut self, value_14: u16) {
+        let signed = value_14 as i32 - Midi2Message::PITCH_BEND_CENTER as i32;
+        let normalized = signed as f32 / Midi2Message::PITCH_BEND_CENTER as f32;
+        let semitones = normalized * PITCH_BEND_RANGE_SEMITONES;
+        self.pitch_bend_semitones = semitones;
+        for v in self.voices.voices_mut() {
+            v.set_pitch_bend_semitones(semitones);
         }
     }
 

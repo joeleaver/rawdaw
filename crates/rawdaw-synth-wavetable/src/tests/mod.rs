@@ -12,6 +12,7 @@
 //! `render_block`, …) live here in `mod.rs` and are re-exported as
 //! `pub(super)` for submodule use.
 
+mod expression;
 mod matrix;
 mod oscillators;
 mod playback;

@@ -28,6 +28,18 @@ add expressive control (pitch bend, sustain, full CCs).
     stage are still `is_active()`, so the second press would
     orphan voice 1 in Sustain when the second NoteOff hit
     already-releasing voice 0).
+- K4 ✅ — landed 2026-05-19. Pitch bend wheel + sustain pedal
+  (CC64) routed through the wavetable synth. Drum synth ignores
+  both (unpitched one-shots). `Midi2Message` model grew
+  `ControlChange { channel, controller: U7, value: U7 }` and
+  `PitchBend { channel, value_14: u16 }` variants. Pitch bend
+  range = ±2 semitones (MIDI default; future RPN handling can
+  widen). Sustain pedal latches NoteOffs while down; releases
+  the deferred queue on pedal up. midir translator parses
+  status `0xB_` + `0xE_`. 4 wavetable-side regression tests
+  (pedal latching, pitch bend shifts frequency, center is a
+  no-op, non-sustain CCs ignored) + translator tests (CC, CC64,
+  pitch bend center, pitch bend max).
 - K2 ✅ + K3 ✅ — landed together 2026-05-19. Device picker
   dropdown in top bar (`MidiPicker` reads
   `AudioResources::available_midi_inputs` + `current_midi_device`,
@@ -40,7 +52,6 @@ add expressive control (pitch bend, sustain, full CCs).
   (sticky against section-block selection). `audio/mod.rs` was
   at 707 lines; split out `audio/midi.rs` (247 lines) for all
   MIDI-input AudioResources impls before adding K2/K3.
-- K4 — not started.
 - K5 — not started.
 
 ## Phase K0 — Plan + design decisions ◀ this doc

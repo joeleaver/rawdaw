@@ -19,9 +19,16 @@ pub struct TimedEvent {
     pub provenance: Provenance,
 }
 
-/// Internal MIDI 2.0 message type. v1 covers Note On / Note Off only; we'll
-/// grow this with per-note controllers, channel CCs, pitch bend, etc. as
-/// instruments need them.
+/// Internal MIDI 2.0 message type. v1 covers Note On / Note Off plus
+/// the K4 expressive-control variants (`ControlChange` for
+/// CC routing + the standard sustain pedal CC64; `PitchBend` for
+/// the pitch wheel). Per-note pressure / poly aftertouch / RPN /
+/// MPE remain out-of-scope.
+///
+/// Realization (`realize::realize`) currently emits only NoteOn /
+/// NoteOff; the new variants come from external live input
+/// (`rawdaw-app::midi_input`) and pass through `translate_events`
+/// unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Midi2Message {
     NoteOn {
@@ -34,6 +41,33 @@ pub enum Midi2Message {
         note: MidiNote,
         velocity: U16Velocity,
     },
+    /// MIDI 1.0-style Control Change. v1 stores 7-bit values; the
+    /// `Midi2Message` namespace is forward-looking but the wire
+    /// format we ingest from `midir` is MIDI 1.0.
+    ///
+    /// CC 64 = sustain pedal (value ≥ 64 = down, < 64 = up).
+    /// Other CCs are routed to mod-matrix sources by K5.
+    ControlChange {
+        channel: MidiChannel,
+        controller: U7,
+        value: U7,
+    },
+    /// Pitch wheel — 14-bit value spread across two MIDI data bytes
+    /// (lsb + msb), unsigned 0..16383 with center at 8192. K4
+    /// applies the default ±2 semitone range to oscillator
+    /// frequency; future RPN handling can change the range
+    /// per-channel.
+    PitchBend {
+        channel: MidiChannel,
+        value_14: u16,
+    },
+}
+
+impl Midi2Message {
+    /// Pitch-bend center value (no bend). MIDI standard.
+    pub const PITCH_BEND_CENTER: u16 = 8192;
+    /// Maximum unsigned 14-bit pitch-bend value (full positive bend).
+    pub const PITCH_BEND_MAX: u16 = 16383;
 }
 
 /// MIDI channel 0..16. Drums conventionally live on channel 9 (channel 10
