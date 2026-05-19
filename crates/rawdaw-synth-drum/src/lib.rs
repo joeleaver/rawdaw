@@ -24,16 +24,18 @@
 
 #![forbid(unsafe_code)]
 
+mod param;
 mod patch;
 mod voices;
 
 use rawdaw_dsp::{NoiseSource, VoicePool};
 use rawdaw_engine::buffer::ChannelCount;
 use rawdaw_engine::context::ProcessContext;
-use rawdaw_engine::event::{BlockMessage, EventBlock};
+use rawdaw_engine::event::{BlockMessage, EventBlock, ParamEvent};
 use rawdaw_engine::node::{AudioNode, OutputDescriptor, PortAccess};
 use rawdaw_model::{Midi2Message, U16Velocity};
 
+pub use param::DrumParam;
 pub use patch::{DrumPatch, HatPatch, KickPatch, SnarePatch};
 pub use voices::{HatVoice, KickVoice, SnareVoice};
 
@@ -143,17 +145,39 @@ impl DrumSynthNode {
                     DrumKind::Hat(_) => self.hats.note_off(note.get()),
                 }
             }
-            BlockMessage::Param(_) => {
-                // U1 ships the event channel; U3b wires the drum synth's
-                // parameter decoder onto this arm. Until then a Param
-                // event arriving here is a host-side bug — flag it in
-                // debug, no-op in release.
-                debug_assert!(
-                    false,
-                    "DrumSynthNode received a Param event before U3b; \
-                     host should not be pushing params yet",
-                );
+            BlockMessage::Param(ParamEvent { path, value }) => {
+                self.apply_param(path, *value);
             }
+        }
+    }
+
+    /// Decode a parameter event and apply it to the runtime patch.
+    /// Unrecognized paths `debug_assert!` in debug + no-op in release.
+    /// After mutation, propagates the relevant sub-patch into the
+    /// matching voice pool so subsequent samples see the change.
+    fn apply_param(&mut self, path: &[u8; 8], value: f32) {
+        let Some(param) = DrumParam::decode(path) else {
+            debug_assert!(false, "DrumSynthNode: unknown ParamEvent path {path:?}");
+            return;
+        };
+        param.apply(&mut self.patch, value);
+        self.propagate_patch_to_voices();
+    }
+
+    /// Push every voice pool's current sub-patch from the canonical
+    /// drum patch. Called by `apply_param` after each mutation and
+    /// by `prepare()`. Hats default to the closed sub-patch here;
+    /// the per-note dispatcher in `apply_event` overrides to the
+    /// open sub-patch on MIDI 46.
+    fn propagate_patch_to_voices(&mut self) {
+        for v in self.kicks.voices_mut() {
+            v.set_patch(&self.patch.kick);
+        }
+        for v in self.snares.voices_mut() {
+            v.set_patch(&self.patch.snare);
+        }
+        for v in self.hats.voices_mut() {
+            v.set_patch(&self.patch.closed_hat);
         }
     }
 }
@@ -429,5 +453,59 @@ mod tests {
         assert_eq!(classify(42), Some(DrumKind::Hat(HatRole::Closed)));
         assert_eq!(classify(46), Some(DrumKind::Hat(HatRole::Open)));
         assert_eq!(classify(60), None);
+    }
+
+    /// A `SnareNoiseMix` parameter event arriving at the node
+    /// mutates the patch and propagates to voices — subsequent
+    /// snare hits render with the new mix. Pins the full chain:
+    /// BlockMessage::Param → apply_event → DrumParam::decode →
+    /// apply → propagate.
+    #[test]
+    fn param_event_changes_snare_noise_mix() {
+        // Baseline: snare with default mix (0.7).
+        let mut control = make_node();
+        let mut control_buf = Vec::new();
+        render_block(
+            &mut control,
+            &[BlockEventInBlock {
+                offset_in_block: 0,
+                message: note_on(38, U16Velocity::HALF),
+            }],
+            &mut control_buf,
+        );
+
+        // Treatment: same setup but the mix is pushed to 0 (pure
+        // body) BEFORE the note triggers, so the snare-allocated
+        // voice picks up the new mix at its first sample.
+        let mut treatment = make_node();
+        let path = DrumParam::SnareNoiseMix.encode();
+        let value = 0.0_f32;
+        let mut treatment_buf = Vec::new();
+        render_block(
+            &mut treatment,
+            &[
+                BlockEventInBlock {
+                    offset_in_block: 0,
+                    message: BlockMessage::Param(rawdaw_engine::ParamEvent { path, value }),
+                },
+                BlockEventInBlock {
+                    offset_in_block: 1,
+                    message: note_on(38, U16Velocity::HALF),
+                },
+            ],
+            &mut treatment_buf,
+        );
+
+        let diff_rms = rms(
+            &control_buf[..BLOCK]
+                .iter()
+                .zip(treatment_buf[..BLOCK].iter())
+                .map(|(a, b)| a - b)
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            diff_rms > 0.005,
+            "SnareNoiseMix @ 0 should audibly change the snare; diff_rms = {diff_rms}",
+        );
     }
 }

@@ -29,7 +29,7 @@ yet); U4–U7 are the "UI" half; U8 is persistence; U9 closes out.
 
 ---
 
-## Status — U3a DONE (U3 split into U3a + U3b)
+## Status — U3b DONE
 
 - U0 ✅ this document, design decisions locked.
 - U1 ✅ `BlockMessage::{Midi, Param}` + `ParamEvent { path, value }`
@@ -40,26 +40,25 @@ yet); U4–U7 are the "UI" half; U8 is persistence; U9 closes out.
   (`WavetablePatchData`, `DrumPatchData`, `SynthAssignment` + per-
   synth mirror enums). `Track` gains `synth` + `Track::new` defaults
   from `kind`. 15 new tests; ron round-trip + default-value pins.
-- U3a ✅ Runtime patch types ship in the synth crates:
-  `WavetablePatch` (rawdaw-synth-wavetable) + `DrumPatch` /
-  `KickPatch` / `SnarePatch` / `HatPatch` (rawdaw-synth-drum) with
-  `From<…PatchData>` conversions. Constants lifted to patch fields:
-  `WavetableSynthNode` owns one `WavetablePatch`; voices read their
-  filter base / env params / matrix from it. Drum voices' per-voice
-  prepare now takes their sub-patch (kick/snare/hat). `HatStyle`
-  collapsed into an internal `HatRole`; per-note dispatch installs
-  the right sub-patch on the just-claimed voice. New constructors:
-  `WavetableSynthNode::with_patch` / `DrumSynthNode::with_patch`;
-  `new()` delegates with the M5/v0 defaults. `configure_graph` reads
-  each `Track::synth` and constructs synth nodes via `with_patch`.
-  Wavetable lib.rs was 1232 lines — split into `lib.rs` (~190),
-  `voice.rs`, `patch.rs`, `tests.rs` (separate commit). 5 new tests
-  (workspace 248 → 253) pin runtime↔data default equivalence, custom
-  patch differs from default, `new == with_patch(default)`. Audio
-  byte-identical for round-1.
-- U3b — pending. Wire `WavetableParam` / `DrumParam` decoders into
-  each synth's `apply_event` Param arm so live parameter events
-  mutate the runtime patch + propagate to voices.
+- U3a ✅ Runtime patch types in synth crates with `From<…PatchData>`.
+  `WavetableSynthNode::with_patch` / `DrumSynthNode::with_patch`
+  constructors; `new()` delegates with the M5/v0 defaults.
+  Constants lifted; voices read filter/env/matrix from the patch.
+  `HatStyle` collapsed into an internal `HatRole` + per-note
+  `HatVoice::set_patch`. `configure_graph` builds synth nodes from
+  `Track::synth`. 5 new tests; audio byte-identical for round-1.
+  Wavetable `lib.rs` (1232 lines) split into lib/voice/patch/tests
+  in a refactor commit.
+- U3b ✅ `WavetableParam` (13 variants) + `DrumParam` (29 variants)
+  enums ship in `…::param` with `encode/decode/apply`. Each synth's
+  Param arm decodes → applies → propagates. Out-of-range values are
+  clamped; unknown paths `debug_assert!` + no-op. KickVoice +
+  SnareVoice gained `set_patch` siblings of U3a's
+  `HatVoice::set_patch`. 19 new tests (workspace 253 → 272) pin
+  encode/decode round-trip, clamps, and end-to-end Param → audio
+  via `FilterCutoffHz @ 8000` / `SnareNoiseMix @ 0`. Pre-U3b
+  `tests.rs` (726 lines) split into `tests/{playback,oscillators,
+  matrix}` in a refactor commit.
 - U4–U9 pending.
 
 ---
@@ -396,31 +395,23 @@ in favor of an internal `HatRole` classifier + per-note
 
 ## Phase U3b — Parameter event decoders
 
-**Goal.** Wire `WavetableParam` / `DrumParam` enums + per-synth
-`apply_event` Param-arm decoders so live parameter events mutate
-the runtime patch on the audio thread + propagate to voices.
+**Goal + Steps.** Per-synth `apply_event` Param-arm decoders.
+`WavetableParam` (rawdaw-synth-wavetable::param) + `DrumParam`
+(rawdaw-synth-drum::param), each with `encode([u8; 8])` /
+`decode(&[u8; 8])` / `apply(&mut Patch, value)`. Each synth's
+Param arm replaces U1's `debug_assert!(false)` with
+`decode → apply → propagate_patch_to_voices`. Bad paths still
+`debug_assert!` in debug + no-op in release.
 
-**Steps.**
-
-- `WavetableParam` enum (~13 variants per the U0 design decisions)
-  + `encode([u8; 8]) / decode(&[u8; 8])` helpers in
-  `rawdaw-synth-wavetable::param`.
-- Mirror `DrumParam` in `rawdaw-synth-drum::param`.
-- Each synth's `apply_event` `BlockMessage::Param` arm replaces its
-  `debug_assert!(false)` with a decode-then-apply: decode the path,
-  mutate `self.patch`, call `propagate_patch_to_voices` (or a more
-  surgical per-param propagation).
-- Bad paths still `debug_assert!` in debug + no-op in release —
-  the existing U1 fallback shape, just with successful paths
-  routed first.
-
-**Done when.** Workspace audio byte-identical when no Param
-events are pushed. New tests pin: (a) a synthetic
-`WavetableParam::FilterCutoffHz @ 2000.0` event arriving at the
-node updates the next voice's filter (audio diverges from
-no-event baseline); (b) `WavetableParam` / `DrumParam` round-trip
-through `encode/decode` byte-for-byte for every variant; (c)
-unrecognized path doesn't crash (release path).
+**Done when (✅ met).** Round-1 audio unchanged when no Param
+events fire. 19 new tests (workspace 253 → 272) pin: (a) Param
+events audibly mutate output (`FilterCutoffHz @ 8000` /
+`SnareNoiseMix @ 0`); (b) encode/decode round-trips for every
+variant — WavetableParam 13 + DrumParam 29; (c) unknown / out-of-
+range paths no-op; (d) clamp behaviour for representative numeric
+params. KickVoice / SnareVoice gained `set_patch` siblings of
+U3a's `HatVoice::set_patch` so `apply_param` has uniform
+propagation.
 
 ---
 

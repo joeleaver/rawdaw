@@ -1,9 +1,11 @@
 //! M3 mod-matrix routing pins + U3 `with_patch` tests.
 
 use rawdaw_dsp::{ModDestination, ModSlot, ModSource};
-use rawdaw_engine::event::BlockEventInBlock;
+use rawdaw_engine::event::{BlockEventInBlock, ParamEvent};
 use rawdaw_engine::node::AudioNode;
 use rawdaw_model::U16Velocity;
+
+use crate::{BlockMessage, WavetableParam};
 
 use super::oscillators::{coherent_three_osc_patch, render_steady_state};
 use super::{make_node, note_on, render_block, rms, BLOCK, SR};
@@ -154,6 +156,77 @@ fn with_patch_uses_custom_filter_cutoff() {
     assert!(
         diff_rms > 0.005,
         "with_patch(custom) should differ from default; diff_rms = {diff_rms}",
+    );
+}
+
+// ── U3b parameter event tests ───────────────────────────────────────
+
+/// A `FilterCutoffHz` parameter event arriving at the node mutates
+/// the patch and propagates to voices — subsequent samples render
+/// with the new cutoff. Pins the full chain: BlockMessage::Param →
+/// apply_event → WavetableParam::decode → apply → propagate.
+#[test]
+fn param_event_changes_filter_cutoff() {
+    // First: render the default cutoff (800 Hz).
+    let mut control = WavetableSynthNode::new();
+    control.prepare(SR, BLOCK);
+    control.set_matrix_for_test([crate::EMPTY_SLOT; crate::MOD_MATRIX_SLOTS]);
+    let mut control_buf = Vec::new();
+    render_block(
+        &mut control,
+        &[BlockEventInBlock {
+            offset_in_block: 0,
+            message: note_on(60, U16Velocity::HALF),
+        }],
+        &mut control_buf,
+    );
+    for _ in 0..3 {
+        render_block(&mut control, &[], &mut control_buf);
+    }
+    render_block(&mut control, &[], &mut control_buf);
+    let control_steady = control_buf[..BLOCK].to_vec();
+
+    // Then: same setup but push a FilterCutoffHz @ 8000 event
+    // between the note_on and the steady-state measurement window.
+    // The event should arrive at the node, mutate the patch, and
+    // the steady-state render should diverge audibly from the
+    // 800 Hz cutoff baseline.
+    let mut treatment = WavetableSynthNode::new();
+    treatment.prepare(SR, BLOCK);
+    treatment.set_matrix_for_test([crate::EMPTY_SLOT; crate::MOD_MATRIX_SLOTS]);
+    let mut treatment_buf = Vec::new();
+    let path = WavetableParam::FilterCutoffHz.encode();
+    let value = 8000.0_f32;
+    render_block(
+        &mut treatment,
+        &[
+            BlockEventInBlock {
+                offset_in_block: 0,
+                message: note_on(60, U16Velocity::HALF),
+            },
+            BlockEventInBlock {
+                offset_in_block: 1,
+                message: BlockMessage::Param(ParamEvent { path, value }),
+            },
+        ],
+        &mut treatment_buf,
+    );
+    for _ in 0..3 {
+        render_block(&mut treatment, &[], &mut treatment_buf);
+    }
+    render_block(&mut treatment, &[], &mut treatment_buf);
+    let treatment_steady = treatment_buf[..BLOCK].to_vec();
+
+    let diff_rms = rms(
+        &control_steady
+            .iter()
+            .zip(treatment_steady.iter())
+            .map(|(a, b)| a - b)
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        diff_rms > 0.005,
+        "FilterCutoffHz @ 8000 event should audibly change output; diff_rms = {diff_rms}",
     );
 }
 

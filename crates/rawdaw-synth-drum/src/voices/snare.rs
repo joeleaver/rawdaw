@@ -47,14 +47,20 @@ impl SnareVoice {
     pub fn prepare(&mut self, sample_rate: u32, patch: &SnarePatch) {
         self.sample_rate = sample_rate as f32;
         self.pitch_env.prepare(sample_rate);
+        self.amp_env.prepare(sample_rate);
+        self.noise_hp.prepare(sample_rate);
+        self.set_patch(patch);
+    }
+
+    /// Install a runtime snare patch without touching sample-rate
+    /// state.
+    pub fn set_patch(&mut self, patch: &SnarePatch) {
         self.pitch_env.set_shape(
             patch.body_start_hz,
             patch.body_end_hz,
             patch.body_pitch_decay_s,
         );
-        self.amp_env.prepare(sample_rate);
         self.amp_env.set_params(patch.amp);
-        self.noise_hp.prepare(sample_rate);
         self.noise_hp.set_cutoff(patch.noise_hp_hz);
         self.noise_hp.set_resonance(patch.noise_hp_q);
         self.noise_mix = patch.noise_mix;

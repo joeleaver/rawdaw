@@ -40,9 +40,16 @@ impl KickVoice {
     pub fn prepare(&mut self, sample_rate: u32, patch: &KickPatch) {
         self.sample_rate = sample_rate as f32;
         self.pitch_env.prepare(sample_rate);
+        self.amp_env.prepare(sample_rate);
+        self.set_patch(patch);
+    }
+
+    /// Install a runtime kick patch without touching sample-rate
+    /// state. Used by [`DrumSynthNode`](crate::DrumSynthNode)'s
+    /// `apply_param` to propagate parameter-event mutations.
+    pub fn set_patch(&mut self, patch: &KickPatch) {
         self.pitch_env
             .set_shape(patch.start_hz, patch.end_hz, patch.pitch_decay_s);
-        self.amp_env.prepare(sample_rate);
         self.amp_env.set_params(patch.amp);
     }
 

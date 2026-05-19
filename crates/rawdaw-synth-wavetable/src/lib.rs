@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+mod param;
 mod patch;
 mod voice;
 #[cfg(test)]
@@ -22,10 +23,11 @@ use rawdaw_dsp::{ModDestination, ModSlot, ModSource, WavetableOscParams};
 use rawdaw_dsp::{SineLfo, Voice, VoicePool, Wavetable};
 use rawdaw_engine::buffer::ChannelCount;
 use rawdaw_engine::context::ProcessContext;
-use rawdaw_engine::event::{BlockMessage, EventBlock};
+use rawdaw_engine::event::{BlockMessage, EventBlock, ParamEvent};
 use rawdaw_engine::node::{AudioNode, OutputDescriptor, PortAccess};
 use rawdaw_model::{Midi2Message, U16Velocity};
 
+pub use param::WavetableParam;
 pub use patch::WavetablePatch;
 use voice::WavetableVoice;
 
@@ -99,26 +101,29 @@ impl WavetableSynthNode {
             BlockMessage::Midi(Midi2Message::NoteOff { note, .. }) => {
                 self.voices.note_off(note.get());
             }
-            BlockMessage::Param(_) => {
-                // U1 ships the event channel; U3 wires the wavetable
-                // synth's parameter decoder onto this arm. Until then
-                // a Param event arriving here is a host-side bug — flag
-                // it in debug, no-op in release.
-                debug_assert!(
-                    false,
-                    "WavetableSynthNode received a Param event before U3; \
-                     host should not be pushing params yet",
-                );
+            BlockMessage::Param(ParamEvent { path, value }) => {
+                self.apply_param(path, *value);
             }
         }
     }
 
+    /// Decode a parameter event and apply it to the runtime patch.
+    /// Unrecognized paths `debug_assert!` in debug + no-op in release
+    /// — a bad path is a host-side bug, not an audio-time recoverable
+    /// condition. After mutation, propagates the new patch to every
+    /// voice so subsequent samples see the change.
+    fn apply_param(&mut self, path: &[u8; 8], value: f32) {
+        let Some(param) = WavetableParam::decode(path) else {
+            debug_assert!(false, "WavetableSynthNode: unknown ParamEvent path {path:?}");
+            return;
+        };
+        param.apply(&mut self.patch, value);
+        self.propagate_patch_to_voices();
+    }
+
     /// Push the canonical patch (osc params + matrix slots + filter
-    /// base) into every voice. Test-only — `prepare()` calls
-    /// `WavetableVoice::prepare` directly, which folds patch
-    /// propagation in. U3b's parameter event protocol will replace
-    /// the test helpers with event-driven updates.
-    #[cfg(test)]
+    /// base) into every voice. Called by `apply_param` after each
+    /// parameter mutation and by the test helpers below.
     fn propagate_patch_to_voices(&mut self) {
         for v in self.voices.voices_mut() {
             v.set_patch(&self.patch);
