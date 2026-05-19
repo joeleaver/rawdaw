@@ -210,7 +210,15 @@ pub fn open(
 ///   true since `block_end ≥ 1`, so events always drain on the next
 ///   block regardless of transport state.
 fn handle_midi_message(message: &[u8], bridge: &mut MidiInputBridge) {
-    let Some(translated) = translate(message) else {
+    let translated = translate(message);
+    if midi_debug_enabled() {
+        let raw: Vec<String> = message.iter().map(|b| format!("{b:02X}")).collect();
+        match &translated {
+            Some(msg) => eprintln!("midi raw=[{}] parsed={msg:?}", raw.join(" ")),
+            None => eprintln!("midi raw=[{}] dropped", raw.join(" ")),
+        }
+    }
+    let Some(translated) = translated else {
         return;
     };
     let target = NodeId::new(bridge.target.load(Ordering::Acquire));
@@ -221,6 +229,14 @@ fn handle_midi_message(message: &[u8], bridge: &mut MidiInputBridge) {
     let _ = bridge
         .handle
         .push_midi(SampleTime::samples(0), target, translated);
+}
+
+/// Enable per-message stderr tracing by setting `RAWDAW_MIDI_DEBUG=1`
+/// in the environment. Useful for diagnosing controllers whose
+/// running-status / sysex / aftertouch behavior trips up the
+/// translator. Off by default to avoid spam.
+fn midi_debug_enabled() -> bool {
+    std::env::var_os("RAWDAW_MIDI_DEBUG").is_some()
 }
 
 /// Pure MIDI 1.0 → [`Midi2Message`] translation. v1 covers Note On
