@@ -86,13 +86,18 @@ use wavetable_poller::WavetablePoller;
 
 use rawdaw_engine::cpal_driver::{CpalDriver, StreamError};
 use rawdaw_engine::{
-    BlockEvent, Engine, EngineHandle, NodeId, TrackRouting, Transport, TransportHandle,
+    BlockEvent, Engine, EngineHandle, MidiInputHandle, NodeId, TrackRouting, Transport,
+    TransportHandle,
 };
 use rawdaw_model::fixtures::build_round1_project;
+use rawdaw_model::patch::SynthAssignment;
 use rawdaw_model::project::Project;
 use rawdaw_model::tempo::TempoMap;
 use rawdaw_synth_drum::DrumPublishers;
 use rawdaw_synth_wavetable::WavetablePublishers;
+
+use crate::midi_input::{self, MidiInputBridge};
+use midir::MidiInputConnection;
 
 pub use graph::{DrumEditorHandle, WavetableEditorHandle};
 
@@ -234,6 +239,22 @@ pub struct AudioResources {
     /// called inside a rinch runtime; `None` for unit tests. Dropping
     /// the last `Rc` clone stops the thread.
     _poller: Option<Rc<PlayheadPoller>>,
+    /// MIDI input handle for the engine's dedicated MIDI input SPSC
+    /// queue. `Some(_)` after `build_from_project_and_rate`; `take()`n
+    /// by [`Self::build`] when it opens a midir input connection.
+    /// `None` afterwards (the handle moves into midir's callback for
+    /// the lifetime of the connection). Tests that don't go through
+    /// `build()` drop the handle when AudioResources drops.
+    ///
+    /// `Rc<RefCell<>>` because AudioResources is `Clone` (rinch store
+    /// contract) and the handle is `!Sync + !Clone`.
+    midi_input_handle: Rc<RefCell<Option<MidiInputHandle>>>,
+    /// Active midir input connection, when a device is open. Held to
+    /// keep the connection alive — when this drops, midir closes the
+    /// port. `None` when no device was found at auto-pick (the host
+    /// runs without MIDI input silently). K2 surfaces a UI picker
+    /// that can `take()` and replace this on device switch.
+    _midi_connection: Rc<RefCell<Option<MidiInputConnection<MidiInputBridge>>>>,
 }
 
 impl AudioResources {
@@ -273,7 +294,59 @@ impl AudioResources {
             &resources.drum_publishers,
             &resources.drum_handles,
         ));
+        resources.open_default_midi_input();
         resources
+    }
+
+    /// Auto-pick the first available MIDI input device and open a
+    /// connection routed to the first Pitched track in the project.
+    /// Silently no-ops when no device is connected (`auto_pick_input`
+    /// returns `None`) or when midir reports an error (printed to
+    /// stderr; the UI still works). K2 will surface device selection
+    /// in the UI; K3 makes the routing target dynamic.
+    fn open_default_midi_input(&mut self) {
+        let Some(target) = self.first_pitched_track_node_id() else {
+            // No Pitched track to route MIDI at — leave the handle
+            // alone and skip the device open. (Shouldn't happen with
+            // the round-1 fixture, but handle it gracefully so future
+            // all-drum projects don't crash.)
+            return;
+        };
+        let Some(handle) = self.midi_input_handle.borrow_mut().take() else {
+            return;
+        };
+        let bridge = MidiInputBridge::new(handle, Arc::clone(&self.sample_clock), target);
+        match midi_input::auto_pick_input() {
+            Ok(Some(device)) => {
+                let device_name = device.name.clone();
+                match midi_input::open(&device, bridge) {
+                    Ok(connection) => {
+                        eprintln!("audio: opened MIDI input '{device_name}'");
+                        *self._midi_connection.borrow_mut() = Some(connection);
+                    }
+                    Err(e) => {
+                        eprintln!("audio: opening MIDI input '{device_name}' failed: {e}");
+                    }
+                }
+            }
+            Ok(None) => {
+                // No MIDI device connected. Quietly continue without
+                // live input — the round-1 song still plays.
+                eprintln!("audio: no MIDI input devices found; live input disabled");
+            }
+            Err(e) => {
+                eprintln!("audio: enumerating MIDI input devices failed: {e}");
+            }
+        }
+    }
+
+    fn first_pitched_track_node_id(&self) -> Option<NodeId> {
+        for (i, track) in self.project.tracks.iter().enumerate() {
+            if matches!(track.synth, SynthAssignment::Wavetable(_)) {
+                return Some(NodeId::new((i + 1) as u32));
+            }
+        }
+        None
     }
 
     /// Build for a specific project at a specific sample rate, *without*
@@ -292,7 +365,7 @@ impl AudioResources {
         let initial_event_count = realized_events.len();
         let sample_clock = engine.sample_clock();
         let transport = engine.transport_handle();
-        let (audio_engine, handle) = engine.split();
+        let (audio_engine, handle, midi_input_handle) = engine.split();
 
         let (err_tx, err_rx) = mpsc::channel::<String>();
         let driver = match CpalDriver::new(audio_engine, master, move |err: StreamError| {
@@ -345,6 +418,8 @@ impl AudioResources {
             drum_publishers: Rc::new(extract_drum_publishers(&drum_publishers)),
             _drum_pollers: Rc::new(Vec::new()),
             _poller: None,
+            midi_input_handle: Rc::new(RefCell::new(Some(midi_input_handle))),
+            _midi_connection: Rc::new(RefCell::new(None)),
         }
     }
 

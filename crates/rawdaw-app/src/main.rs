@@ -25,6 +25,7 @@
 mod app;
 mod audio;
 mod fixture;
+mod midi_input;
 mod parts;
 mod presets;
 mod regions;

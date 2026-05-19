@@ -38,3 +38,8 @@ rawdaw-fx = { path = "../rawdaw-fx" }
 # `include_str!` to bake presets into the binary; v2 may add a
 # filesystem path for user presets, at which point this dep stays.
 serde_json = "1"
+# Cross-platform MIDI input. Wraps ALSA on Linux (libasound2-dev
+# at build time), CoreMIDI on macOS, WinMM on Windows. Used by
+# `src/midi_input/` to forward note events from a USB MIDI
+# keyboard into the engine's MIDI input queue.
+midir = "0.11"

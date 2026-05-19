@@ -45,6 +45,16 @@ pub struct AudioEngine {
     graph: Graph,
     command_rx: Consumer<GraphCommand>,
     event_rx: Consumer<BlockEvent>,
+    /// Second SPSC consumer dedicated to MIDI input from external
+    /// sources (`midir` callbacks, etc.). Drained in lockstep with
+    /// `event_rx` at the start of every `process_block`; merged into
+    /// the same event_partition so MIDI events compete fairly with
+    /// host-pushed events at the same target / time.
+    ///
+    /// Stays separate at the queue level (not a Mutex on a single
+    /// queue) so the MIDI input thread is an independent SPSC
+    /// producer. See `MidiInputHandle` docs.
+    midi_event_rx: Consumer<BlockEvent>,
     garbage_tx: Producer<Box<dyn AudioNode>>,
 
     /// Preallocated input scratch. `input_scratch[port]` is a flat planar
@@ -90,6 +100,7 @@ impl AudioEngine {
         max_block_size: usize,
         command_rx: Consumer<GraphCommand>,
         event_rx: Consumer<BlockEvent>,
+        midi_event_rx: Consumer<BlockEvent>,
         garbage_tx: Producer<Box<dyn AudioNode>>,
     ) -> Self {
         let max_channels = 2;
@@ -101,6 +112,7 @@ impl AudioEngine {
             graph: Graph::new(sample_rate, max_block_size),
             command_rx,
             event_rx,
+            midi_event_rx,
             garbage_tx,
             input_scratch,
             input_channel_counts: vec![0u8; MAX_INPUT_PORTS_PER_NODE],
@@ -173,7 +185,13 @@ impl AudioEngine {
                 // Drain pending events so the host's re-arm push starts
                 // from an empty queue. Bounded-time loop in the steady
                 // state (queue holds at most `event_queue_capacity`).
+                // The MIDI input queue gets drained too — Stopped means
+                // we're tearing down all pending audio-thread input,
+                // including external live MIDI that hasn't been
+                // processed yet (it'd be confusing to hear a stale note
+                // when transport resumes).
                 while self.event_rx.pop().is_ok() {}
+                while self.midi_event_rx.pop().is_ok() {}
                 // Sample clock snaps back to 0 so the UI playhead jumps
                 // to bar 1 on the next signal poll.
                 self.sample_clock.store(0, Ordering::Release);
@@ -301,29 +319,63 @@ impl AudioEngine {
 
         let block_end = ctx.absolute_time_samples + ctx.block_size as u64;
         // Drain only events whose `time` falls in this block's window.
+        // Two independent queues feed this — the host's main event
+        // queue (realized song MIDI + parameter changes) and the MIDI
+        // input queue (external live MIDI from midir). Each is
+        // individually time-sorted (realize() guarantees this for the
+        // main queue; live MIDI is monotonic by construction). The
+        // merged per-node sequence is then sorted by
+        // `offset_in_block` at the end of this function so consumers
+        // see a single time-ordered stream.
+        //
         // rtrb's `peek` lets us look at the next event without consuming;
-        // the queue is FIFO, and the host is expected to push events in
-        // time-sorted order (which `realize()` already guarantees). When
-        // we see an event past the window, we stop and leave it queued
-        // for a later block.
+        // when we see an event past the window we stop and leave it
+        // queued for a later block.
         //
         // `.map(|ev| ev.time.as_samples())` extracts the timestamp as a
         // Copy value so the peek borrow is dropped before the matching
         // `pop()`, satisfying the borrow checker without a workaround.
-        while let Ok(time) = self.event_rx.peek().map(|ev| ev.time.as_samples()) {
+        Self::drain_queue_into_partition(
+            &mut self.event_rx,
+            &mut self.event_partition,
+            ctx,
+            block_end,
+        );
+        Self::drain_queue_into_partition(
+            &mut self.midi_event_rx,
+            &mut self.event_partition,
+            ctx,
+            block_end,
+        );
+
+        // Sort each per-node Vec by offset so the merge of two
+        // time-sorted streams produces a single time-sorted output.
+        // Most blocks see 0–1 MIDI events per node, so the sort is
+        // cheap; we use Vec::sort_by_key which is in-place + stable
+        // (preserves arrival order for events at the same offset,
+        // matching what callers got pre-K1 from the single queue).
+        for events in self.event_partition.values_mut() {
+            events.sort_by_key(|ev| ev.offset_in_block);
+        }
+    }
+
+    fn drain_queue_into_partition(
+        rx: &mut Consumer<BlockEvent>,
+        partition: &mut BTreeMap<NodeId, Vec<BlockEventInBlock>>,
+        ctx: &ProcessContext,
+        block_end: u64,
+    ) {
+        while let Ok(time) = rx.peek().map(|ev| ev.time.as_samples()) {
             if time >= block_end {
                 break;
             }
-            let ev = self.event_rx.pop().expect("just peeked successfully");
+            let ev = rx.pop().expect("just peeked successfully");
             let abs = ev.time.as_samples();
             let offset = abs.saturating_sub(ctx.absolute_time_samples) as u32;
-            self.event_partition
-                .entry(ev.target)
-                .or_default()
-                .push(BlockEventInBlock {
-                    offset_in_block: offset,
-                    message: ev.message,
-                });
+            partition.entry(ev.target).or_default().push(BlockEventInBlock {
+                offset_in_block: offset,
+                message: ev.message,
+            });
         }
     }
 

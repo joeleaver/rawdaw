@@ -36,7 +36,7 @@ use crate::command::GraphCommand;
 use crate::context::ProcessContext;
 use crate::event::BlockEvent;
 use crate::graph::{Graph, NodeId};
-use crate::handle::EngineHandle;
+use crate::handle::{EngineHandle, MidiInputHandle};
 use crate::node::AudioNode;
 use crate::transport::TransportHandle;
 
@@ -79,6 +79,10 @@ impl Default for QueueCapacities {
 pub struct Engine {
     audio: AudioEngine,
     host: EngineHandle,
+    /// MIDI input handle. Owned here pre-split so [`Engine::split`]
+    /// can hand it out to the MIDI input thread (typically a `midir`
+    /// callback). Single-thread callers can leave it unused.
+    midi_input: MidiInputHandle,
 }
 
 impl Engine {
@@ -93,23 +97,44 @@ impl Engine {
     ) -> Self {
         let (cmd_tx, cmd_rx) = RingBuffer::<GraphCommand>::new(caps.commands);
         let (ev_tx, ev_rx) = RingBuffer::<BlockEvent>::new(caps.events);
+        let (midi_ev_tx, midi_ev_rx) = RingBuffer::<BlockEvent>::new(caps.events);
         let (gar_tx, gar_rx) = RingBuffer::<Box<dyn AudioNode>>::new(caps.garbage);
 
-        let audio = AudioEngine::new(sample_rate, max_block_size, cmd_rx, ev_rx, gar_tx);
+        let audio = AudioEngine::new(
+            sample_rate,
+            max_block_size,
+            cmd_rx,
+            ev_rx,
+            midi_ev_rx,
+            gar_tx,
+        );
         let host = EngineHandle {
             command_tx: cmd_tx,
             event_tx: ev_tx,
             garbage_rx: gar_rx,
         };
-        Self { audio, host }
+        let midi_input = MidiInputHandle {
+            event_tx: midi_ev_tx,
+        };
+        Self {
+            audio,
+            host,
+            midi_input,
+        }
     }
 
-    /// Consume the bundle and return the two halves separately. The
-    /// audio side moves to the audio thread (e.g. into the cpal
-    /// callback); the host side stays with whatever thread runs the
-    /// UI / realization pass.
-    pub fn split(self) -> (AudioEngine, EngineHandle) {
-        (self.audio, self.host)
+    /// Consume the bundle and return the three halves separately:
+    /// the [`AudioEngine`] for the audio thread, the [`EngineHandle`]
+    /// for the host thread, and the [`MidiInputHandle`] for whichever
+    /// thread will be pushing external MIDI input (typically `midir`'s
+    /// callback thread).
+    ///
+    /// All three are independent; a host that doesn't need live MIDI
+    /// can simply drop the [`MidiInputHandle`] and the engine still
+    /// works (the audio thread harmlessly drains an empty queue every
+    /// block).
+    pub fn split(self) -> (AudioEngine, EngineHandle, MidiInputHandle) {
+        (self.audio, self.host, self.midi_input)
     }
 
     // ---------- Convenience delegators (single-thread use) ----------

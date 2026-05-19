@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use rawdaw_engine::{
     translate_events, AudioEngine, AudioNode, BlockEvent, BlockMessage, Engine, EngineHandle,
-    EventBlock, GraphCommand, ImpulseNode, NodeId, OutputDescriptor, PortAccess, ProcessContext,
-    QueueCapacities, SilenceNode, SineNode, TrackRouting,
+    EventBlock, GraphCommand, ImpulseNode, MidiInputHandle, NodeId, OutputDescriptor, PortAccess,
+    ProcessContext, QueueCapacities, SilenceNode, SineNode, TrackRouting,
 };
 use rawdaw_model::*;
 
@@ -353,7 +353,7 @@ fn split_engine_round_trip_across_threads() {
     // moved across threads and the SPSC queues actually carry data
     // between them.
     let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
-    let (mut audio, handle): (AudioEngine, EngineHandle) = engine.split();
+    let (mut audio, handle, _midi): (AudioEngine, EngineHandle, _) = engine.split();
     let sine_id = NodeId::new(0);
 
     // Host thread pushes commands and events.
@@ -432,7 +432,7 @@ fn engine_handle_returns_pushed_value_on_overflow() {
             garbage: 4,
         },
     );
-    let (_audio, mut handle) = engine.split();
+    let (_audio, mut handle, _midi) = engine.split();
     // First two pushes succeed.
     for i in 0..2 {
         handle
@@ -772,6 +772,110 @@ fn unknown_param_path_does_not_crash() {
     // gracefully; the render is the load-bearing observation.
     let result = engine.render_offline(target, SampleTime::samples(64), 64);
     assert!(result.left.iter().all(|s| *s == 0.0));
+}
+
+#[test]
+fn midi_input_handle_delivers_events_to_audio_thread() {
+    // External MIDI input arrives via the second SPSC queue
+    // (`MidiInputHandle`), separate from the host's main event queue
+    // (`EngineHandle`). The audio thread drains both at the start of
+    // every `process_block` and merges them into the per-block event
+    // partition. This test verifies the round-trip end-to-end and
+    // pins the merge ordering when both queues carry events at the
+    // same sample time.
+    let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let (mut audio, mut handle, mut midi_input): (AudioEngine, EngineHandle, MidiInputHandle) =
+        engine.split();
+
+    let target = NodeId::new(0);
+    let recorder = RecorderNode::new();
+    let received = Arc::clone(&recorder.received);
+    handle
+        .push_command(GraphCommand::AddNode {
+            id: target,
+            node: Box::new(recorder),
+        })
+        .expect("command queue had room");
+
+    // Two events at the same sample time, one from each queue. The
+    // partition sort guarantees they both land in this block;
+    // ordering between equal offsets is stable per the sort_by_key
+    // contract, so the queue we pushed to first (handle / main)
+    // appears first.
+    handle
+        .push_event(BlockEvent {
+            time: SampleTime::samples(0),
+            target,
+            message: note_on(),
+        })
+        .expect("main event queue had room");
+    midi_input
+        .push_midi(
+            SampleTime::samples(0),
+            target,
+            Midi2Message::NoteOff {
+                channel: MidiChannel::default(),
+                note: MidiNote::new(60).unwrap(),
+                velocity: U16Velocity::HALF,
+            },
+        )
+        .expect("midi input queue had room");
+
+    let _ = audio.render_offline(target, SampleTime::samples(64), 64);
+
+    let recv = received.lock().expect("recorder mutex");
+    assert_eq!(recv.len(), 2, "both queues' events should be delivered");
+    // Both events at offset 0 of the first block.
+    assert_eq!(recv[0].0, 0);
+    assert_eq!(recv[1].0, 0);
+    // Both MIDI; specifically one NoteOn (from the main queue) and one
+    // NoteOff (from the MIDI input queue).
+    assert!(matches!(&recv[0].1, BlockMessage::Midi(Midi2Message::NoteOn { .. })));
+    assert!(matches!(&recv[1].1, BlockMessage::Midi(Midi2Message::NoteOff { .. })));
+}
+
+#[test]
+fn midi_input_handle_respects_block_window() {
+    // Events scheduled past the current block stay queued for a
+    // later block; same contract as the main event queue. This
+    // confirms the MIDI input queue uses the same peek-and-stop
+    // logic.
+    let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let (mut audio, mut handle, mut midi_input) = engine.split();
+
+    let target = NodeId::new(0);
+    let recorder = RecorderNode::new();
+    let received = Arc::clone(&recorder.received);
+    handle
+        .push_command(GraphCommand::AddNode {
+            id: target,
+            node: Box::new(recorder),
+        })
+        .expect("command queue had room");
+
+    // Event scheduled at sample 200 — outside the first 64-sample
+    // block but inside the second (rendered offline below as 256
+    // total samples in blocks of 64).
+    midi_input
+        .push_midi(
+            SampleTime::samples(200),
+            target,
+            Midi2Message::NoteOn {
+                channel: MidiChannel::default(),
+                note: MidiNote::new(60).unwrap(),
+                velocity: U16Velocity::HALF,
+            },
+        )
+        .expect("midi input queue had room");
+
+    let _ = audio.render_offline(target, SampleTime::samples(256), 64);
+
+    let recv = received.lock().expect("recorder mutex");
+    assert_eq!(recv.len(), 1, "event should fire exactly once");
+    // 200 samples - 192 (start of 4th block) = offset 8 inside block 4.
+    // Or 200 - 128 (start of 3rd block) = 72, exceeds 64 ... so block 4.
+    // Actually 200 / 64 = block 3 (zero-indexed), start = 192, offset = 8.
+    assert_eq!(recv[0].0, 8);
 }
 
 #[test]

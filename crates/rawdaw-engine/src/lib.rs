@@ -40,7 +40,7 @@ pub use engine::{
 };
 pub use event::{BlockEvent, BlockEventInBlock, BlockMessage, EventBlock, ParamEvent};
 pub use graph::{Edge, Graph, NodeId, NodePort};
-pub use handle::EngineHandle;
+pub use handle::{EngineHandle, MidiInputHandle};
 pub use node::{AudioNode, InputDescriptor, OutputDescriptor, PortAccess, PortInputs, PortOutputs};
 pub use nodes::{ImpulseNode, MixerNode, SilenceNode, SineNode};
 pub use rtrb::PushError;
