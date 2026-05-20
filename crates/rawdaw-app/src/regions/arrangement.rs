@@ -15,34 +15,106 @@
 //! Per the round-1 README port-time note, what was many `<line>` ticks
 //! in the JSX is one `<path>` with `M`/`L` commands here. The Vello
 //! paint pass only tessellates once.
+//!
+//! Migrated in C1c to read off [`AppState::project`] +
+//! [`AppState::overlay`]; per-block / per-ribbon-cell data pre-built
+//! into owned `Vec`s so rsx `for` closures stay `Fn`.
 
 use rinch::prelude::*;
 
+use rawdaw_model::chord::ChordSpec;
+use rawdaw_model::id::SectionId;
+use rawdaw_model::time::{MusicalTime, PPQ};
+
 use crate::audio::AudioResources;
-use crate::fixture;
+use crate::chord_display::{absolute_label, roman_label};
 use crate::parts::rgba;
 use crate::state::AppState;
 use crate::theme;
 
-/// Look up the section key of the currently-selected SectionRef. Reads
-/// `AppState::selected_idx` — when called inside an rsx style expression
-/// the rinch effect tracker wires the read into the surrounding closure
-/// and re-evaluates the style on selection changes.
-fn current_selected_section_key() -> String {
+/// Beats per bar baked into the round-1 fixture. Switches to the model
+/// `tempo_map.beats_per_bar_at(...)` lookup when the arrangement starts
+/// honoring mid-arrangement time-signature changes.
+const BEATS_PER_BAR: u32 = 4;
+
+/// Look up the [`SectionId`] of the currently-selected arrangement
+/// block. Reads `AppState::selected_idx` — when called inside an rsx
+/// style expression the rinch effect tracker wires the read into the
+/// surrounding closure and re-evaluates the style on selection changes.
+fn current_selected_section_id() -> Option<SectionId> {
     let app = use_store::<AppState>();
-    let Some(idx) = app.selected_idx.get() else {
-        return String::new();
-    };
-    let r = fixture::round1();
-    r.arrangement
-        .get(idx)
-        .map(|b| b.section_key.to_string())
-        .unwrap_or_default()
+    let idx = app.selected_idx.get()?;
+    let project = app.project.get();
+    project.arrangement.sections.get(idx).map(|sr| sr.section)
+}
+
+/// One arrangement block, pre-resolved against model + overlay.
+#[derive(Clone, Default, PartialEq)]
+struct ArrangementBlockData {
+    idx: usize,
+    section_id: SectionId,
+    section_name: String,
+    color: String,
+    variant: String,
+    default_variant: String,
+    start_bar: u32,
+    bars: u32,
+}
+
+fn build_arrangement_blocks() -> Vec<ArrangementBlockData> {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
+    project
+        .arrangement
+        .sections
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, sr)| {
+            let section = project.sections.get(&sr.section)?;
+            let bars = effective_duration_bars(section, sr.variant.as_str());
+            let color = overlay
+                .section_color
+                .get(&sr.section)
+                .cloned()
+                .unwrap_or_else(|| theme::TEXT2.to_string());
+            Some(ArrangementBlockData {
+                idx,
+                section_id: sr.section,
+                section_name: section.name.clone(),
+                color,
+                variant: sr.variant.as_str().to_string(),
+                default_variant: section.default_variant.as_str().to_string(),
+                start_bar: musical_time_to_bars(sr.start),
+                bars,
+            })
+        })
+        .collect()
+}
+
+fn effective_duration_bars(section: &rawdaw_model::section::Section, variant: &str) -> u32 {
+    use rawdaw_model::id::VariantId;
+    let variant_id = VariantId::from(variant);
+    section
+        .variants
+        .get(&variant_id)
+        .and_then(|v| v.duration_bars)
+        .unwrap_or(section.base.duration_bars)
+}
+
+fn musical_time_to_bars(t: MusicalTime) -> u32 {
+    let ticks_per_bar = PPQ * BEATS_PER_BAR as i64;
+    (t.as_ticks() / ticks_per_bar).max(0) as u32
+}
+
+fn arrangement_total_bars() -> u32 {
+    let blocks = build_arrangement_blocks();
+    blocks.iter().map(|b| b.start_bar + b.bars).max().unwrap_or(0)
 }
 
 #[component]
 pub fn Arrangement() -> NodeHandle {
-    let r = fixture::round1();
+    let total_bars = arrangement_total_bars();
     let section_style = format!(
         "flex: 1; min-width: 0; display: flex; flex-direction: column; \
          background: {bg};",
@@ -51,10 +123,10 @@ pub fn Arrangement() -> NodeHandle {
 
     rsx! {
         section { style: {section_style.clone()},
-            Ruler { total_bars: r.total_bars }
-            ChordRibbon { total_bars: r.total_bars }
-            SectionLane { total_bars: r.total_bars }
-            LaneFiller { total_bars: r.total_bars }
+            Ruler { total_bars: total_bars }
+            ChordRibbon { total_bars: total_bars }
+            SectionLane { total_bars: total_bars }
+            LaneFiller { total_bars: total_bars }
         }
     }
 }
@@ -66,10 +138,10 @@ pub fn Arrangement() -> NodeHandle {
 /// inside subscribes any rsx attribute closure that calls this
 /// function. With the cpal stream paused (default until phase E6) the
 /// signal stays at 0 and the playhead sits at bar 1.
-fn playhead_percent() -> f32 {
+fn playhead_percent(total_bars: u32) -> f32 {
     let audio = use_store::<AudioResources>();
-    let r = fixture::round1();
-    (audio.playhead_position().bars_f64 / r.total_bars as f64 * 100.0) as f32
+    let total = total_bars.max(1) as f64;
+    (audio.playhead_position().bars_f64 / total * 100.0) as f32
 }
 
 // ─── Timeline ruler ───────────────────────────────────────────────────────
@@ -126,7 +198,7 @@ fn Ruler(total_bars: u32) -> NodeHandle {
                 style: format!(
                     "position: absolute; left: {p}%; top: 0; bottom: 0; \
                      width: 1px; background: {acc}; transform: translateX(-0.5px);",
-                    p = playhead_percent(), acc = theme::ACCENT,
+                    p = playhead_percent(total_bars), acc = theme::ACCENT,
                 ),
             }
         }
@@ -161,14 +233,14 @@ fn ChordRibbon(total_bars: u32) -> NodeHandle {
         div { style: {style.clone()},
             for cell in build_ribbon_cells() {
                 RibbonCell {
-                    key: format!("{}-{}", cell.section_key, cell.bar),
+                    key: format!("{}-{}", cell.section_id.get(), cell.bar),
                     bar: cell.bar,
                     total_bars: total_bars,
                     roman: cell.roman.to_string(),
                     absolute: cell.absolute.to_string(),
                     color: cell.color.to_string(),
                     is_first_of_loop: cell.is_first_of_loop,
-                    section_key: cell.section_key.to_string(),
+                    section_id: cell.section_id,
                 }
             }
         }
@@ -182,19 +254,42 @@ struct RibbonCellData {
     roman: String,
     absolute: String,
     color: String,
-    section_key: String,
+    section_id: SectionId,
     is_first_of_loop: bool,
 }
 
 fn build_ribbon_cells() -> Vec<RibbonCellData> {
-    let r = fixture::round1();
-    let mut cells = Vec::new();
-    for block in r.arrangement.iter() {
-        let Some(section) = fixture::section_by_key(r, block.section_key.as_str()) else { continue; };
-        let Some(loop_name) = section.chord_loops.first() else { continue; };
-        let Some(loop_data) = fixture::chord_loop_by_name(r, loop_name.as_str()) else { continue; };
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
+    let blocks = build_arrangement_blocks();
 
-        // Tile the loop across the block, 1 chord per bar (round-1 fixture).
+    let mut cells = Vec::new();
+    for block in &blocks {
+        let Some(section) = project.sections.get(&block.section_id) else {
+            continue;
+        };
+        // Round-1 fixture uses the section's first chord loop as its
+        // base-variant loop; if a variant overrides the chord_loops list
+        // it would honor that too. For now, base only.
+        let Some((_, loop_id)) = section.base.chord_loops.first() else {
+            continue;
+        };
+        let Some(loop_data) = project.chord_loops.get(loop_id) else {
+            continue;
+        };
+        let color = overlay
+            .chord_loop_color
+            .get(loop_id)
+            .cloned()
+            .unwrap_or_else(|| theme::TEXT2.to_string());
+        let effective_scale = section
+            .base
+            .scale_override
+            .clone()
+            .unwrap_or_else(|| project.default_key.clone());
+
+        // Tile the loop across the block, one chord per bar (round-1).
         let mut bar = block.start_bar;
         let block_end = block.start_bar + block.bars;
         'outer: loop {
@@ -202,12 +297,33 @@ fn build_ribbon_cells() -> Vec<RibbonCellData> {
                 if bar >= block_end {
                     break 'outer;
                 }
+                let (roman, absolute) = match &ev.chord {
+                    ChordSpec::Functional {
+                        roman,
+                        suffix,
+                        in_key,
+                    } => {
+                        let s = in_key.as_ref().unwrap_or(&effective_scale);
+                        (
+                            roman_label(*roman, &suffix.quality),
+                            absolute_label(*roman, &suffix.quality, s),
+                        )
+                    }
+                    ChordSpec::Absolute { root, suffix } => (
+                        String::new(),
+                        format!(
+                            "{}{}",
+                            crate::chord_display::pitch_class_name(*root),
+                            crate::chord_display::quality_suffix(&suffix.quality),
+                        ),
+                    ),
+                };
                 cells.push(RibbonCellData {
                     bar,
-                    roman: ev.roman.clone(),
-                    absolute: ev.absolute.clone(),
-                    color: loop_data.color.clone(),
-                    section_key: block.section_key.clone(),
+                    roman,
+                    absolute,
+                    color: color.clone(),
+                    section_id: block.section_id,
                     is_first_of_loop: ei == 0,
                 });
                 bar += 1;
@@ -228,7 +344,7 @@ fn RibbonCell(
     absolute: String,
     color: String,
     is_first_of_loop: bool,
-    section_key: String,
+    section_id: SectionId,
 ) -> NodeHandle {
     let left_pct = bar as f32 / total_bars as f32 * 100.0;
     let width_pct = 1.0 / total_bars as f32 * 100.0;
@@ -242,22 +358,16 @@ fn RibbonCell(
     );
 
     // Each style: expression below becomes a separate `Fn` effect
-    // closure that moves its captures (same shape as variant_tabs.rs).
-    // Strings used by more than one closure need a per-closure clone.
-    // Every helper call reads `AppState::selected_idx`, so the macro's
-    // effect tracker re-runs each style on selection changes — the
-    // cell itself is never re-mounted.
+    // closure that captures the same `section_id` `Copy`. Selection
+    // highlight: emphasize when the currently-selected arrangement
+    // block references this section.
     let color_for_bg = color.clone();
-    let color_for_stripe = color.clone();
-    let section_key_for_bg = section_key.clone();
-    let section_key_for_stripe = section_key.clone();
-    let section_key_for_roman = section_key.clone();
-    let section_key_for_abs = section_key;
+    let color_for_stripe = color;
 
     rsx! {
         div {
             style: {
-                let emphasized = current_selected_section_key() == section_key_for_bg;
+                let emphasized = current_selected_section_id() == Some(section_id);
                 let bg = if emphasized {
                     rgba(color_for_bg.as_str(), 0.10)
                 } else {
@@ -270,7 +380,7 @@ fn RibbonCell(
                     if !is_first_of_loop {
                         "display: none;".to_string()
                     } else {
-                        let emphasized = current_selected_section_key() == section_key_for_stripe;
+                        let emphasized = current_selected_section_id() == Some(section_id);
                         let opa = if emphasized { 1.0 } else { 0.7 };
                         format!(
                             "position: absolute; left: 0; top: 0; width: 2px; \
@@ -282,7 +392,7 @@ fn RibbonCell(
             }
             span {
                 style: {
-                    let emphasized = current_selected_section_key() == section_key_for_roman;
+                    let emphasized = current_selected_section_id() == Some(section_id);
                     let roman_color = if emphasized {
                         "rgba(232,234,238,0.96)"
                     } else {
@@ -299,7 +409,7 @@ fn RibbonCell(
             }
             div {
                 style: {
-                    let emphasized = current_selected_section_key() == section_key_for_abs;
+                    let emphasized = current_selected_section_id() == Some(section_id);
                     let abs_color = if emphasized { theme::TEXT1 } else { theme::TEXT2 };
                     format!(
                         "font-size: 9.5px; color: {}; \
@@ -343,19 +453,13 @@ fn SectionLane(total_bars: u32) -> NodeHandle {
                         position: absolute; inset: 0; pointer-events: none;",
                 path { d: {guide_d.clone()} }
             }
-            // Section blocks. The rsx for source must be `Fn() -> Vec<T>`
-            // callable; chaining off the fixture's `'static` slice
-            // produces a fresh iterator each call. SectionBlock reads
-            // selection internally so we don't need to thread is_selected
-            // / is_linked props through here.
-            for block in fixture::round1().arrangement.iter().cloned() {
+            // Section blocks. `build_arrangement_blocks()` is called
+            // inside the for source closure so the iteration stays a
+            // `Fn` callable that builds a fresh `Vec` on each render.
+            for block in build_arrangement_blocks() {
                 SectionBlock {
                     key: block.idx,
-                    idx: block.idx,
-                    section_key: block.section_key.to_string(),
-                    variant: block.variant.to_string(),
-                    start_bar: block.start_bar,
-                    bars: block.bars,
+                    block: block,
                     total_bars: total_bars,
                 }
             }
@@ -366,7 +470,7 @@ fn SectionLane(total_bars: u32) -> NodeHandle {
                     "position: absolute; left: {p}%; top: 0; bottom: 0; \
                      width: 1px; background: {acc}; opacity: 0.85; \
                      transform: translateX(-0.5px); pointer-events: none;",
-                    p = playhead_percent(), acc = theme::ACCENT,
+                    p = playhead_percent(total_bars), acc = theme::ACCENT,
                 ),
             }
         }
@@ -374,31 +478,22 @@ fn SectionLane(total_bars: u32) -> NodeHandle {
 }
 
 #[component]
-fn SectionBlock(
-    idx: usize,
-    section_key: String,
-    variant: String,
-    start_bar: u32,
-    bars: u32,
-    total_bars: u32,
-) -> NodeHandle {
+fn SectionBlock(block: ArrangementBlockData, total_bars: u32) -> NodeHandle {
     let app = use_store::<AppState>();
-    let r = fixture::round1();
-    let Some(section) = fixture::section_by_key(r, section_key.as_str()) else {
-        return rsx! { span {} };
-    };
-    let color = section.color.to_string();
-    let name = section.name.to_string();
-    let default_variant = section.default_variant.to_string();
+    let ArrangementBlockData {
+        idx,
+        section_id,
+        section_name,
+        color,
+        variant,
+        default_variant,
+        start_bar,
+        bars,
+    } = block;
 
     let left_pct = start_bar as f32 / total_bars as f32 * 100.0;
     let width_pct = bars as f32 / total_bars as f32 * 100.0;
 
-    // Layout positions / sizes are static; selection-dependent colors,
-    // borders and box-shadow re-evaluate inside the rsx style: closure
-    // each time `AppState::selected_idx` changes. The static fragment is
-    // built once here and concatenated with the reactive fragment
-    // inline.
     let block_static = format!(
         "position: absolute; left: {l}%; top: 6px; \
          width: {w}%; bottom: 6px; \
@@ -407,7 +502,6 @@ fn SectionBlock(
         l = left_pct, w = width_pct, col = color,
     );
 
-    // Internal bar guide path within the block (single SVG path).
     let internal_bars = bars.saturating_sub(1);
     let mut inner_d = String::new();
     for i in 1..=internal_bars {
@@ -420,11 +514,6 @@ fn SectionBlock(
     let chip_label = format!("variant: {}", variant);
     let chip_bg = rgba(color.as_str(), 0.32);
     let chip_border = rgba(color.as_str(), 0.55);
-    // Always render the chip; collapse via `display: none` when the block
-    // uses the section's default variant. This sidesteps the Fn-capture
-    // trap that bites when `if show_variant { Component { ... } }` tries
-    // to capture String props by move twice (outer if-Fn + inner
-    // reactive_component_dom move).
     let chip_style = if show_variant {
         format!(
             "position: absolute; right: 6px; top: 5px; \
@@ -439,20 +528,18 @@ fn SectionBlock(
     };
     let length_text = format!("{} {}", bars, if bars == 1 { "bar" } else { "bars" });
 
-    let color_for_style = color.clone();
-    let section_key_for_style = section_key.clone();
-    let _ = section_key; // remaining captures are inside this style closure
+    let color_for_style = color;
 
     rsx! {
         div {
             style: {
                 let sel = app.selected_idx.get();
                 let is_selected = sel == Some(idx);
+                // is_linked: highlight every block that references the
+                // same section as the selected block. Reads model
+                // signals through `current_selected_section_id`.
                 let is_linked = !is_selected
-                    && sel
-                        .and_then(|i| fixture::round1().arrangement.get(i))
-                        .map(|b| b.section_key == section_key_for_style)
-                        .unwrap_or(false);
+                    && current_selected_section_id() == Some(section_id);
                 let bg = rgba(
                     color_for_style.as_str(),
                     if is_selected {
@@ -496,7 +583,7 @@ fn SectionBlock(
                 style: "position: absolute; left: 8px; top: 6px; \
                         font-size: 12.5px; font-weight: 600; \
                         color: rgba(232,234,238,0.96); letter-spacing: -0.1px;",
-                {name.clone()}
+                {section_name.clone()}
             }
             VariantBlockChip {
                 label: chip_label,
@@ -563,7 +650,7 @@ fn LaneFiller(total_bars: u32) -> NodeHandle {
                     "position: absolute; left: {p}%; top: 0; bottom: 0; \
                      width: 1px; background: {acc}; opacity: 0.7; \
                      transform: translateX(-0.5px); pointer-events: none;",
-                    p = playhead_percent(), acc = theme::ACCENT,
+                    p = playhead_percent(total_bars), acc = theme::ACCENT,
                 ),
             }
             div {

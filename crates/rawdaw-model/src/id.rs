@@ -10,7 +10,7 @@ macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
         #[derive(
-            Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+            Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
         )]
         #[serde(transparent)]
         pub struct $name(pub u64);
