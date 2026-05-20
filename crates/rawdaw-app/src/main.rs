@@ -36,6 +36,7 @@ mod initial_project;
 mod midi_input;
 mod overlay;
 mod parts;
+mod pattern_actions;
 mod presets;
 mod project_display;
 mod project_io;

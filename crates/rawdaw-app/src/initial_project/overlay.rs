@@ -23,10 +23,13 @@ pub fn build_round1_overlay(k: &Round1Keys) -> ProjectOverlay {
     o.pattern_color.insert(k.patterns.drums, theme::PAL_SAGE.to_string());
     o.pattern_color.insert(k.patterns.pad,   theme::PAL_SLATE.to_string());
 
-    o.pattern_meta.insert(k.patterns.bass,  "Pitched · 2 variants".to_string());
-    o.pattern_meta.insert(k.patterns.lead,  "Pitched · 1 variant".to_string());
-    o.pattern_meta.insert(k.patterns.drums, "Drum · 2 variants".to_string());
-    o.pattern_meta.insert(k.patterns.pad,   "Pitched · 1 variant".to_string());
+    // P1 of the pattern-editor plan derives kind / bars / variant
+    // count from the model in `regions/library/patterns.rs`, so the
+    // placeholder overlay seeds the old read-only PatternsGroup
+    // rendered are no longer needed — they'd just duplicate the
+    // derived meta. `pattern_meta` is still available for user-
+    // written annotations and the new module appends them to the
+    // derived string in parentheses when set.
 
     o.section_color.insert(k.sections.intro,  theme::PAL_ROSE.to_string());
     o.section_color.insert(k.sections.verse,  theme::PAL_BLUE.to_string());

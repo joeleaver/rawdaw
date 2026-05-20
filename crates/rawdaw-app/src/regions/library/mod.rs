@@ -14,18 +14,22 @@
 //! per group so the `for` source closures stay `Fn` and the model
 //! borrow doesn't outlive the rsx invocation.
 //!
-//! ## File layout (post-CL1)
+//! ## File layout (post-CL1 + post-P1)
 //!
-//! - `mod.rs` (this file): Library shell + SearchBar + Patterns +
-//!   Sections groups (both still read-only) + shared row / header /
-//!   `+ new …` primitives.
+//! - `mod.rs` (this file): Library shell + SearchBar + Sections group
+//!   (still read-only) + shared row / header / `+ new …` primitives.
 //! - `chord_loops.rs`: the CL1 interactive Chord Loops group —
 //!   create / rename / delete / duplicate / pick color, plus
 //!   selection writes into [`AppState::selected_chord_loop`]. CL2's
 //!   chord-loop editor reads that signal and renders the open loop.
+//! - `patterns.rs`: the P1 interactive Patterns group — same CRUD
+//!   shape, with two `+` affordances (pitched + drum) since
+//!   `PatternBody` kind is locked at creation. Selection writes
+//!   [`AppState::selected_pattern`]; the P2 pattern editor will
+//!   read that signal.
 //!
-//! Patterns + Sections grow the same kind of CRUD when their
-//! Tier-1 plans land; mirror this module's structure (own sub-file).
+//! Sections grows the same kind of CRUD when its Tier-1 plan lands;
+//! mirror this module's structure (own sub-file).
 
 use rinch::prelude::*;
 
@@ -34,8 +38,10 @@ use crate::state::AppState;
 use crate::theme;
 
 mod chord_loops;
+mod patterns;
 
 use chord_loops::ChordLoopsGroup;
+use patterns::PatternsGroup;
 
 #[component]
 pub fn Library() -> NodeHandle {
@@ -107,49 +113,6 @@ struct LibraryRowData {
     color: String,
     name: String,
     meta: String,
-}
-
-#[component]
-fn PatternsGroup() -> NodeHandle {
-    let rows = build_pattern_rows();
-    let count = rows.len() as u32;
-    rsx! {
-        div { style: {group_outer_style()},
-            GroupHeader { title: "Patterns", count: count, glyph: "pattern" }
-            div { style: "padding-bottom: 4px;",
-                for row in rows.clone() {
-                    LibraryRow {
-                        key: row.key,
-                        color: row.color,
-                        name: row.name,
-                        meta: row.meta,
-                        highlighted: false,
-                    }
-                }
-                NewRow { label: "new pattern", onclick: move || {} }
-            }
-        }
-    }
-}
-
-fn build_pattern_rows() -> Vec<LibraryRowData> {
-    let app = use_store::<AppState>();
-    let project = app.project.get();
-    let overlay = app.overlay.get();
-    project
-        .patterns
-        .values()
-        .map(|p| LibraryRowData {
-            key: p.name.clone(),
-            color: overlay
-                .pattern_color
-                .get(&p.id)
-                .cloned()
-                .unwrap_or_else(|| theme::TEXT2.to_string()),
-            name: p.name.clone(),
-            meta: overlay.pattern_meta.get(&p.id).cloned().unwrap_or_default(),
-        })
-        .collect()
 }
 
 #[component]
