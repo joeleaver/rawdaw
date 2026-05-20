@@ -9,15 +9,16 @@
 //! group lists section *templates* only — variant chips and the
 //! variant tab strip live in the inspector / section editor.
 //!
-//! NOTE on Rinch `for`: items in an rsx `for` must be `Clone +
-//! PartialEq + 'static`. `NodeHandle` is not PartialEq, so we can't
-//! pre-collect rows into a `Vec<NodeHandle>` and iterate that —
-//! every loop iterates the underlying fixture slice directly.
+//! Migrated in C1c to read off [`AppState::project`] +
+//! [`AppState::overlay`]; pre-build the per-row data into owned `Vec`s
+//! per group so the `for` source closures stay `Fn` and the model
+//! borrow doesn't outlive the rsx invocation.
 
 use rinch::prelude::*;
 
-use crate::fixture;
+use crate::chord_display::roman_label;
 use crate::parts::{rgba, Icon};
+use crate::state::AppState;
 use crate::theme;
 
 #[component]
@@ -81,20 +82,31 @@ fn SearchBar() -> NodeHandle {
 
 // ─── Group shells (one inline per category to keep `for` data-driven) ────
 
+/// One library row, pre-resolved against model + overlay. Owned `String`
+/// fields satisfy rsx `for`'s `Clone + PartialEq + 'static` bound and
+/// keep the row constructors agnostic of the source model types.
+#[derive(Clone, PartialEq)]
+struct LibraryRowData {
+    key: String,
+    color: String,
+    name: String,
+    meta: String,
+}
+
 #[component]
 fn PatternsGroup() -> NodeHandle {
-    let r = fixture::round1();
-    let count = r.patterns.len() as u32;
+    let rows = build_pattern_rows();
+    let count = rows.len() as u32;
     rsx! {
         div { style: {group_outer_style()},
             GroupHeader { title: "Patterns", count: count, glyph: "pattern" }
             div { style: "padding-bottom: 4px;",
-                for p in r.patterns.iter().cloned() {
+                for row in rows.clone() {
                     LibraryRow {
-                        key: p.id,
-                        color: p.color.to_string(),
-                        name: p.name.to_string(),
-                        meta: p.meta.to_string(),
+                        key: row.key,
+                        color: row.color,
+                        name: row.name,
+                        meta: row.meta,
                         highlighted: false,
                     }
                 }
@@ -104,28 +116,40 @@ fn PatternsGroup() -> NodeHandle {
     }
 }
 
+fn build_pattern_rows() -> Vec<LibraryRowData> {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
+    project
+        .patterns
+        .values()
+        .map(|p| LibraryRowData {
+            key: p.name.clone(),
+            color: overlay
+                .pattern_color
+                .get(&p.id)
+                .cloned()
+                .unwrap_or_else(|| theme::TEXT2.to_string()),
+            name: p.name.clone(),
+            meta: overlay.pattern_meta.get(&p.id).cloned().unwrap_or_default(),
+        })
+        .collect()
+}
+
 #[component]
 fn ChordLoopsGroup() -> NodeHandle {
-    let r = fixture::round1();
-    let count = r.chord_loops.len() as u32;
+    let rows = build_chord_loop_rows();
+    let count = rows.len() as u32;
     rsx! {
         div { style: {group_outer_style()},
             GroupHeader { title: "Chord Loops", count: count, glyph: "chord" }
             div { style: "padding-bottom: 4px;",
-                for cl in r.chord_loops.iter().cloned() {
+                for row in rows.clone() {
                     LibraryRow {
-                        key: cl.id,
-                        color: cl.color.to_string(),
-                        name: cl.name.to_string(),
-                        meta: format!(
-                            "{} bars · {}",
-                            cl.length_bars,
-                            cl.events
-                                .iter()
-                                .map(|e| e.roman.as_str())
-                                .collect::<Vec<_>>()
-                                .join(" "),
-                        ),
+                        key: row.key,
+                        color: row.color,
+                        name: row.name,
+                        meta: row.meta,
                         highlighted: false,
                     }
                 }
@@ -135,24 +159,67 @@ fn ChordLoopsGroup() -> NodeHandle {
     }
 }
 
+fn build_chord_loop_rows() -> Vec<LibraryRowData> {
+    use rawdaw_model::chord::ChordSpec;
+
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
+    let beats_per_bar = project.tempo_map.beats_per_bar_at(rawdaw_model::time::MusicalTime::ZERO);
+    project
+        .chord_loops
+        .values()
+        .map(|cl| {
+            let romans: Vec<String> = cl
+                .events
+                .iter()
+                .map(|e| match &e.chord {
+                    ChordSpec::Functional { roman, suffix, .. } => {
+                        roman_label(*roman, &suffix.quality)
+                    }
+                    ChordSpec::Absolute { .. } => String::new(),
+                })
+                .collect();
+            LibraryRowData {
+                key: cl.name.clone(),
+                color: overlay
+                    .chord_loop_color
+                    .get(&cl.id)
+                    .cloned()
+                    .unwrap_or_else(|| theme::TEXT2.to_string()),
+                name: cl.name.clone(),
+                meta: format!(
+                    "{} bars · {}",
+                    duration_in_bars(cl.length, beats_per_bar),
+                    romans.join(" "),
+                ),
+            }
+        })
+        .collect()
+}
+
+/// Round-1 chord loops are stored as `Duration::bars(n, beats_per_bar)`,
+/// which encodes the length in PPQ ticks. Reconstruct the bar count by
+/// dividing the tick count by `PPQ * beats_per_bar`.
+fn duration_in_bars(d: rawdaw_model::time::Duration, beats_per_bar: u32) -> u32 {
+    let ticks_per_bar = rawdaw_model::time::PPQ * beats_per_bar.max(1) as i64;
+    (d.as_ticks() / ticks_per_bar).max(0) as u32
+}
+
 #[component]
 fn SectionsGroup() -> NodeHandle {
-    let r = fixture::round1();
-    let count = r.sections.len() as u32;
+    let rows = build_section_rows();
+    let count = rows.len() as u32;
     rsx! {
         div { style: {group_outer_style()},
             GroupHeader { title: "Sections", count: count, glyph: "section" }
             div { style: "padding-bottom: 4px;",
-                for s in r.sections.iter().cloned() {
+                for row in rows.clone() {
                     LibraryRow {
-                        key: s.id,
-                        color: s.color.to_string(),
-                        name: s.name.to_string(),
-                        meta: if s.variants.len() > 1 {
-                            format!("{} bars · {} variants", s.base_duration_bars, s.variants.len())
-                        } else {
-                            format!("{} bars", s.base_duration_bars)
-                        },
+                        key: row.key,
+                        color: row.color,
+                        name: row.name,
+                        meta: row.meta,
                         highlighted: false,
                     }
                 }
@@ -160,6 +227,35 @@ fn SectionsGroup() -> NodeHandle {
             }
         }
     }
+}
+
+fn build_section_rows() -> Vec<LibraryRowData> {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
+    project
+        .sections
+        .values()
+        .map(|s| {
+            // Variant count: base + each named variant override.
+            let variant_count = 1 + s.variants.len();
+            let meta = if variant_count > 1 {
+                format!("{} bars · {} variants", s.base.duration_bars, variant_count)
+            } else {
+                format!("{} bars", s.base.duration_bars)
+            };
+            LibraryRowData {
+                key: s.name.clone(),
+                color: overlay
+                    .section_color
+                    .get(&s.id)
+                    .cloned()
+                    .unwrap_or_else(|| theme::TEXT2.to_string()),
+                name: s.name.clone(),
+                meta,
+            }
+        })
+        .collect()
 }
 
 fn group_outer_style() -> String {

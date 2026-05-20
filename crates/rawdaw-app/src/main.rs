@@ -30,12 +30,14 @@
 
 mod app;
 mod audio;
+mod chord_display;
 mod fixture;
 mod initial_project;
 mod midi_input;
 mod overlay;
 mod parts;
 mod presets;
+mod project_display;
 mod regions;
 mod section_editor;
 mod state;

@@ -8,8 +8,9 @@
 use rinch::prelude::*;
 
 use crate::audio::AudioResources;
-use crate::fixture;
 use crate::parts::Icon;
+use crate::project_display::{current_bpm, scale_label, time_signature_label};
+use crate::state::AppState;
 use crate::theme;
 
 /// Sentinel value for the "no MIDI device" option in [`MidiPicker`].
@@ -20,8 +21,9 @@ const MIDI_NONE_VALUE: &str = "";
 
 #[component]
 pub fn TopBar() -> NodeHandle {
-    let r = fixture::round1();
-    let p = &r.project;
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
 
     let bar_style = format!(
         "height: {h}px; flex: 0 0 {h}px; \
@@ -33,9 +35,13 @@ pub fn TopBar() -> NodeHandle {
         line = theme::LINE,
     );
 
-    let project_name = p.name.to_string();
-    let project_meta = format!("{} · {}", p.key, p.time_sig);
-    let tempo = format!("{}.00", p.tempo);
+    let project_name = overlay.project_name.clone();
+    let project_meta = format!(
+        "{} · {}",
+        scale_label(&project.default_key),
+        time_signature_label(&project.tempo_map),
+    );
+    let tempo = format!("{:.2}", current_bpm(&project.tempo_map));
 
     rsx! {
         div { style: {bar_style.clone()},
