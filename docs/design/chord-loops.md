@@ -191,7 +191,7 @@ Comments are for the user's own notes.
   - `5/5` for V of V (entering `in_key` automatically).
   - `b6`, `#4`, etc. for chromatic degrees.
   - `7`, `M7`, `m7`, `°7`, `ø7`, `+7`, `sus4`, `add9`, etc. as quality/extension/alteration suffixes.
-  - `/3`, `/5`, `/7` for inversions; `/[note]` for explicit bass.
+  - `/<pitch-letter>` (A–G, optional `b`/`#`) for explicit-pitch (absolute) bass; `/<Roman-or-degree>` sets `in_key` on the outer chord (e.g. `5/5` → V in the key of V). Inversion / `ChordDegree` / `ScaleDegree` bass kinds are inspector-only — the v1 parser deliberately omits a slash shorthand for them (the canonical record is `crates/rawdaw-app/src/chord_shorthand/grammar.md` § 3, "Slash semantics are letter-discriminated").
 - A "Realized" strip beneath the chord lane shows the concrete pitches each chord becomes in the current section's key. Updates live as the key changes.
 - An inspector pane edits the focused chord's quality, extensions, alterations, `in_key`, bass, annotation.
 - Mode toggle for `Absolute` vs `Functional` event types. Default is functional; absolute is an explicit mode the user opts into for a chord.
@@ -234,7 +234,19 @@ Re-evaluation across chord changes during a held note follows the rule in `reali
 
 ## Open questions
 
-- **Roman shorthand grammar.** The quick-entry parser needs a precise grammar (`5/5`, `bVImaj7add9`, `Vsus4/3`). Specify before the chord-loop editor is built.
+- **Roman shorthand grammar.** ✅ Resolved in chord-loop-editing CL3 (`81fd69e`). The grammar lives at `crates/rawdaw-app/src/chord_shorthand/grammar.md`; the parser is `crates/rawdaw-app/src/chord_shorthand/parse.rs` (key-aware `parse(&str, &Scale)`). The `Vsus4/3` form from the original example is **not** supported — slash inversions are inspector-only (see Deviations § below).
 - **Chord-loop variants (deferred from earlier).** Symmetric with pattern/section variants. Skipped in v1; revisit if cloning chord loops becomes painful.
 - **Chord-loop transposition relative to its declared `key`.** If a chord loop has its own `key` set and is placed in a section whose scale differs, do the loop's chords transpose to the section's key, or stay in the loop's key? Probably stay in the loop's key (that's why it's set), but the rendered concrete pitches will be "wrong" relative to the section's scale — needs UI clarity.
 - **Display preference for chord names.** Some users prefer Nashville Number System over classical Roman numerals. Could be a render-only setting; data model is unchanged.
+
+## Deviations from the design as shipped (chord-loop-editing CL1–CL4)
+
+These are differences between what this doc specified and what landed in the v1 editor (`docs/chord-loop-editing-plan.md` CL1–CL4). Captured here so future work has the canonical record.
+
+- **No `/3 /5 /7` inversion shorthand in the v1 parser.** The original UX section listed `/3`, `/5`, `/7` as inversion shorthand. CL3's grammar instead letter-discriminates the slash content: `/<A–G>` is `BassSpec::Absolute`; anything else (digit, Roman) sets `in_key` on the outer Functional chord. `BassSpec::Inversion`, `ChordDegree`, and `ScaleDegree` bass kinds are entered through the inspector's bass sub-editor (`regions/chord_loop_editor/inspector/bass.rs`), not the shorthand text input. Rationale: a single slash glyph can't disambiguate "third of the chord" from "key of III" without a side channel; in practice users reach for the inspector for those kinds and the shorthand is most valuable for fast linear chord entry. The full grammar lives in `crates/rawdaw-app/src/chord_shorthand/grammar.md`.
+
+- **DropdownMenu in flex containers doesn't render the popover visibly (rinch bug).** CL4's first attempt at the editable section schedule used rinch's `DropdownMenu` for the per-cell loop picker; the absolutely-positioned popover appears in the DOM but stylo either clips it or fails to stack-order it inside a flex parent, so it's invisible to the user. Worked around by using `Select` (the same pickable primitive every other inspector dropdown uses). The bug is not a chord-loop-design concern but is documented here because it affected which UI primitive shipped for the section-schedule editor. Worth filing upstream when the rinch session permits.
+
+- **Realized strip's effective-key chain has three sources, not four.** The plan listed event `in_key` → loop `key` → section scale override → project `default_key`. The shipped chain is event `in_key` → loop `key` → project `default_key`. The section-scale-override slot was dropped because section-internal scale overrides aren't modeled in v1 (`open-questions.md` defers section-internal modulation to v2; the user is expected to split the section). When that lands, the realized strip's `effective_key` resolver picks up the new slot without changing the rest of the surface.
+
+- **Cadence tags are display-only in v1.** The data model + inspector dropdown ship; drum-fill-placement hints and variant-suggestion uses are tracked as future work, not in CL4.

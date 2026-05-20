@@ -46,6 +46,28 @@ absolute/functional mode toggle. **CL4** is section binding
 editing + the realized strip + annotation UI. **CL5** closes out
 and points at the next Tier-1 bite.
 
+**Milestone closed (2026-05-20).** All six phases landed in
+sequence on `main` (CL0 `7cbee35`, CL1 `4ef6988`, CL2 `a1a2682`,
+CL3 `81fd69e`, CL4 `50d6db2`, CL5 this commit). The user can now
+add/rename/duplicate/delete/recolor chord loops in the library;
+open a loop to edit its events on a single-loop timeline with a
+per-event inspector covering Roman degree, quality, extensions,
+alterations, `in_key`, all four `BassSpec` kinds, cadence tag, and
+comment; type chord shorthand (`bVImaj7add9#11`, `5/5m`, `Cmaj7/E`,
+…) that bidirects with the dropdowns; toggle between Functional
+and Absolute representation per event; see realized concrete
+pitches under the effective key on a strip beneath the timeline,
+live-transposing on project-key change; and bind chord loops to
+sections across multi-bar ranges via the editable section
+schedule. **Open Tier-1 follow-ons** (from the Out of Scope list
+below + CL deviations): drag-to-move + resize-handle wiring on
+chord-event blocks (CL2.x); right-click split/merge on
+`chord_loop_bar` cells (CL4.x); rinch DropdownMenu-in-flex
+rendering bug (workaround in place — file upstream); TopBar
+NameControl + BpmControls Enter-commit verification (same raw
+`input { onsubmit }` shape as the CL4-fixed CommentInput). Next
+Tier-1 bite: pattern editor — `docs/pattern-editor-plan.md` P0.
+
 ---
 
 ## Status
@@ -166,9 +188,132 @@ and points at the next Tier-1 bite.
     across default / `--no-default-features` / `--features
     cpal-driver`; release build clean. All files under the 700-line
     cap (largest is `timeline.rs` at 329).
-- CL3 — not started.
-- CL4 — not started.
-- CL5 — not started.
+- CL3 ✅ — quick-entry shorthand parser + `Absolute` mode toggle
+  + ChordDegree/ScaleDegree bass sub-editors (`81fd69e`).
+  - **New module `crate::chord_shorthand`** with the grammar
+    locked in `chord_shorthand/grammar.md` (357 lines, normative):
+    `parse.rs` (656 lines) implements a key-aware
+    `parse(&str, &Scale) -> Result<ChordSpec, ParseError>`;
+    `format.rs` (321 lines) is the inverse; `mod.rs` (34 lines)
+    re-exports. Tests live in `chord_shorthand/tests/`:
+    `parse_cases.rs` (567 lines, table-driven coverage of every
+    documented shorthand from `bVImaj7add9` through `5/5m` to
+    `Cmaj7/E`) + `round_trip_cases.rs` (88 lines, format∘parse
+    fidelity).
+  - **Grammar decisions locked** (see grammar.md §§ 1–6):
+    case-by-quality convention is rendering-only; quality suffix
+    wins over Roman case on disagreement (`vM` → V-major); slash
+    semantics letter-discriminated (`/<A–G>` → `BassSpec::Absolute`,
+    anything else → `in_key` on the outer Functional). **The
+    design doc's `/3 /5 /7` inversion shorthand is dropped from
+    the parser** — inversions / ChordDegree / ScaleDegree bass
+    are inspector-only in v1. The grammar.md change is the
+    canonical record; design doc swept in CL5.
+  - **Inspector grew a SHORTHAND text input**
+    (`regions/chord_loop_editor/inspector/shorthand_input.rs`,
+    83 lines) that bidirects with the dropdowns via the same
+    C4 `untracked` Effect pattern: typing parses into the
+    dropdown values; changing a dropdown reformats the text.
+  - **Functional/Absolute mode toggle** ships in
+    `inspector/roman_quality.rs` (266 lines, +98 vs. CL2): a
+    per-event chip switches the event between
+    `ChordSpec::Functional` and `ChordSpec::Absolute`. The
+    dropdown set + the SHORTHAND text input swap to absolute
+    representation (`Gmaj7` instead of `Vmaj7`); switching back
+    re-resolves against the effective key. Extension /
+    alteration chips (`inspector/chips.rs`, 140 lines) follow
+    the active variant via `is_active(...)` closures so they
+    stay in sync regardless of mutation path.
+  - **ChordDegree + ScaleDegree bass sub-editors** finished
+    (`inspector/bass.rs`, 332 lines, +151 vs. CL2's deferral
+    banner): ChordDegree picks Root/Third/Fifth/Seventh/Ninth
+    with a Natural/Flat/Sharp accidental; ScaleDegree picks
+    1–7 with the same accidental row. Inspector
+    `mod.rs` shrank to 69 lines as it lost the inline sub-editors.
+  - 450 workspace tests (was 408; +42 net: 29 parse cases + 7
+    round-trip groups + 3 reverse-resolver + chord_step encode
+    + accidental encode). Clippy clean across default /
+    `--no-default-features` / `--features cpal-driver`; release
+    build clean. All files under the 700-line cap (`parse.rs`
+    largest at 656).
+- CL4 ✅ — section binding + realized strip + annotations
+  (`50d6db2`).
+  - **Realized strip** at
+    `regions/chord_loop_editor/realized_strip.rs` (234 lines)
+    sits beneath the chord-event timeline. One cell per event,
+    width-proportional to duration; each shows
+    `<root_pc><quality_suffix>[/<bass_pc>]` using
+    `resolve_chord_spec_root` / `resolve_chord_degree` /
+    `resolve_scale_degree` from the model. Effective-key chain:
+    event `in_key` → loop `key` → project `default_key`; header
+    shows the effective key + source ("C major · project key").
+    Bass resolution covers Inversion (n→Third/Fifth/Seventh
+    mapping), ChordDegree, ScaleDegree, Absolute. Reactive:
+    swapping the project key C→C# live-transposes the strip
+    from `C G Am F` to `C# G# A#m F#` without rebuilding the
+    region.
+  - **Editable section schedule** rewrote round-2's read-only
+    `chord_loop_bar.rs` (511 lines, +307 vs. CL2's view) into a
+    multi-loop editable widget. `build_cells_for_section(name,
+    duration_bars)` iterates 0..duration_bars; for each bar
+    looks up the covering `(BarRange, ChordLoopId)` in
+    `section.base.chord_loops`; resolves the chord active at
+    that bar's downbeat via `active_event_at` (last-wins on
+    overlap; falls back to last event starting at-or-before).
+    Each cell renders a `Select` showing the bound loop's name
+    + a secondary line with the Roman label and absolute pitch
+    of the chord at that bar. Click → Select opens with all
+    `project.chord_loops` + "(uncover this bar)";
+    `commit_loop_for_bar` routes through `apply_project_edit`.
+  - **Pure schedule mutation** `set_loop_for_bar(schedule, bar,
+    new_loop) -> Vec<(BarRange, ChordLoopId)>` splits ranges at
+    the target bar then merges adjacent same-loop ranges. 8
+    unit tests pin the contract (insert-into-uncovered,
+    same-loop-merge, different-loop-split, none-removes-
+    coverage, start-of-range, end-of-range, gap-fill-merges-
+    both-sides, multi-loop preservation).
+  - **DropdownMenu rendering bug surfaced**: rinch's
+    `DropdownMenu` popover doesn't render visibly when nested
+    inside a flex container — the absolutely-positioned popover
+    appears in the DOM but stylo seems to clip or fail to
+    stack-order it. Worked around with a visible per-cell
+    `Select`. Documented inline as a follow-up bug to file
+    upstream; for v1 `Select` is the safe pickable primitive.
+  - **CommentInput Enter-commit fix** in
+    `regions/chord_loop_editor/inspector/annotation.rs`
+    (26 lines changed): converted the raw `input { onsubmit }`
+    to `TextInput { onsubmit }`. CL3 discovered raw `input
+    { onsubmit }` doesn't fire on Enter (rinch's html.rs
+    catch-all maps `onsubmit` to `data-rid`, not
+    `data-onsubmit`). Same pattern still present in
+    `topbar/project_meta.rs` (NameControl + BpmControls) —
+    flagged for follow-up verification.
+  - 453 workspace tests (was 450; +3 net after factoring out
+    helpers added vs. CL2 `build_cells` tests removed). Clippy
+    clean across all three feature builds; release build clean.
+    All files under the 700-line cap (`chord_loop_bar.rs`
+    largest at 511).
+- CL5 ✅ — close-out (this update).
+  - Status section above reconciled with CL3+CL4 commit hashes.
+  - `docs/design/chord-loops.md` swept for CL4 deviations:
+    `/3 /5 /7` inversion shorthand bullet removed from the
+    Chord-loop editor UX section (canonical record stays in
+    `chord_shorthand/grammar.md`); a Deviations section
+    added at the bottom noting the DropdownMenu rendering
+    workaround and the inspector-only bass-kind UX.
+  - Memory updated: `project_status` records CL0–CL5 ✅;
+    `project_next_session_pickup` points at the new pattern-
+    editor plan's P1 phase (CL2.x drag handlers, CL4.x
+    split/merge UI, and master-fx X1 stay listed as
+    session-filler alternatives).
+  - Next Tier-1 bite designed: `docs/pattern-editor-plan.md`
+    P0 (this commit) — chord loops give progressions, patterns
+    give parts. Without patterns, chord-loop work tops out at
+    "the realized strip shows my changes." P0 covers data-
+    model audit (`PatternEvent`, `MidiNote`, variants),
+    realization touchpoints, the piano-roll UI surface
+    (region replaces the inspector when a pattern is selected
+    from the Library), and the phase split P1–P5.
 
 ---
 
