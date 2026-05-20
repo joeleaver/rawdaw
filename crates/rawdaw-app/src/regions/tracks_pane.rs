@@ -88,7 +88,7 @@ struct TrackRowData {
 fn build_track_rows() -> Vec<TrackRowData> {
     let audio = use_store::<AudioResources>();
     audio
-        .project
+        .project()
         .tracks
         .iter()
         .enumerate()

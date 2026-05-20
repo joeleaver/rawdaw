@@ -19,6 +19,7 @@
 //! the composition-writability plan) once the section_editor and
 //! inspector both consume the new type end-to-end.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use rinch::prelude::*;
@@ -118,6 +119,16 @@ pub struct AppState {
     /// signal — same lifecycle as `project`. See [`ProjectOverlay`]
     /// for the structure.
     pub overlay: Signal<Rc<ProjectOverlay>>,
+
+    /// Filesystem path the live project was last saved to or loaded
+    /// from. `None` for a fresh boot (no file yet) and after `New`.
+    /// `Save` writes back to this path; `Save As` prompts a dialog
+    /// and updates the signal on success.
+    ///
+    /// C3 of the composition-writability milestone: the TopBar's
+    /// `Project ▾` menu reads this to decide whether `Save` is a
+    /// no-prompt write or should fall through to `Save As`.
+    pub current_path: Signal<Option<PathBuf>>,
 }
 
 impl AppState {
@@ -141,6 +152,7 @@ impl AppState {
             // `AppState::new()` and ignore these.
             project: Signal::new(Rc::new(Project::new(Scale::major(PitchClass::C)))),
             overlay: Signal::new(Rc::new(ProjectOverlay::empty())),
+            current_path: Signal::new(None),
         }
     }
 
@@ -201,6 +213,42 @@ impl AppState {
         if let Some(track_idx) = idx {
             self.midi_target_track.set(Some(track_idx));
         }
+    }
+
+    /// Apply a structural edit to the live project and mirror the
+    /// result through both the audio engine and the UI signal.
+    ///
+    /// Composition-writability C2's mutation entry point. The
+    /// closure receives a mutable reference to a clone of the
+    /// current project; on return, the mutated value is installed
+    /// as the new live snapshot via
+    /// [`AudioResources::apply_project_edit`] (which re-realizes
+    /// and re-arms the engine), and the AppState `project` signal
+    /// is `set` to the same `Rc` so every UI region subscribed to
+    /// it re-renders.
+    ///
+    /// Single mutation surface for every Tier-1 editing UI. UI
+    /// handlers call this — never `Signal::set` on `project`
+    /// directly — so the audio side never drifts from the UI's
+    /// view of the project.
+    ///
+    /// Returns the engine's error string verbatim on failure. The
+    /// signal is **not** updated on error, so a failed edit leaves
+    /// the UI showing the pre-edit project. See
+    /// [`AudioResources::apply_project_edit`] for the audio-side
+    /// failure modes.
+    // Release builds today only reach this through the cfg-gated
+    // +1 BPM debug button — C3 (project load) / C4 (real tempo/key/
+    // name controls) add release call sites and the allow goes away.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pub fn apply_project_edit<F>(&self, f: F) -> Result<(), String>
+    where
+        F: FnOnce(&mut Project),
+    {
+        let audio = use_store::<crate::audio::AudioResources>();
+        let new_rc = audio.apply_project_edit(f)?;
+        self.project.set(new_rc);
+        Ok(())
     }
 }
 

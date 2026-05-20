@@ -9,6 +9,9 @@
 //! thread runs the UI / realization pass while the matching `AudioEngine`
 //! moves into the cpal callback. Both types are `Send`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use rtrb::{Consumer, Producer, PushError};
 
 use rawdaw_model::{Midi2Message, SampleTime};
@@ -41,6 +44,11 @@ pub struct EngineHandle {
     /// declarative.
     pub(crate) host_event_tx: Producer<BlockEvent>,
     pub(crate) garbage_rx: Consumer<Box<dyn AudioNode>>,
+    /// Host-side handle on the audio thread's "drain song queue"
+    /// request flag. See [`Self::request_song_queue_drain`] and
+    /// [`crate::audio_engine::AudioEngine::song_drain_request`] for
+    /// the full protocol.
+    pub(crate) song_drain_request: Arc<AtomicBool>,
 }
 
 /// Host-side handle for pushing MIDI events into the engine *from a
@@ -162,5 +170,37 @@ impl EngineHandle {
             out.push(node);
         }
         out
+    }
+
+    /// Request that the audio thread drain the song event queue on
+    /// its next `process_block`. Independent of [`crate::Transport`]
+    /// — the drain runs whether the engine is Playing, Paused, or
+    /// Stopped, and does **not** reset `sample_clock`.
+    ///
+    /// The flag is consumed atomically (read-and-clear with `AcqRel`)
+    /// inside `process_block`, so a host can subsequently `Acquire`-
+    /// poll [`Self::song_drain_pending`] to learn when the drain has
+    /// completed. The expected protocol is:
+    ///
+    /// 1. Call `request_song_queue_drain()`.
+    /// 2. Spin / wait on `song_drain_pending()` returning `false`.
+    /// 3. Push the new event stream via [`Self::push_event`].
+    ///
+    /// Skipping step 2 risks racing the audio thread: events pushed
+    /// before the flag is observed get drained alongside the old
+    /// ones. The composition-writability C2 edit pump
+    /// (`crates/rawdaw-app/src/audio/edit_pump.rs`) is the canonical
+    /// caller; see its module doc for the full re-arm sequence.
+    pub fn request_song_queue_drain(&self) {
+        self.song_drain_request.store(true, Ordering::Release);
+    }
+
+    /// `true` while a previously-requested drain is still pending —
+    /// i.e. the audio thread has not yet processed the next
+    /// `process_block` since the request. Cleared by the audio thread
+    /// with `Release` after the song queue has been drained, paired
+    /// with this `Acquire` load.
+    pub fn song_drain_pending(&self) -> bool {
+        self.song_drain_request.load(Ordering::Acquire)
     }
 }

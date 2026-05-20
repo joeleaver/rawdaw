@@ -63,9 +63,11 @@
 //!   stereo output port (port `0`) is wired to mixer input port `i`.
 
 mod drum_poller;
+mod edit_pump;
 mod graph;
 mod midi;
 mod poller;
+mod synth_ops;
 mod wavetable_poller;
 
 use std::cell::{RefCell, RefMut};
@@ -170,11 +172,15 @@ pub struct AudioResources {
     /// a background thread (rinch routes them to the main thread
     /// via the registered cross-thread dispatcher).
     pub playhead_samples: Signal<u64>,
-    /// Project tempo map cloned at build time. Used by the UI to
-    /// convert `playhead_samples` → bars/beats for display. Constant
-    /// today; the round-3 tempo-editor work will update this when the
-    /// host edits the project.
-    pub tempo_map: TempoMap,
+    /// Project tempo map cached for UI sample → bars/beats conversion.
+    /// Updated by [`Self::apply_project_edit`] whenever the project's
+    /// tempo changes; read via [`Self::tempo_map`].
+    ///
+    /// `Rc<RefCell<_>>` for interior mutability — `AudioResources` is
+    /// `Clone` (rinch store contract) and the edit pump runs from UI
+    /// click handlers (`&self`), so the cell is the way to mutate
+    /// without restructuring every consumer.
+    tempo_map: Rc<RefCell<TempoMap>>,
     /// Transport state handle — Playing / Paused / Stopped. The host
     /// writes via [`Self::play`] / [`Self::pause`] / [`Self::stop`];
     /// the audio thread reads at the top of every `process_block`.
@@ -193,16 +199,23 @@ pub struct AudioResources {
     /// `AudioResources` for the rinch store doesn't deep-copy the
     /// realized stream every UI handler. `BlockEvent: Clone`, so the
     /// per-push iteration clones each event into the SPSC queue.
-    realized_events: Rc<Vec<BlockEvent>>,
+    ///
+    /// C2 wraps the `Rc<Vec<_>>` in an `Rc<RefCell<_>>` so the edit
+    /// pump can replace it wholesale after re-realize — readers
+    /// clone the inner `Rc` and the swap is one Vec-pointer write.
+    realized_events: Rc<RefCell<Rc<Vec<BlockEvent>>>>,
     /// Owned snapshot of the project the engine was built from. UI
-    /// components read this to surface track names, kinds, and
-    /// per-track synth assignments — `tracks[idx].synth` drives the
-    /// U4 synth-editor dispatcher. `Rc` so the rinch store's `Clone`
-    /// of `AudioResources` doesn't deep-copy the project. The
-    /// per-parameter live patch state lives on the audio thread and
-    /// is mirrored to the UI via [`WavetableEditorHandle`] — this
-    /// snapshot is only the as-loaded boot patch.
-    pub project: Rc<Project>,
+    /// components read this (via [`Self::project`]) to surface track
+    /// names, kinds, and per-track synth assignments —
+    /// `tracks[idx].synth` drives the U4 synth-editor dispatcher.
+    /// `Rc<RefCell<Rc<Project>>>` so the edit pump can swap the inner
+    /// `Rc` from `&self`; readers clone the Rc through the accessor.
+    /// The per-parameter live patch state lives on the audio thread
+    /// and is mirrored to the UI via [`WavetableEditorHandle`] — this
+    /// snapshot tracks the as-edited project structure (notes,
+    /// chords, tempo) and is intentionally distinct from per-synth
+    /// patch state.
+    project: Rc<RefCell<Rc<Project>>>,
     /// Per-pitched-track editor handles, keyed by `project.tracks`
     /// index. Each handle carries the synth's NodeId (for addressing
     /// `ParamEvent`s back at the right node) and a reactive
@@ -376,11 +389,11 @@ impl AudioResources {
             sample_rate,
             sample_clock,
             playhead_samples: Signal::new(0u64),
-            tempo_map: project.tempo_map.clone(),
+            tempo_map: Rc::new(RefCell::new(project.tempo_map.clone())),
             transport,
             transport_state: Signal::new(Transport::default()),
-            realized_events: Rc::new(realized_events),
-            project: Rc::new(project.clone()),
+            realized_events: Rc::new(RefCell::new(Rc::new(realized_events))),
+            project: Rc::new(RefCell::new(Rc::new(project.clone()))),
             wavetable_handles: Rc::new(build_wavetable_handles(&wavetable_publishers)),
             wavetable_publishers: Rc::new(extract_publishers(&wavetable_publishers)),
             // No pollers in the test path — they require the rinch
@@ -493,13 +506,32 @@ impl AudioResources {
     /// is the producer so this is a host-side capacity bug, not a
     /// race condition.
     fn rearm_events(&self) -> Result<(), String> {
+        let events = self.realized_events.borrow().clone();
         let mut handle = self.handle.borrow_mut();
-        for ev in self.realized_events.iter() {
+        for ev in events.iter() {
             handle
                 .push_event(ev.clone())
                 .map_err(|e| format!("event queue overflowed while re-arming: {e:?}"))?;
         }
         Ok(())
+    }
+
+    /// Snapshot of the live project as a cheap `Rc<Project>` clone.
+    /// Components read this to surface track names, kinds, and
+    /// per-track synth assignments. The returned `Rc` is a snapshot
+    /// at call time; the edit pump may swap the inner `Rc` from
+    /// underneath, so callers that need a stable view across multiple
+    /// reads should bind the result to a local.
+    pub fn project(&self) -> Rc<Project> {
+        self.project.borrow().clone()
+    }
+
+    /// Snapshot of the project's tempo map. Used by
+    /// [`Self::playhead_position`] for sample → bars/beats
+    /// conversion. Kept in sync with [`Self::project`] by the edit
+    /// pump.
+    pub fn tempo_map(&self) -> TempoMap {
+        self.tempo_map.borrow().clone()
     }
 
     /// Current playhead position derived from [`Self::playhead_samples`]
@@ -512,134 +544,12 @@ impl AudioResources {
     /// fractional bar count from `MusicalTime`; arrangement code uses
     /// it for sub-bar percent positioning, the top-bar readout uses
     /// `(bar, beat)`.
-    /// Push a wavetable `ParamEvent` into the host live-event queue.
-    /// `track_idx` selects the target synth via
-    /// [`Self::wavetable_handles`]; returns `Err` when the index
-    /// has no handle (e.g., it's a drum track).
-    ///
-    /// Scheduled at [`SampleTime::samples(0)`] so the event lands at
-    /// offset 0 of the next block regardless of transport state —
-    /// same convention live MIDI uses (`docs/midi-input-plan.md` K0).
-    /// Reading `sample_clock` here would re-introduce the Stop-reset
-    /// race that K1.fix already solved for MIDI input.
-    pub fn push_wavetable_param(
-        &self,
-        track_idx: usize,
-        param: rawdaw_synth_wavetable::WavetableParam,
-        value: f32,
-    ) -> Result<(), String> {
-        let handle = self
-            .wavetable_handles
-            .get(&track_idx)
-            .ok_or_else(|| format!("no wavetable handle for track {track_idx}"))?;
-        let path = param.encode();
-        let time = rawdaw_model::SampleTime::samples(0);
-        self.handle()
-            .push_param(time, handle.node_id, path, value)
-            .map_err(|e| format!("event queue overflow on push_wavetable_param: {e:?}"))
-    }
-
-    /// Drum equivalent of [`Self::push_wavetable_param`]. Same
-    /// scheduling contract ([`SampleTime::samples(0)`]) and same Err
-    /// shape when the index doesn't resolve to a Drum track.
-    pub fn push_drum_param(
-        &self,
-        track_idx: usize,
-        param: rawdaw_synth_drum::DrumParam,
-        value: f32,
-    ) -> Result<(), String> {
-        let handle = self
-            .drum_handles
-            .get(&track_idx)
-            .ok_or_else(|| format!("no drum handle for track {track_idx}"))?;
-        let path = param.encode();
-        let time = rawdaw_model::SampleTime::samples(0);
-        self.handle()
-            .push_param(time, handle.node_id, path, value)
-            .map_err(|e| format!("event queue overflow on push_drum_param: {e:?}"))
-    }
-
-    /// Apply a wavetable preset to a Pitched track. Flattens the
-    /// patch into one `BlockMessage::Param` per field (~72 events)
-    /// and pushes them all at the same `sample_clock + 1`
-    /// timestamp so the audio thread applies them inside one
-    /// block — patches change atomically from the perspective of
-    /// any subsequent NoteOn.
-    ///
-    /// Also writes the new patch into the host-side
-    /// `handle.patch_signal` directly so editor sliders re-sync
-    /// immediately even when the engine is `Transport::Stopped`
-    /// (which silently drains pending Param events). The audio
-    /// thread will overwrite the host signal via its
-    /// `WavetablePoller` on the next playing block — the host
-    /// write is just a same-value shortcut for the visual case.
-    ///
-    /// Returns `Err` when the track index has no wavetable handle
-    /// (e.g., it's a Drum track) or when the event queue overflows
-    /// mid-push.
-    pub fn apply_wavetable_preset(
-        &self,
-        track_idx: usize,
-        patch_data: rawdaw_model::patch::wavetable::WavetablePatchData,
-    ) -> Result<(), String> {
-        let handle = self
-            .wavetable_handles
-            .get(&track_idx)
-            .ok_or_else(|| format!("no wavetable handle for track {track_idx}"))?;
-        let patch: rawdaw_synth_wavetable::WavetablePatch = patch_data.into();
-        // Update the host-side signal first so the editor sliders
-        // re-sync on the next reactive tick. Cheap — Signal::set
-        // is one downcast + notify.
-        handle.patch_signal.set(patch);
-        let events = rawdaw_synth_wavetable::wavetable_patch_to_param_events(&patch);
-        // All 72 events scheduled at samples(0) so they apply in the
-        // next block regardless of transport state. The synth applies
-        // them in order; the last write wins per field, which is the
-        // semantics callers expect from "load this preset".
-        let time = rawdaw_model::SampleTime::samples(0);
-        let mut handle_mut = self.handle();
-        for (param, value) in events {
-            handle_mut
-                .push_param(time, handle.node_id, param.encode(), value)
-                .map_err(|e| format!("event queue overflow on apply_wavetable_preset: {e:?}"))?;
-        }
-        Ok(())
-    }
-
-    /// Drum equivalent of [`Self::apply_wavetable_preset`] — pushes
-    /// 29 events for a full drum patch + writes the host-side
-    /// signal for immediate slider re-sync.
-    pub fn apply_drum_preset(
-        &self,
-        track_idx: usize,
-        patch_data: rawdaw_model::patch::drum::DrumPatchData,
-    ) -> Result<(), String> {
-        let handle = self
-            .drum_handles
-            .get(&track_idx)
-            .ok_or_else(|| format!("no drum handle for track {track_idx}"))?;
-        let patch: rawdaw_synth_drum::DrumPatch = patch_data.into();
-        handle.patch_signal.set(patch);
-        let events = rawdaw_synth_drum::drum_patch_to_param_events(&patch);
-        // Same scheduling contract as the wavetable preset path:
-        // all events at samples(0) so the audio thread applies them
-        // in the next block regardless of transport state.
-        let time = rawdaw_model::SampleTime::samples(0);
-        let mut handle_mut = self.handle();
-        for (param, value) in events {
-            handle_mut
-                .push_param(time, handle.node_id, param.encode(), value)
-                .map_err(|e| format!("event queue overflow on apply_drum_preset: {e:?}"))?;
-        }
-        Ok(())
-    }
-
     pub fn playhead_position(&self) -> PlayheadPosition {
         let samples = self.playhead_samples.get();
-        let mt = self
-            .tempo_map
+        let tempo_map = self.tempo_map();
+        let mt = tempo_map
             .sample_to_musical(rawdaw_model::SampleTime::samples(samples), self.sample_rate);
-        let beats_per_bar = self.tempo_map.beats_per_bar_at(rawdaw_model::MusicalTime::ZERO);
+        let beats_per_bar = tempo_map.beats_per_bar_at(rawdaw_model::MusicalTime::ZERO);
         let total_beats = mt.as_beats_f64();
         let bars_f64 = total_beats / beats_per_bar as f64;
         let bar_idx = bars_f64.floor().max(0.0) as u32;

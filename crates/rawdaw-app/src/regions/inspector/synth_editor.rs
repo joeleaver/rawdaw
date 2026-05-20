@@ -22,7 +22,8 @@ use crate::theme;
 #[component]
 pub fn SynthEditor(track_idx: usize) -> NodeHandle {
     let audio = use_store::<AudioResources>();
-    let Some(track) = audio.project.tracks.get(track_idx) else {
+    let project = audio.project();
+    let Some(track) = project.tracks.get(track_idx) else {
         // Defensive: the parent gates on selected_track being a valid
         // index, but if a future flow ever picks up a stale index we
         // surface an unobtrusive empty state instead of panicking.

@@ -43,3 +43,20 @@ serde_json = "1"
 # `src/midi_input/` to forward note events from a USB MIDI
 # keyboard into the engine's MIDI input queue.
 midir = "0.11"
+# Composition-writability C3: serde derives for the app-side
+# `ProjectOverlay` so it round-trips through RON alongside the
+# model `Project` inside `SavedBundle`. Model already pulls in
+# serde transitively, but the derive macro needs `serde` named
+# directly in this crate's dep graph.
+serde = { version = "1", features = ["derive"] }
+# RON read/write for the project bundle. Matches the version the
+# model uses for `Project::save` / `Project::load` so the file
+# format stays consistent.
+ron = "0.12"
+# Cross-platform native file dialog for project save/load (C3).
+# On Linux uses zenity / kdialog / xdg-desktop-portal — no GTK
+# runtime dep. rfd calls block the calling thread, so the file
+# dialog wrapper in `project_io/dialog.rs` spawns it on a
+# background `std::thread` and returns via mpsc (same pattern as
+# E5's PlayheadPoller).
+rfd = "0.15"

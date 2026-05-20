@@ -2,6 +2,12 @@
 
 //! Decoration types that the UI layers on top of `rawdaw_model::Project`.
 //!
+//! Composition-writability C3 added `Serialize` / `Deserialize` derives
+//! to every type that lives inside [`crate::overlay::ProjectOverlay`] so
+//! the overlay round-trips through RON alongside the model `Project`
+//! inside a `SavedBundle`. The derives are additive — the structural
+//! shape is unchanged.
+//!
 //! These types describe per-cell realization values, role defaults, schedule
 //! entries, and the visual state of an activation row. They were originally
 //! defined in the now-deleted `crate::fixture` module as part of the round-
@@ -14,7 +20,7 @@
 //! stay app-side as UI decorations.
 
 /// Voicing strategies available in v1 (per `realization.md`).
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Voicing {
     #[default]
     TriadClose,
@@ -44,7 +50,7 @@ impl Voicing {
 }
 
 /// Per-event octave choice (`OctaveSpec` in `composition-model.md`).
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub enum OctaveSpec {
     /// Voice-leading minimal-motion (default).
     #[default]
@@ -81,7 +87,7 @@ impl OctaveSpec {
 /// Humanization parameters (per `realization.md`). Seed lives on the
 /// activation entry, so two activations using the same pattern can
 /// humanize differently.
-#[derive(Clone, Copy, PartialEq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Humanization {
     /// Velocity jitter as a fraction (0.04 = ±4 %).
     pub velocity: f32,
@@ -96,7 +102,7 @@ pub struct Humanization {
 
 /// Pitched cells carry a full `Realization`; drum cells have only
 /// `humanization` (the other two fields are `None`).
-#[derive(Clone, Copy, PartialEq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Realization {
     pub voicing: Option<Voicing>,
     pub octave: Option<OctaveSpec>,
@@ -192,7 +198,7 @@ pub enum ActivationState {
 /// `pinned` drives the "N pinned" / "no pinned notes" footer in the
 /// activation cell; round-3 will populate it from the model's per-note
 /// override table.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CellOverlay {
     pub realization: Realization,
     pub pinned: u32,

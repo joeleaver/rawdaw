@@ -1253,3 +1253,160 @@ fn push_midi_and_push_param_both_deliver_to_same_target() {
         .collect();
     assert_eq!(param_tags, vec![1, 2], "param events must keep push order within their queue");
 }
+
+// ── C2 song-queue drain request tests ─────────────────────────────────────
+//
+// The host-callable drain flag (`EngineHandle::request_song_queue_drain`)
+// lets the composition-writability C2 edit pump swap the song queue
+// mid-playback without going through the Stop→Play recycle (which resets
+// `sample_clock` to 0 and snaps the playhead to bar 1).
+//
+// Two pins: (a) requesting a drain while Playing empties the song queue
+// without touching `sample_clock`; (b) the host event queue and the live
+// MIDI queue are untouched by the drain — only the song queue clears.
+
+#[test]
+fn song_drain_request_clears_event_queue_while_playing() {
+    use rawdaw_engine::Transport;
+
+    let mut engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let master = NodeId::new(0);
+    engine.push_command(GraphCommand::AddNode {
+        id: master,
+        node: Box::new(ImpulseNode::new()),
+    });
+    // Queue an event far in the future so the first render leaves it
+    // pending.
+    engine.push_event(BlockEvent {
+        time: SampleTime::samples(10_000),
+        target: master,
+        message: note_on(),
+    });
+
+    // Render one Playing block to advance the clock past 0.
+    let _ = engine.render_offline(master, SampleTime::samples(256), 256);
+    let clock_before = engine
+        .sample_clock()
+        .load(std::sync::atomic::Ordering::Acquire);
+    assert!(clock_before > 0, "render must advance the clock");
+
+    // Request a drain and process one Playing block. The drain runs at
+    // the top of process_block regardless of transport — sample_clock
+    // continues from where Playing left off, NOT reset to 0.
+    let (mut audio, host, _midi) = engine.split();
+    host.request_song_queue_drain();
+    assert!(host.song_drain_pending(), "flag set before any block");
+    audio.transport_handle().set(Transport::Playing);
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx = ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: clock_before,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: true,
+    };
+    audio.process_block(master, output, ctx);
+    assert!(!host.song_drain_pending(), "audio must ack the drain");
+
+    // Re-render Playing across the window containing the originally-
+    // queued event (sample 10_000). With the drain, no impulse should
+    // fire — the event was purged.
+    let mut buf2 = vec![0.0_f32; 2 * MAX_BLOCK];
+    for block_start in
+        (clock_before + 64..).step_by(MAX_BLOCK).take_while(|s| *s < 16_384)
+    {
+        let output = rawdaw_engine::BufferMut::new(&mut buf2, 2, MAX_BLOCK, MAX_BLOCK);
+        let ctx = ProcessContext {
+            sample_rate: SAMPLE_RATE,
+            block_size: MAX_BLOCK,
+            absolute_time_samples: block_start,
+            musical_time: MusicalTime::ZERO,
+            bpm: 120.0,
+            playing: true,
+        };
+        audio.process_block(master, output, ctx);
+        for s in &buf2[..MAX_BLOCK] {
+            assert_eq!(
+                *s, 0.0,
+                "drain should have purged the event at sample 10_000"
+            );
+        }
+    }
+}
+
+#[test]
+fn song_drain_request_does_not_touch_other_queues() {
+    // Drain affects only the song queue (`event_tx`). Live MIDI input
+    // and host param events stay in their own queues and reach the
+    // node normally after a drain.
+    use rawdaw_engine::Transport;
+
+    let engine = Engine::new(SAMPLE_RATE, MAX_BLOCK);
+    let (mut audio, mut handle, mut midi_input) = engine.split();
+
+    let target = NodeId::new(0);
+    let recorder = RecorderNode::new();
+    let received = Arc::clone(&recorder.received);
+    handle
+        .push_command(GraphCommand::AddNode {
+            id: target,
+            node: Box::new(recorder),
+        })
+        .expect("command queue had room");
+
+    // Queue one song event (will be drained), one live MIDI event (kept),
+    // one host param event (kept).
+    handle
+        .push_event(BlockEvent {
+            time: SampleTime::samples(0),
+            target,
+            message: note_on(),
+        })
+        .expect("song queue had room");
+    midi_input
+        .push_midi(
+            SampleTime::samples(0),
+            target,
+            Midi2Message::NoteOff {
+                channel: MidiChannel::default(),
+                note: MidiNote::new(60).unwrap(),
+                velocity: U16Velocity::HALF,
+            },
+        )
+        .expect("midi input queue had room");
+    handle
+        .push_param(SampleTime::samples(0), target, [9; 8], 0.5)
+        .expect("host event queue had room");
+
+    handle.request_song_queue_drain();
+    audio.transport_handle().set(Transport::Playing);
+    let mut buf = vec![0.0_f32; 2 * MAX_BLOCK];
+    let output = rawdaw_engine::BufferMut::new(&mut buf, 2, 64, MAX_BLOCK);
+    let ctx = ProcessContext {
+        sample_rate: SAMPLE_RATE,
+        block_size: 64,
+        absolute_time_samples: 0,
+        musical_time: MusicalTime::ZERO,
+        bpm: 120.0,
+        playing: true,
+    };
+    audio.process_block(target, output, ctx);
+
+    let recv = received.lock().expect("recorder mutex");
+    // Exactly two events should reach the node: the MIDI NoteOff (from
+    // the input queue) and the Param (from the host queue). The song
+    // NoteOn was drained.
+    assert_eq!(recv.len(), 2, "expected MIDI + Param only; got {recv:?}");
+    let midi_count = recv
+        .iter()
+        .filter(|(_, m)| matches!(m, BlockMessage::Midi(_)))
+        .count();
+    let param_count = recv
+        .iter()
+        .filter(|(_, m)| matches!(m, BlockMessage::Param(_)))
+        .count();
+    assert_eq!(midi_count, 1, "live MIDI must survive the drain");
+    assert_eq!(param_count, 1, "host param must survive the drain");
+}

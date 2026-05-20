@@ -110,11 +110,13 @@ impl Engine {
             host_ev_rx,
             gar_tx,
         );
+        let song_drain_request = audio.song_drain_request_handle();
         let host = EngineHandle {
             command_tx: cmd_tx,
             event_tx: ev_tx,
             host_event_tx: host_ev_tx,
             garbage_rx: gar_rx,
+            song_drain_request,
         };
         let midi_input = MidiInputHandle {
             event_tx: midi_ev_tx,

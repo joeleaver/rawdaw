@@ -39,7 +39,7 @@ pub use types::{
 ///
 /// Stored in `AppState` alongside the project itself; saved alongside the
 /// project as part of `SavedBundle` in C3 of the writability plan.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectOverlay {
     /// User-facing project name shown in the top bar. The model
     /// `Project` doesn't carry a `name` field yet — C4 of the

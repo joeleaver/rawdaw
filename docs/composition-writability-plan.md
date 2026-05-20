@@ -59,8 +59,83 @@ smaller and build on C1. C5 closes out.
     tests.rs`. **Visible change**: top-bar tempo now reads `120.00 BPM`
     instead of the fixture mirror's hardcoded `96 BPM` — model and
     audio engine always played at 120; the fixture was lying.
-- C2 — not started.
-- C3 — not started.
+- C2 ✅ — edit → re-realize → audio re-arm pump landed.
+  - Engine surgery: `rawdaw_engine::EngineHandle::request_song_queue_drain()`
+    + `song_drain_pending()` atomic; the audio thread reads-and-clears the
+    flag at the top of every `process_block`, draining `event_rx` without
+    touching `sample_clock` or transport. Two new engine tests pin (a)
+    drain-while-Playing keeps `sample_clock` continuous, (b) drain leaves
+    MIDI input + host-event queues untouched.
+  - App side: `audio/edit_pump.rs` carries
+    `AudioResources::apply_project_edit<F>(f)` (clones project, runs `f`,
+    re-realizes via `rawdaw_model::realize::realize` + `translate_events`,
+    swaps `project` / `tempo_map` / `realized_events` interior-mut'd cells,
+    calls `re_arm`). `re_arm` is a no-op in `Transport::Stopped` (engine
+    already drains; next `play()` re-arms via the existing path) and in
+    Playing/Paused snapshots `sample_clock`, requests the engine drain,
+    spin-waits for the ack (bounded 50 ms), then pushes every cached
+    event with `time >= saved_clock` so past notes don't re-fire.
+  - `AppState::apply_project_edit<F>(f)` is the public surface for UI
+    handlers: delegates to `AudioResources::apply_project_edit` and mirrors
+    the returned `Rc<Project>` into the AppState `project` signal so UI and
+    audio stay in lockstep.
+  - Proof-of-life: `#[cfg(debug_assertions)]` `BumpBpmDebug` button in the
+    TopBar bumps `Project.tempo_map` by 1 BPM through the pump. Reactive
+    BPM readout in the TopBar updates on every edit.
+  - `audio/mod.rs` was at 704 lines after the C2 additions; refactor
+    extracted the four U-series synth-parameter / preset-apply methods
+    into a new `audio/synth_ops.rs` module, dropping `mod.rs` back to 583
+    lines under the workspace 700-line cap.
+  - 362 workspace tests (was 355; added 2 engine drain tests + 5 edit-pump
+    tests). Clippy clean across all three feature builds; release build
+    clean.
+- C3 ✅ — project save / load UI landed.
+  - New `crates/rawdaw-app/src/project_io/` module:
+    `bundle.rs` (`SavedBundle { bundle_version: u32, project,
+    overlay }` with a `BundleHeader` peek for the version check),
+    `save.rs` (`save_to_path` → pretty-printed RON), `load.rs`
+    (`load_from_path` with bundle-version + inner project schema
+    version checks; `apply_loaded_bundle` routes the loaded project
+    through the C2 edit pump so the engine drains + re-arms, and
+    swaps the overlay signal too), `dialog.rs` (cross-thread
+    `rfd::FileDialog` wrapper: spawned thread + `Signal::send` on
+    completion via the rinch runtime's cross-thread dispatcher,
+    same pattern as the E5 PlayheadPoller).
+  - `rawdaw-app` now depends on `rfd = "0.15"`, `serde` (direct,
+    for the overlay derives), and `ron = "0.12"`. rfd 0.15 uses
+    `ashpd` (xdg-desktop-portal) on Linux — no GTK runtime dep
+    added by C3 (the GTK chain already comes in via rinch's
+    `muda` window-menu dep).
+  - `ProjectOverlay` and every type it contains
+    (`Voicing` / `OctaveSpec` / `Humanization` / `Realization` /
+    `CellOverlay`) gained `serde::Serialize` /
+    `serde::Deserialize` derives — additive only, no structural
+    change.
+  - **AppState** gained `current_path: Signal<Option<PathBuf>>`
+    so `Save` knows whether to write back to the open file or
+    fall through to `Save As`.
+  - TopBar grew a `ProjectMenu` (`DropdownMenu`) with
+    `New / Open… / Save / Save As…` items. Open + Save As land
+    rfd dialogs on background `std::thread`s feeding a
+    `Signal<Option<DialogOutcome>>`; two `Effect`s inside the
+    component observe each signal and dispatch the
+    load / save once the dialog closes. Errors go to stderr
+    today; the toast / alert primitive lands in a future
+    milestone.
+  - File extension `.rawd`. `Save with no open path → Save As`
+    fall-through implemented per plan.
+  - 7 new tests in `project_io::{bundle,save,load}::tests` pin
+    the bundle round-trip (in-memory + disk), version-mismatch
+    rejection, parse-error surfacing, and the disk save→load
+    cycle.
+  - `regions/topbar.rs` ticked to 633 lines, past the plan's
+    600 watermark but under the 700 cap. The four-way split
+    suggested in the plan
+    (`topbar/{mod,project_meta,transport,midi_picker}.rs`) is
+    deferred until C4 adds the real tempo/key/name controls and
+    pushes it harder.
+  - 369 workspace tests (was 362; +7 project_io). Clippy clean
+    across all three feature builds; release build clean.
 - C4 — not started.
 - C5 — not started.
 

@@ -115,7 +115,7 @@ impl AudioResources {
     /// `NodeId::new((i + 1) as u32)`. Returns `None` if the index
     /// is out of range.
     pub fn track_node_id(&self, track_idx: usize) -> Option<NodeId> {
-        if track_idx >= self.project.tracks.len() {
+        if track_idx >= self.project().tracks.len() {
             return None;
         }
         Some(NodeId::new((track_idx + 1) as u32))
@@ -125,7 +125,7 @@ impl AudioResources {
     /// used as the boot-time MIDI routing target so live input
     /// has a sensible default before the user picks a track.
     pub fn first_pitched_track_index(&self) -> Option<usize> {
-        self.project.tracks.iter().position(|t| {
+        self.project().tracks.iter().position(|t| {
             matches!(t.synth, SynthAssignment::Wavetable(_))
         })
     }

@@ -36,6 +36,7 @@ mod overlay;
 mod parts;
 mod presets;
 mod project_display;
+mod project_io;
 mod regions;
 mod section_editor;
 mod state;

@@ -276,7 +276,7 @@ fn sample_clock_starts_at_zero() {
 fn tempo_map_matches_project() {
     let (project, _) = build_round1_project();
     let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-    assert_eq!(resources.tempo_map, project.tempo_map);
+    assert_eq!(resources.tempo_map(), project.tempo_map);
 }
 
 #[test]
@@ -313,6 +313,7 @@ fn transport_starts_stopped_and_walks_the_state_machine() {
 fn realized_events_are_cached_for_replay() {
     let (project, _) = build_round1_project();
     let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-    assert_eq!(resources.realized_events.len(), resources.initial_event_count);
-    assert!(!resources.realized_events.is_empty());
+    let cached = resources.realized_events.borrow().clone();
+    assert_eq!(cached.len(), resources.initial_event_count);
+    assert!(!cached.is_empty());
 }

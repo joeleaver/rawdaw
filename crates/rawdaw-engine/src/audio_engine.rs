@@ -13,7 +13,7 @@
 //! the host to drop).
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use rtrb::{Consumer, Producer};
@@ -99,6 +99,24 @@ pub struct AudioEngine {
     /// reads. See [`crate::transport`] for the state-machine
     /// semantics.
     transport: TransportHandle,
+
+    /// Shared "drain the song queue now" request flag. The host sets
+    /// it via [`crate::handle::EngineHandle::request_song_queue_drain`];
+    /// the audio thread reads it at the top of every `process_block`
+    /// (after command drain, before transport handling) and, if set,
+    /// unconditionally drains `event_rx` and clears the flag with
+    /// `Release` so the host can `Acquire`-poll for the ack.
+    ///
+    /// Independent of [`Self::transport`] — the drain happens
+    /// without altering transport state or `sample_clock`. Used by
+    /// the composition-writability C2 edit pump
+    /// (`crates/rawdaw-app/src/audio/edit_pump.rs`) to swap the
+    /// song queue mid-playback when a structural edit re-realizes
+    /// the project. The Stop-entry drain in `process_block` still
+    /// exists for the user-facing Stop button (the explicit
+    /// "rewind to bar 1" gesture); this flag is the surgical
+    /// drain that keeps the playhead position intact.
+    pub(crate) song_drain_request: Arc<AtomicBool>,
 }
 
 impl AudioEngine {
@@ -129,7 +147,15 @@ impl AudioEngine {
             topo_scratch: Vec::new(),
             sample_clock: Arc::new(AtomicU64::new(0)),
             transport: TransportHandle::new(),
+            song_drain_request: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Clone the shared "drain song queue" request flag so the host
+    /// half (in `Engine`/`EngineHandle::request_song_queue_drain`)
+    /// can write to the same atomic the audio thread reads.
+    pub(crate) fn song_drain_request_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.song_drain_request)
     }
 
     pub fn graph(&self) -> &Graph {
@@ -208,6 +234,22 @@ impl AudioEngine {
         }
         if self.graph.topology_is_dirty() {
             self.graph.recompute_topology();
+        }
+
+        // 0b. Host-requested song-queue drain. Independent of transport
+        //     state; used by the composition-writability C2 edit pump
+        //     to swap the song queue mid-playback without resetting
+        //     sample_clock (the Stop-entry drain below would jump the
+        //     playhead to bar 1, which is the user-facing Stop button
+        //     semantics, not what an edit-while-playing wants).
+        //
+        //     The `swap` atomically reads-and-clears in one op so the
+        //     host can `Acquire`-poll on the flag to know the drain
+        //     completed. `Release` on clear pairs with the host's
+        //     `Acquire`. MIDI input + host-event queues are untouched
+        //     — only the song queue is swapped.
+        if self.song_drain_request.swap(false, Ordering::AcqRel) {
+            while self.event_rx.pop().is_ok() {}
         }
 
         // 1. Transport bookkeeping. Stopped: drain pending *song* events
