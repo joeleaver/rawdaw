@@ -14,29 +14,30 @@ use rawdaw_model::id::ChordLoopId;
 
 use crate::theme;
 
-use super::mutate_event;
+use super::{fetch_event, mutate_event};
 
+/// Extension chip row. Each chip is a raw `button` (not a separate
+/// component) so the per-iteration `Extension` value — Copy, no
+/// String needed — moves into the style + onclick closures
+/// cleanly. Sub-componentizing would force a String prop and run
+/// into rinch's FnMut-capture rules on multiple closures.
 #[component]
-pub(super) fn ExtensionChips(id: ChordLoopId, idx: usize, current_csv: String) -> NodeHandle {
+pub(super) fn ExtensionChips(id: ChordLoopId, idx: usize) -> NodeHandle {
     use Extension::*;
     let all = [Add9, Add11, Add13, Ninth, Eleventh, Thirteenth];
     rsx! {
         div { style: {chip_row_style()},
             for ext in all {
-                // The rsx for-loop's `key:` closure binds the
-                // pattern by reference (rinch `for_each_dom_typed`
-                // signature: `K: Fn(&T) -> String`), while the body
-                // closure binds it by value. So `key:` sees
-                // `&Extension` and the other props see `Extension`
-                // — deref the key expression with `*ext` and keep
-                // the body expressions unchanged.
-                ExtChip {
+                button {
+                    // `key:` runs `Fn(&T) -> String` so `ext` is bound
+                    // by reference here; the body props receive
+                    // `Extension` by value, so deref with `*ext` only
+                    // in the key expression.
                     key: encode_extension(*ext),
-                    id: id,
-                    idx: idx,
-                    ext_str: encode_extension(ext),
-                    label: ext_label(ext),
-                    active: current_csv.split(',').any(|x| x == encode_extension(ext)),
+                    r#type: "button",
+                    style: {move || chip_button_style(is_extension_active(id, idx, ext))},
+                    onclick: move || toggle_extension(id, idx, ext),
+                    {ext_label(ext)}
                 }
             }
         }
@@ -44,70 +45,46 @@ pub(super) fn ExtensionChips(id: ChordLoopId, idx: usize, current_csv: String) -
 }
 
 #[component]
-fn ExtChip(id: ChordLoopId, idx: usize, ext_str: String, label: String, active: bool) -> NodeHandle {
-    let style = chip_button_style(active);
-    rsx! {
-        button {
-            r#type: "button",
-            style: {style.clone()},
-            onclick: move || {
-                if let Some(ext) = decode_extension(&ext_str) {
-                    toggle_extension(id, idx, ext);
-                }
-            },
-            {label.clone()}
-        }
-    }
-}
-
-#[component]
-pub(super) fn AlterationChips(id: ChordLoopId, idx: usize, current_csv: String) -> NodeHandle {
+pub(super) fn AlterationChips(id: ChordLoopId, idx: usize) -> NodeHandle {
     use Alteration::*;
     let all = [Flat5, Sharp5, Flat9, Sharp9, Sharp11, Flat13, NoFifth, NoThird];
     rsx! {
         div { style: {chip_row_style()},
             for alt in all {
-                AltChip {
+                button {
                     key: encode_alteration(*alt),
-                    id: id,
-                    idx: idx,
-                    alt_str: encode_alteration(alt),
-                    label: alt_label(alt),
-                    active: current_csv.split(',').any(|x| x == encode_alteration(alt)),
+                    r#type: "button",
+                    style: {move || chip_button_style(is_alteration_active(id, idx, alt))},
+                    onclick: move || toggle_alteration(id, idx, alt),
+                    {alt_label(alt)}
                 }
             }
         }
     }
 }
 
-#[component]
-fn AltChip(id: ChordLoopId, idx: usize, alt_str: String, label: String, active: bool) -> NodeHandle {
-    let style = chip_button_style(active);
-    rsx! {
-        button {
-            r#type: "button",
-            style: {style.clone()},
-            onclick: move || {
-                if let Some(alt) = decode_alteration(&alt_str) {
-                    toggle_alteration(id, idx, alt);
-                }
-            },
-            {label.clone()}
-        }
-    }
+fn is_extension_active(id: ChordLoopId, idx: usize, ext: Extension) -> bool {
+    fetch_event(id, idx)
+        .map(|ev| match &ev.chord {
+            ChordSpec::Functional { suffix, .. } | ChordSpec::Absolute { suffix, .. } => {
+                suffix.extensions.contains(&ext)
+            }
+        })
+        .unwrap_or(false)
+}
+
+fn is_alteration_active(id: ChordLoopId, idx: usize, alt: Alteration) -> bool {
+    fetch_event(id, idx)
+        .map(|ev| match &ev.chord {
+            ChordSpec::Functional { suffix, .. } | ChordSpec::Absolute { suffix, .. } => {
+                suffix.alterations.contains(&alt)
+            }
+        })
+        .unwrap_or(false)
 }
 
 fn encode_extension(e: Extension) -> String {
     format!("{e:?}")
-}
-
-fn decode_extension(s: &str) -> Option<Extension> {
-    use Extension::*;
-    Some(match s {
-        "Add9" => Add9, "Add11" => Add11, "Add13" => Add13,
-        "Ninth" => Ninth, "Eleventh" => Eleventh, "Thirteenth" => Thirteenth,
-        _ => return None,
-    })
 }
 
 fn ext_label(e: Extension) -> String {
@@ -117,10 +94,6 @@ fn ext_label(e: Extension) -> String {
         Ninth => "9", Eleventh => "11", Thirteenth => "13",
     }
     .into()
-}
-
-pub(super) fn encode_extension_csv(list: &[Extension]) -> String {
-    list.iter().map(|e| encode_extension(*e)).collect::<Vec<_>>().join(",")
 }
 
 fn toggle_extension(id: ChordLoopId, idx: usize, value: Extension) {
@@ -139,15 +112,6 @@ fn encode_alteration(a: Alteration) -> String {
     format!("{a:?}")
 }
 
-fn decode_alteration(s: &str) -> Option<Alteration> {
-    use Alteration::*;
-    Some(match s {
-        "Flat5" => Flat5, "Sharp5" => Sharp5, "Flat9" => Flat9, "Sharp9" => Sharp9,
-        "Sharp11" => Sharp11, "Flat13" => Flat13, "NoFifth" => NoFifth, "NoThird" => NoThird,
-        _ => return None,
-    })
-}
-
 fn alt_label(a: Alteration) -> String {
     use Alteration::*;
     match a {
@@ -155,10 +119,6 @@ fn alt_label(a: Alteration) -> String {
         Sharp11 => "♯11", Flat13 => "♭13", NoFifth => "no 5", NoThird => "no 3",
     }
     .into()
-}
-
-pub(super) fn encode_alteration_csv(list: &[Alteration]) -> String {
-    list.iter().map(|a| encode_alteration(*a)).collect::<Vec<_>>().join(",")
 }
 
 fn toggle_alteration(id: ChordLoopId, idx: usize, value: Alteration) {
@@ -202,16 +162,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extension_alteration_csv_round_trip() {
-        let exts = vec![Extension::Add9, Extension::Ninth];
-        let csv = encode_extension_csv(&exts);
-        for e in &exts {
-            assert!(csv.split(',').any(|x| x == encode_extension(*e)));
+    fn extension_encode_round_trips() {
+        use Extension::*;
+        for e in [Add9, Add11, Add13, Ninth, Eleventh, Thirteenth] {
+            assert_eq!(encode_extension(e), format!("{e:?}"));
         }
-        let alts = vec![Alteration::Flat5, Alteration::Sharp9];
-        let csv = encode_alteration_csv(&alts);
-        for a in &alts {
-            assert!(csv.split(',').any(|x| x == encode_alteration(*a)));
+    }
+
+    #[test]
+    fn alteration_encode_round_trips() {
+        use Alteration::*;
+        for a in [Flat5, Sharp5, Flat9, Sharp9, Sharp11, Flat13, NoFifth, NoThird] {
+            assert_eq!(encode_alteration(a), format!("{a:?}"));
         }
     }
 }

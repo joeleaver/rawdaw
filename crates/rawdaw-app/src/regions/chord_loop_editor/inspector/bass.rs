@@ -1,15 +1,20 @@
 //! Bass-spec editor — kind dropdown + conditional value sub-editor.
 //!
-//! CL2 supports Inversion (1st/2nd/3rd) + Absolute pitch fully;
-//! ChordDegree + ScaleDegree sub-types render a deferral banner
-//! until CL3 ships their richer sub-editors alongside the
-//! shorthand parser.
+//! All four `BassSpec` variants have first-class editors:
+//! - **Inversion**: dropdown (1st/2nd/3rd).
+//! - **Absolute**: pitch-class dropdown (12 entries).
+//! - **ChordDegree** (added CL3): chord-step dropdown + accidental
+//!   dropdown. The shorthand parser doesn't reach this bass kind
+//!   (grammar §3); the inspector is the only entry point.
+//! - **ScaleDegree** (added CL3): scale-degree dropdown + accidental
+//!   dropdown. Also inspector-only.
 
 use rinch::prelude::*;
 
-use rawdaw_model::chord::BassSpec;
+use rawdaw_model::chord::{BassSpec, ChordDegree, ChordStep};
 use rawdaw_model::id::ChordLoopId;
-use rawdaw_model::pitch::PitchClass;
+use rawdaw_model::pitch::{Accidental, PitchClass};
+use rawdaw_model::scale::ScaleDegree;
 
 use crate::theme;
 
@@ -49,8 +54,8 @@ fn bass_kind_options() -> Vec<SelectOption> {
     vec![
         SelectOption::new("None", "Root position (default)"),
         SelectOption::new("Inversion", "Inversion (1st / 2nd / 3rd)"),
-        SelectOption::new("ChordDegree", "Chord-tone bass (CL3 expands)"),
-        SelectOption::new("ScaleDegree", "Scale-tone bass (CL3 expands)"),
+        SelectOption::new("ChordDegree", "Chord-tone bass (step + accidental)"),
+        SelectOption::new("ScaleDegree", "Scale-tone bass (degree + accidental)"),
         SelectOption::new("Absolute", "Absolute pitch"),
     ]
 }
@@ -71,49 +76,76 @@ fn commit_bass_kind(id: ChordLoopId, idx: usize, kind: String) {
     });
 }
 
+/// Bass value editor — the kind-specific surface beneath the bass
+/// kind dropdown. The `match` lives inside `rsx!` so the macro
+/// wraps it in an Effect (rsx Rule 14): when the bass kind changes
+/// via [`commit_bass_kind`] the right arm remounts surgically.
+/// `value_fn` reads inside each arm keep number/pitch-class
+/// displays reactive within a kind.
 #[component]
 fn BassValueEditor(id: ChordLoopId, idx: usize) -> NodeHandle {
-    let bass = fetch_event(id, idx).and_then(|ev| ev.bass);
-    match bass {
-        Some(BassSpec::Inversion(n)) => rsx! {
-            Select {
+    rsx! {
+        match current_bass_variant(id, idx) {
+            BassVariant::None => span {
+                style: bass_note_style(),
+                "Bass plays the chord's root."
+            },
+            BassVariant::Inversion => Select {
                 size: "sm",
-                value_fn: move || n.to_string(),
+                value_fn: move || current_inversion_str(id, idx),
                 data: inversion_options(),
                 onchange: move |v: String| commit_inversion(id, idx, v),
-            }
-        },
-        Some(BassSpec::Absolute(pc)) => rsx! {
-            Select {
+            },
+            BassVariant::Absolute => Select {
                 size: "sm",
-                value_fn: move || encode_pitch_class(pc),
+                value_fn: move || current_absolute_bass_str(id, idx),
                 data: pitch_class_options(),
                 onchange: move |v: String| commit_absolute_bass(id, idx, v),
-            }
-        },
-        Some(BassSpec::ChordDegree(_)) | Some(BassSpec::ScaleDegree(_)) => {
-            let style = format!(
-                "font-size: 11px; color: {text2}; line-height: 1.4;",
-                text2 = theme::TEXT2,
-            );
-            rsx! {
-                span { style: {style.clone()},
-                    "Detailed bass-degree editor lands in CL3."
-                }
-            }
-        }
-        None => {
-            let style = format!(
-                "font-size: 11px; color: {text2};",
-                text2 = theme::TEXT2,
-            );
-            rsx! {
-                span { style: {style.clone()},
-                    "Bass plays the chord's root."
-                }
-            }
+            },
+            BassVariant::ChordDegree => ChordDegreeEditor { id: id, idx: idx },
+            BassVariant::ScaleDegree => ScaleDegreeEditor { id: id, idx: idx },
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BassVariant {
+    None,
+    Inversion,
+    Absolute,
+    ChordDegree,
+    ScaleDegree,
+}
+
+fn current_bass_variant(id: ChordLoopId, idx: usize) -> BassVariant {
+    match fetch_event(id, idx).and_then(|ev| ev.bass) {
+        None => BassVariant::None,
+        Some(BassSpec::Inversion(_)) => BassVariant::Inversion,
+        Some(BassSpec::Absolute(_)) => BassVariant::Absolute,
+        Some(BassSpec::ChordDegree(_)) => BassVariant::ChordDegree,
+        Some(BassSpec::ScaleDegree(_)) => BassVariant::ScaleDegree,
+    }
+}
+
+fn current_inversion_str(id: ChordLoopId, idx: usize) -> String {
+    match fetch_event(id, idx).and_then(|ev| ev.bass) {
+        Some(BassSpec::Inversion(n)) => n.to_string(),
+        _ => "1".into(),
+    }
+}
+
+fn current_absolute_bass_str(id: ChordLoopId, idx: usize) -> String {
+    match fetch_event(id, idx).and_then(|ev| ev.bass) {
+        Some(BassSpec::Absolute(pc)) => encode_pitch_class(pc),
+        _ => "0".into(),
+    }
+}
+
+fn bass_note_style() -> String {
+    format!(
+        "font-size: 11px; color: {text2};",
+        text2 = theme::TEXT2,
+    )
 }
 
 fn inversion_options() -> Vec<SelectOption> {
@@ -166,6 +198,205 @@ fn commit_absolute_bass(id: ChordLoopId, idx: usize, encoded: String) {
     });
 }
 
+// ─── ChordDegree sub-editor ──────────────────────────────────────────────
+
+#[component]
+fn ChordDegreeEditor(id: ChordLoopId, idx: usize) -> NodeHandle {
+    rsx! {
+        div { style: "display: flex; flex-direction: column; gap: 4px;",
+            Select {
+                size: "sm",
+                value_fn: move || current_chord_step_str(id, idx),
+                data: chord_step_options(),
+                onchange: move |v: String| commit_chord_step(id, idx, v),
+            }
+            Select {
+                size: "sm",
+                value_fn: move || current_chord_degree_accidental_str(id, idx),
+                data: accidental_options(),
+                onchange: move |v: String| commit_chord_degree_accidental(id, idx, v),
+            }
+        }
+    }
+}
+
+fn current_chord_step_str(id: ChordLoopId, idx: usize) -> String {
+    let cd = fetch_chord_degree(id, idx).unwrap_or_else(|| ChordDegree::new(ChordStep::Root));
+    encode_chord_step(cd.step)
+}
+
+fn current_chord_degree_accidental_str(id: ChordLoopId, idx: usize) -> String {
+    let cd = fetch_chord_degree(id, idx).unwrap_or_else(|| ChordDegree::new(ChordStep::Root));
+    encode_accidental(cd.accidental)
+}
+
+fn fetch_chord_degree(id: ChordLoopId, idx: usize) -> Option<ChordDegree> {
+    fetch_event(id, idx).and_then(|ev| match ev.bass {
+        Some(BassSpec::ChordDegree(cd)) => Some(cd),
+        _ => None,
+    })
+}
+
+fn chord_step_options() -> Vec<SelectOption> {
+    use ChordStep::*;
+    let entries: &[(ChordStep, &str)] = &[
+        (Root, "Root"),
+        (Second, "2nd"),
+        (Third, "3rd"),
+        (Fourth, "4th"),
+        (Fifth, "5th"),
+        (Sixth, "6th"),
+        (Seventh, "7th"),
+        (Ninth, "9th"),
+        (Eleventh, "11th"),
+        (Thirteenth, "13th"),
+    ];
+    entries
+        .iter()
+        .map(|(step, label)| SelectOption::new(encode_chord_step(*step), *label))
+        .collect()
+}
+
+fn encode_chord_step(s: ChordStep) -> String {
+    format!("{s:?}")
+}
+
+fn decode_chord_step(s: &str) -> Option<ChordStep> {
+    use ChordStep::*;
+    Some(match s {
+        "Root" => Root,
+        "Second" => Second,
+        "Third" => Third,
+        "Fourth" => Fourth,
+        "Fifth" => Fifth,
+        "Sixth" => Sixth,
+        "Seventh" => Seventh,
+        "Ninth" => Ninth,
+        "Eleventh" => Eleventh,
+        "Thirteenth" => Thirteenth,
+        _ => return None,
+    })
+}
+
+fn commit_chord_step(id: ChordLoopId, idx: usize, encoded: String) {
+    let Some(new_step) = decode_chord_step(&encoded) else { return };
+    mutate_event(id, idx, move |ev| {
+        if let Some(BassSpec::ChordDegree(cd)) = &mut ev.bass {
+            cd.step = new_step;
+        }
+    });
+}
+
+fn commit_chord_degree_accidental(id: ChordLoopId, idx: usize, encoded: String) {
+    let Some(acc) = decode_accidental(&encoded) else { return };
+    mutate_event(id, idx, move |ev| {
+        if let Some(BassSpec::ChordDegree(cd)) = &mut ev.bass {
+            cd.accidental = acc;
+        }
+    });
+}
+
+// ─── ScaleDegree sub-editor ──────────────────────────────────────────────
+
+#[component]
+fn ScaleDegreeEditor(id: ChordLoopId, idx: usize) -> NodeHandle {
+    rsx! {
+        div { style: "display: flex; flex-direction: column; gap: 4px;",
+            Select {
+                size: "sm",
+                value_fn: move || current_scale_degree_num_str(id, idx),
+                data: scale_degree_options(),
+                onchange: move |v: String| commit_scale_degree_num(id, idx, v),
+            }
+            Select {
+                size: "sm",
+                value_fn: move || current_scale_degree_accidental_str(id, idx),
+                data: accidental_options(),
+                onchange: move |v: String| commit_scale_degree_accidental(id, idx, v),
+            }
+        }
+    }
+}
+
+fn current_scale_degree_num_str(id: ChordLoopId, idx: usize) -> String {
+    let sd = fetch_scale_degree(id, idx).unwrap_or_else(|| ScaleDegree::new(1));
+    sd.degree.to_string()
+}
+
+fn current_scale_degree_accidental_str(id: ChordLoopId, idx: usize) -> String {
+    let sd = fetch_scale_degree(id, idx).unwrap_or_else(|| ScaleDegree::new(1));
+    encode_accidental(sd.accidental)
+}
+
+fn fetch_scale_degree(id: ChordLoopId, idx: usize) -> Option<ScaleDegree> {
+    fetch_event(id, idx).and_then(|ev| match ev.bass {
+        Some(BassSpec::ScaleDegree(sd)) => Some(sd),
+        _ => None,
+    })
+}
+
+fn scale_degree_options() -> Vec<SelectOption> {
+    // 1..=7 covers diatonic and most non-pentatonic modes. Pentatonic
+    // (5 degrees) accepts 1..=5; the parser/realizer enforces bounds.
+    (1u8..=7)
+        .map(|n| SelectOption::new(n.to_string(), format!("Degree {n}")))
+        .collect()
+}
+
+fn commit_scale_degree_num(id: ChordLoopId, idx: usize, encoded: String) {
+    let Ok(n) = encoded.parse::<u8>() else { return };
+    if !(1..=12).contains(&n) {
+        return;
+    }
+    mutate_event(id, idx, move |ev| {
+        if let Some(BassSpec::ScaleDegree(sd)) = &mut ev.bass {
+            sd.degree = n;
+        }
+    });
+}
+
+fn commit_scale_degree_accidental(id: ChordLoopId, idx: usize, encoded: String) {
+    let Some(acc) = decode_accidental(&encoded) else { return };
+    mutate_event(id, idx, move |ev| {
+        if let Some(BassSpec::ScaleDegree(sd)) = &mut ev.bass {
+            sd.accidental = acc;
+        }
+    });
+}
+
+// ─── Shared accidental helpers ───────────────────────────────────────────
+
+fn accidental_options() -> Vec<SelectOption> {
+    use Accidental::*;
+    let entries: &[(Accidental, &str)] = &[
+        (Natural, "Natural"),
+        (Flat, "♭ Flat"),
+        (Sharp, "♯ Sharp"),
+        (DoubleFlat, "𝄫 Double Flat"),
+        (DoubleSharp, "𝄪 Double Sharp"),
+    ];
+    entries
+        .iter()
+        .map(|(a, label)| SelectOption::new(encode_accidental(*a), *label))
+        .collect()
+}
+
+fn encode_accidental(a: Accidental) -> String {
+    format!("{a:?}")
+}
+
+fn decode_accidental(s: &str) -> Option<Accidental> {
+    use Accidental::*;
+    Some(match s {
+        "Natural" => Natural,
+        "Flat" => Flat,
+        "Sharp" => Sharp,
+        "DoubleFlat" => DoubleFlat,
+        "DoubleSharp" => DoubleSharp,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +408,24 @@ mod tests {
         assert_eq!(decode_pitch_class("12"), None);
         assert_eq!(decode_pitch_class("-1"), None);
         assert_eq!(decode_pitch_class("abc"), None);
+    }
+
+    #[test]
+    fn chord_step_encode_decode_round_trips() {
+        use ChordStep::*;
+        for s in [
+            Root, Second, Third, Fourth, Fifth, Sixth, Seventh, Ninth, Eleventh,
+            Thirteenth,
+        ] {
+            assert_eq!(decode_chord_step(&encode_chord_step(s)), Some(s));
+        }
+    }
+
+    #[test]
+    fn accidental_encode_decode_round_trips() {
+        use Accidental::*;
+        for a in [Natural, Flat, Sharp, DoubleFlat, DoubleSharp] {
+            assert_eq!(decode_accidental(&encode_accidental(a)), Some(a));
+        }
     }
 }

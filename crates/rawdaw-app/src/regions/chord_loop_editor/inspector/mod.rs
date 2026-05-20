@@ -24,7 +24,7 @@
 
 use rinch::prelude::*;
 
-use rawdaw_model::chord::{Alteration, ChordEvent, ChordQuality, ChordSpec, Extension, RomanDegree};
+use rawdaw_model::chord::{ChordEvent, ChordQuality, ChordSpec, RomanDegree};
 use rawdaw_model::id::ChordLoopId;
 use rawdaw_model::scale::Scale;
 
@@ -35,18 +35,20 @@ mod annotation;
 mod bass;
 mod chips;
 mod roman_quality;
+mod shorthand_input;
 
 use annotation::{
     cadence_options, commit_cadence, commit_in_key, encode_cadence_opt, encode_scale,
     in_key_options, CommentInput,
 };
 use bass::BassEditor;
-use chips::{
-    encode_alteration_csv, encode_extension_csv, AlterationChips, ExtensionChips,
-};
+use chips::{AlterationChips, ExtensionChips};
 use roman_quality::{
-    commit_quality, commit_roman, encode_quality, encode_roman, quality_options, roman_options,
+    commit_absolute_root, commit_mode, commit_quality, commit_roman, current_absolute_root_str,
+    current_mode_str, encode_quality, encode_roman, mode_options, pitch_class_options,
+    quality_options, roman_options,
 };
+use shorthand_input::ShorthandInput;
 
 /// Inspector pane. Reads `AppState::focused_chord_event_idx`
 /// reactively; the outer match remounts on focus change so the
@@ -105,8 +107,6 @@ fn FocusedFields(id: ChordLoopId, idx: usize) -> NodeHandle {
 
     let chord_kind = ChordSpecKind::from(&event.chord);
     let is_functional = chord_kind.is_functional;
-    let current_exts = chord_kind.extensions();
-    let current_alts = chord_kind.alterations();
     let comment_seed = event
         .annotation
         .as_ref()
@@ -116,7 +116,22 @@ fn FocusedFields(id: ChordLoopId, idx: usize) -> NodeHandle {
     rsx! {
         div { style: "display: flex; flex-direction: column; gap: 14px;",
             div { style: {field_group_style()},
-                span { style: {field_label_style()}, "Roman degree" }
+                span { style: {field_label_style()}, "Shorthand" }
+                ShorthandInput { id: id, idx: idx }
+            }
+            div { style: {field_group_style()},
+                span { style: {field_label_style()}, "Mode" }
+                Select {
+                    size: "sm",
+                    value_fn: move || current_mode_str(id, idx),
+                    data: mode_options(),
+                    onchange: move |v: String| commit_mode(id, idx, v),
+                }
+            }
+            div { style: {field_group_style()},
+                span { style: {field_label_style()},
+                    if is_functional { "Roman degree" } else { "Root pitch" }
+                }
                 if is_functional {
                     Select {
                         size: "sm",
@@ -125,7 +140,12 @@ fn FocusedFields(id: ChordLoopId, idx: usize) -> NodeHandle {
                         onchange: move |v: String| commit_roman(id, idx, v),
                     }
                 } else {
-                    AbsoluteNotice { }
+                    Select {
+                        size: "sm",
+                        value_fn: move || current_absolute_root_str(id, idx),
+                        data: pitch_class_options(),
+                        onchange: move |v: String| commit_absolute_root(id, idx, v),
+                    }
                 }
             }
             div { style: {field_group_style()},
@@ -139,11 +159,11 @@ fn FocusedFields(id: ChordLoopId, idx: usize) -> NodeHandle {
             }
             div { style: {field_group_style()},
                 span { style: {field_label_style()}, "Extensions" }
-                ExtensionChips { id: id, idx: idx, current_csv: encode_extension_csv(&current_exts) }
+                ExtensionChips { id: id, idx: idx }
             }
             div { style: {field_group_style()},
                 span { style: {field_label_style()}, "Alterations" }
-                AlterationChips { id: id, idx: idx, current_csv: encode_alteration_csv(&current_alts) }
+                AlterationChips { id: id, idx: idx }
             }
             div { style: {field_group_style()},
                 span { style: {field_label_style()}, "Bass" }
@@ -173,19 +193,6 @@ fn FocusedFields(id: ChordLoopId, idx: usize) -> NodeHandle {
                 span { style: {field_label_style()}, "Comment" }
                 CommentInput { id: id, idx: idx, seed: comment_seed }
             }
-        }
-    }
-}
-
-#[component]
-fn AbsoluteNotice() -> NodeHandle {
-    let style = format!(
-        "font-size: 11px; color: {text2}; line-height: 1.4;",
-        text2 = theme::TEXT2,
-    );
-    rsx! {
-        span { style: {style.clone()},
-            "Absolute chord. Mode toggle + shorthand parser land in CL3."
         }
     }
 }
@@ -273,8 +280,6 @@ struct ChordSpecKind {
     roman: Option<RomanDegree>,
     quality: ChordQuality,
     in_key: Option<Scale>,
-    extensions: Vec<Extension>,
-    alterations: Vec<Alteration>,
 }
 
 impl ChordSpecKind {
@@ -285,16 +290,12 @@ impl ChordSpecKind {
                 roman: Some(*roman),
                 quality: suffix.quality.clone(),
                 in_key: in_key.clone(),
-                extensions: suffix.extensions.clone(),
-                alterations: suffix.alterations.clone(),
             },
             ChordSpec::Absolute { suffix, .. } => Self {
                 is_functional: false,
                 roman: None,
                 quality: suffix.quality.clone(),
                 in_key: None,
-                extensions: suffix.extensions.clone(),
-                alterations: suffix.alterations.clone(),
             },
         }
     }
@@ -312,13 +313,5 @@ impl ChordSpecKind {
             None => "none".into(),
             Some(s) => encode_scale(s),
         }
-    }
-
-    fn extensions(&self) -> Vec<Extension> {
-        self.extensions.clone()
-    }
-
-    fn alterations(&self) -> Vec<Alteration> {
-        self.alterations.clone()
     }
 }
