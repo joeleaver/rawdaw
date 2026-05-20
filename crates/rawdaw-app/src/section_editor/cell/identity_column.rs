@@ -16,7 +16,7 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{ActivationState, TrackKind};
+use crate::overlay::{ActivationState, TrackKindTag as TrackKind};
 use crate::parts::{rgba, Icon, StatePill};
 use crate::theme;
 

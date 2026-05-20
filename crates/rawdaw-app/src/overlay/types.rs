@@ -198,3 +198,27 @@ pub struct CellOverlay {
     pub realization: Realization,
     pub pinned: u32,
 }
+
+/// UI tag for which kind of track a row represents. Distinct from
+/// `rawdaw_model::track::TrackKind` (which carries Role / DrumKitId
+/// payloads) — this is the flat discriminator the section editor and
+/// inspector branch on for layout decisions (drum rows skip the
+/// realization column, etc.).
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum TrackKindTag {
+    #[default]
+    Pitched,
+    Drum,
+}
+
+impl TrackKindTag {
+    /// Build from the model's typed `TrackKind`. Drops the payload
+    /// (Role / DrumKitId) — the section-editor view doesn't need it
+    /// at the tag level.
+    pub fn from_model(kind: &rawdaw_model::track::TrackKind) -> Self {
+        match kind {
+            rawdaw_model::track::TrackKind::Pitched { .. } => Self::Pitched,
+            rawdaw_model::track::TrackKind::Drum { .. } => Self::Drum,
+        }
+    }
+}

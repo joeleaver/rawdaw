@@ -20,7 +20,9 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{self, Humanization, OctaveSpec, Realization, TrackKind, Voicing};
+use crate::overlay::{
+    self as fixture, Humanization, OctaveSpec, Realization, TrackKindTag as TrackKind, Voicing,
+};
 use crate::parts::{Icon, InheritanceSource, InheritanceTag};
 use crate::theme;
 

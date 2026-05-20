@@ -27,9 +27,8 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{
-    self, Activation, ActivationOverride, ActivationState, Section, TrackKind,
-};
+use crate::fixture::{self, Activation, ActivationOverride, Section};
+use crate::overlay::{ActivationState, TrackKindTag};
 use crate::state::{AppState, EditorMode};
 use crate::theme;
 
@@ -94,7 +93,7 @@ fn variant_from_store() -> String {
 pub struct CellSlot {
     pub track_id: String,
     pub track_name: String,
-    pub track_kind: TrackKind,
+    pub track_kind: TrackKindTag,
     pub track_role: String,
     /// Section duration in bars — copied onto each slot because all
     /// cells in a render share the same section, and the schedule
@@ -168,7 +167,10 @@ fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
             CellSlot {
                 track_id: track.id.clone(),
                 track_name: track.name.clone(),
-                track_kind: track.kind,
+                track_kind: match track.kind {
+                    fixture::TrackKind::Pitched => TrackKindTag::Pitched,
+                    fixture::TrackKind::Drum => TrackKindTag::Drum,
+                },
                 track_role: track.role.clone(),
                 total_bars,
                 variant,

@@ -417,9 +417,9 @@ fn arrangement_total_bars(project: &ModelProject) -> u32 {
 #[cfg(test)]
 mod tests {
     use crate::fixture::{
-        base_activation, role_defaults, round1, variant_override, ActivationOverride,
-        ActivationState, OctaveSpec, Section, Voicing,
+        base_activation, round1, variant_override, ActivationOverride, ActivationState, Section,
     };
+    use crate::overlay::{role_defaults, OctaveSpec, Voicing};
 
     fn section(name: &str) -> &'static Section {
         round1()

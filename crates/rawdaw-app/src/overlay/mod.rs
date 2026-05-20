@@ -27,7 +27,7 @@ pub mod types;
 
 pub use types::{
     role_defaults, ActivationState, CellOverlay, Humanization, OctaveSpec, Realization,
-    ScheduleEntry, Voicing,
+    ScheduleEntry, TrackKindTag, Voicing,
 };
 
 // `RoleDefaults` (the struct returned by `role_defaults`) is intentionally

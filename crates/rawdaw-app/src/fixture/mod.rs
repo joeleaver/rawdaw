@@ -76,9 +76,14 @@ pub struct Pattern {
 // the fixture is dismantled phase by phase. New code should import from
 // `crate::overlay` directly.
 
-pub use crate::overlay::{
-    role_defaults, ActivationState, Humanization, OctaveSpec, Realization, ScheduleEntry, Voicing,
-};
+pub use crate::overlay::ActivationState;
+pub use crate::overlay::Realization;
+pub use crate::overlay::ScheduleEntry;
+// The remaining decoration types (Voicing / OctaveSpec / Humanization /
+// role_defaults) are imported directly from `crate::overlay` by the
+// section-editor cell modules now that the type-relocation lands. The
+// re-exports above stay only because `fixture::data` still uses them
+// internally; subsequent C1c slices fold them away.
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ChordEvent {

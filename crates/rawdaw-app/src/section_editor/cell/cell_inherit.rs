@@ -4,7 +4,7 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::TrackKind;
+use crate::overlay::TrackKindTag as TrackKind;
 use crate::parts::Icon;
 use crate::theme;
 

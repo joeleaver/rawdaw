@@ -15,7 +15,7 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{ActivationState, Realization, ScheduleEntry, TrackKind};
+use crate::overlay::{ActivationState, Realization, ScheduleEntry, TrackKindTag as TrackKind};
 use crate::parts::StripePaper;
 use crate::section_editor::cell::identity_column::IdentityColumn;
 use crate::section_editor::cell::realization_column::RealizationColumn;
