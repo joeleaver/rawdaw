@@ -40,8 +40,25 @@ smaller and build on C1. C5 closes out.
 
 ## Status
 
-- C0 — this document (when landed).
-- C1 — not started.
+- C0 ✅ — `6c94a05` (this document on `main`).
+- C1 ✅ — landed across 8 commits:
+  - C1a `e391665` decoration types extracted into `crate::overlay`.
+  - C1b `7b3822b` `initial_project::build_initial()` factory + AppState
+    `Signal<Rc<Project>>` + `Signal<Rc<ProjectOverlay>>` seeded at boot.
+  - C1c.1 `df99612` library + topbar migrated; `crate::chord_display`
+    + `crate::project_display` helpers added; `overlay.project_name`
+    added.
+  - C1c.2 `5d413a6` arrangement.rs migrated (largest single region).
+  - C1c.3 `a0f5c65` inspector + activation_table migrated.
+  - C1c.4 `ce86ed1` `TrackKindTag` extracted into overlay.
+  - C1c.5 `6e5ba45` section_editor migrated end-to-end (resolve_one
+    reads model `SectionVariantOverride` directly; ResolvedVariant
+    inlines realization + schedule).
+  - C1.cleanup `3c2c8ca` `crate::fixture` deleted. `mod fixture;` gone
+    from main.rs; round-1 invariants preserved in `initial_project/
+    tests.rs`. **Visible change**: top-bar tempo now reads `120.00 BPM`
+    instead of the fixture mirror's hardcoded `96 BPM` — model and
+    audio engine always played at 120; the fixture was lying.
 - C2 — not started.
 - C3 — not started.
 - C4 — not started.
