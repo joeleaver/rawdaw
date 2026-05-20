@@ -50,8 +50,44 @@ and points at the next Tier-1 bite.
 
 ## Status
 
-- CL0 ✅ — this document.
-- CL1 — not started.
+- CL0 ✅ — this document (`7cbee35`).
+- CL1 ✅ — chord-loop library CRUD.
+  - **New module `crate::chord_loop_actions`** (353 lines + tests):
+    `create_chord_loop`, `rename_chord_loop`, `duplicate_chord_loop`,
+    `delete_chord_loop` (refuses-with-reference-list when sections
+    reference the loop in base or any variant override),
+    `set_chord_loop_color` (writes overlay; doesn't drive audio).
+    `unique_loop_name` helper handles `"untitled" → "untitled-2"`
+    suffix bumping. 11 unit tests pin the contracts.
+  - **`AppState::select_chord_loop`** added as the third selection
+    axis. The mutex extends: `set_selected_idx(Some)` /
+    `select_track(Some)` clear chord-loop selection;
+    `select_chord_loop(Some)` clears both. MIDI sticky-target is
+    untouched (per [[K-series]]). 5 new selection-mutex tests.
+  - **`regions/library.rs` split** into `regions/library/`:
+    `mod.rs` (312 lines — Library shell + SearchBar + Patterns /
+    Sections groups + shared chrome) and `chord_loops.rs`
+    (455 lines — interactive Chord Loops group). Forced by the CL1
+    additions pushing the original file over the 700 cap.
+  - **`ChordLoopRow`** carries per-row state (editing toggle,
+    name input buffer, menu open) via `#[component]` so each row's
+    Signals survive reorder/refresh under `key: id.get()`
+    (rinch Rule 9). Inline rename mirrors the C4 `NameControl`
+    pattern (untracked-Effect peek). The `⋯` action menu surfaces
+    Rename / Duplicate / Delete plus 10 palette colors + Default.
+    Selection writes [`AppState::selected_chord_loop`]; the row's
+    `background` + `border-left` reactively highlight when
+    selected (CL2's editor will key off the same signal).
+  - **Delete refusal** uses a model dry-run before the edit-pump
+    commit so the user gets a useful "referenced by: verse, chorus"
+    message; never silently corrupts the project (per CL1 contract).
+    UI surface is `eprintln!` until the toast/alert primitive ships.
+  - **`+ new chord loop`** click creates an empty loop via the
+    edit pump, then selects the new id immediately.
+  - 395 workspace tests (was 381; +16 net: +11 chord_loop_actions,
+    +5 selection-mutex). Clippy clean across default /
+    `--no-default-features` / `--features cpal-driver`; release
+    build clean.
 - CL2 — not started.
 - CL3 — not started.
 - CL4 — not started.

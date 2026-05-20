@@ -30,6 +30,7 @@
 mod app;
 mod audio;
 mod chord_display;
+mod chord_loop_actions;
 mod initial_project;
 mod midi_input;
 mod overlay;

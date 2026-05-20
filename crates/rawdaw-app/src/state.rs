@@ -24,6 +24,7 @@ use std::rc::Rc;
 
 use rinch::prelude::*;
 
+use rawdaw_model::id::ChordLoopId;
 use rawdaw_model::pitch::PitchClass;
 use rawdaw_model::project::Project;
 use rawdaw_model::scale::Scale;
@@ -62,12 +63,14 @@ pub enum EditorMode {
 ///
 /// ## Selection axes
 ///
-/// `selected_idx` (arrangement-block) and `selected_track` (project-
-/// track) are two distinct selection axes that the inspector branches
-/// on. They're mutually exclusive at the UI level — choosing one
-/// clears the other — so the inspector always has a single thing to
-/// render. `set_selected_idx` and `select_track` enforce this so
-/// callers don't have to coordinate clears at each click-handler site.
+/// `selected_idx` (arrangement-block), `selected_track` (project-
+/// track), and `selected_chord_loop` (library chord-loop) are three
+/// distinct selection axes that the inspector / editor surfaces
+/// branch on. They're mutually exclusive at the UI level — choosing
+/// one clears the others — so the inspector always has a single
+/// thing to render. `set_selected_idx`, `select_track`, and
+/// `select_chord_loop` enforce this so callers don't have to
+/// coordinate clears at each click-handler site.
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub editor_mode: Signal<EditorMode>,
@@ -82,6 +85,12 @@ pub struct AppState {
     /// `selected_idx`). Drives the synth-editor branch of the
     /// Inspector (U4+).
     pub selected_track: Signal<Option<usize>>,
+    /// Currently selected chord loop in the library, by id. `None` by
+    /// default; clicking a chord-loop row in the Library panel sets it
+    /// (and clears `selected_idx` + `selected_track` per the selection
+    /// mutex). Drives the chord-loop editor surface introduced in CL2
+    /// of `docs/chord-loop-editing-plan.md`.
+    pub selected_chord_loop: Signal<Option<ChordLoopId>>,
     /// MIDI input routing target — *sticky* version of
     /// `selected_track`. Updates whenever the user picks a track
     /// (`select_track(Some(_))`); does NOT clear when a section
@@ -137,6 +146,7 @@ impl AppState {
             editor_mode: Signal::new(EditorMode::Arrangement),
             selected_idx: Signal::new(Some(1usize)),
             selected_track: Signal::new(None),
+            selected_chord_loop: Signal::new(None),
             // The MIDI target seed is filled in by an Effect at boot
             // that reads the first Pitched track's index from
             // `AudioResources`. Starting as `None` keeps the contract
@@ -184,19 +194,20 @@ impl AppState {
 
     /// Set the currently-selected SectionRef index. `None` clears the
     /// selection (inspector goes to its empty state). Selecting a
-    /// section-block clears any track selection so the inspector
-    /// branches deterministically on a single axis.
+    /// section-block clears any track / chord-loop selection so the
+    /// inspector branches deterministically on a single axis.
     pub fn set_selected_idx(&self, idx: Option<usize>) {
         if idx.is_some() {
             self.selected_track.set(None);
+            self.selected_chord_loop.set(None);
         }
         self.selected_idx.set(idx);
     }
 
     /// Set the currently-selected project-track index. `None` clears
-    /// the selection. Selecting a track clears any section-block
-    /// selection so the inspector branches deterministically on a
-    /// single axis (see [`Self::set_selected_idx`] for the mirror).
+    /// the selection. Selecting a track clears any section-block /
+    /// chord-loop selection so the inspector branches deterministically
+    /// on a single axis (see [`Self::set_selected_idx`] for the mirror).
     ///
     /// Also updates `midi_target_track` when `idx` is `Some(_)` so
     /// MIDI input follows the track the user is actively editing.
@@ -208,11 +219,27 @@ impl AppState {
     pub fn select_track(&self, idx: Option<usize>) {
         if idx.is_some() {
             self.selected_idx.set(None);
+            self.selected_chord_loop.set(None);
         }
         self.selected_track.set(idx);
         if let Some(track_idx) = idx {
             self.midi_target_track.set(Some(track_idx));
         }
+    }
+
+    /// Set the currently-selected library chord-loop. `None` clears
+    /// the selection. Selecting a chord loop clears any section /
+    /// track selection so the inspector branches deterministically
+    /// on a single axis (see [`Self::set_selected_idx`] +
+    /// [`Self::select_track`] for the mirrors). MIDI routing
+    /// (`midi_target_track`) is untouched — chord-loop selection is
+    /// not a synth-target switch.
+    pub fn select_chord_loop(&self, id: Option<ChordLoopId>) {
+        if id.is_some() {
+            self.selected_idx.set(None);
+            self.selected_track.set(None);
+        }
+        self.selected_chord_loop.set(id);
     }
 
     /// Apply a structural edit to the live project and mirror the
@@ -337,5 +364,64 @@ mod tests {
             "midi target must survive an explicit track clear",
         );
         assert_eq!(app.selected_track.get(), None);
+    }
+
+    #[test]
+    fn select_chord_loop_clears_section_and_track_selection() {
+        // CL1 selection mutex: picking a chord loop clears both
+        // other axes so the inspector branches deterministically.
+        let app = AppState::new();
+        app.selected_idx.set(Some(2));
+        app.selected_track.set(Some(1));
+
+        let id = ChordLoopId::new(7);
+        app.select_chord_loop(Some(id));
+
+        assert_eq!(app.selected_chord_loop.get(), Some(id));
+        assert_eq!(app.selected_idx.get(), None);
+        assert_eq!(app.selected_track.get(), None);
+    }
+
+    #[test]
+    fn other_axes_clear_chord_loop_selection() {
+        // Symmetric: setting section or track to Some(_) clears the
+        // chord-loop selection, completing the three-way mutex.
+        let app = AppState::new();
+        app.select_chord_loop(Some(ChordLoopId::new(3)));
+
+        app.set_selected_idx(Some(0));
+        assert_eq!(app.selected_chord_loop.get(), None);
+
+        app.select_chord_loop(Some(ChordLoopId::new(3)));
+        app.select_track(Some(2));
+        assert_eq!(app.selected_chord_loop.get(), None);
+    }
+
+    #[test]
+    fn select_chord_loop_does_not_touch_midi_target() {
+        // Chord-loop selection isn't a synth-target switch, so the
+        // K3 sticky MIDI target is untouched.
+        let app = AppState::new();
+        app.select_track(Some(2));
+        assert_eq!(app.midi_target_track.get(), Some(2));
+
+        app.select_chord_loop(Some(ChordLoopId::new(1)));
+        assert_eq!(
+            app.midi_target_track.get(),
+            Some(2),
+            "chord-loop selection must not redirect MIDI input",
+        );
+    }
+
+    #[test]
+    fn select_chord_loop_none_does_not_touch_other_axes() {
+        // Clearing chord-loop selection is a pure clear; it must not
+        // disturb the section or track selection.
+        let app = AppState::new();
+        app.set_selected_idx(Some(4));
+
+        app.select_chord_loop(None);
+        assert_eq!(app.selected_idx.get(), Some(4));
+        assert_eq!(app.selected_chord_loop.get(), None);
     }
 }

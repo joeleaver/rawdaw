@@ -13,13 +13,29 @@
 //! [`AppState::overlay`]; pre-build the per-row data into owned `Vec`s
 //! per group so the `for` source closures stay `Fn` and the model
 //! borrow doesn't outlive the rsx invocation.
+//!
+//! ## File layout (post-CL1)
+//!
+//! - `mod.rs` (this file): Library shell + SearchBar + Patterns +
+//!   Sections groups (both still read-only) + shared row / header /
+//!   `+ new …` primitives.
+//! - `chord_loops.rs`: the CL1 interactive Chord Loops group —
+//!   create / rename / delete / duplicate / pick color, plus
+//!   selection writes into [`AppState::selected_chord_loop`]. CL2's
+//!   chord-loop editor reads that signal and renders the open loop.
+//!
+//! Patterns + Sections grow the same kind of CRUD when their
+//! Tier-1 plans land; mirror this module's structure (own sub-file).
 
 use rinch::prelude::*;
 
-use crate::chord_display::roman_label;
 use crate::parts::{rgba, Icon};
 use crate::state::AppState;
 use crate::theme;
+
+mod chord_loops;
+
+use chord_loops::ChordLoopsGroup;
 
 #[component]
 pub fn Library() -> NodeHandle {
@@ -110,7 +126,7 @@ fn PatternsGroup() -> NodeHandle {
                         highlighted: false,
                     }
                 }
-                NewRow { label: "new pattern" }
+                NewRow { label: "new pattern", onclick: move || {} }
             }
         }
     }
@@ -137,76 +153,6 @@ fn build_pattern_rows() -> Vec<LibraryRowData> {
 }
 
 #[component]
-fn ChordLoopsGroup() -> NodeHandle {
-    let rows = build_chord_loop_rows();
-    let count = rows.len() as u32;
-    rsx! {
-        div { style: {group_outer_style()},
-            GroupHeader { title: "Chord Loops", count: count, glyph: "chord" }
-            div { style: "padding-bottom: 4px;",
-                for row in rows.clone() {
-                    LibraryRow {
-                        key: row.key,
-                        color: row.color,
-                        name: row.name,
-                        meta: row.meta,
-                        highlighted: false,
-                    }
-                }
-                NewRow { label: "new chord loop" }
-            }
-        }
-    }
-}
-
-fn build_chord_loop_rows() -> Vec<LibraryRowData> {
-    use rawdaw_model::chord::ChordSpec;
-
-    let app = use_store::<AppState>();
-    let project = app.project.get();
-    let overlay = app.overlay.get();
-    let beats_per_bar = project.tempo_map.beats_per_bar_at(rawdaw_model::time::MusicalTime::ZERO);
-    project
-        .chord_loops
-        .values()
-        .map(|cl| {
-            let romans: Vec<String> = cl
-                .events
-                .iter()
-                .map(|e| match &e.chord {
-                    ChordSpec::Functional { roman, suffix, .. } => {
-                        roman_label(*roman, &suffix.quality)
-                    }
-                    ChordSpec::Absolute { .. } => String::new(),
-                })
-                .collect();
-            LibraryRowData {
-                key: cl.name.clone(),
-                color: overlay
-                    .chord_loop_color
-                    .get(&cl.id)
-                    .cloned()
-                    .unwrap_or_else(|| theme::TEXT2.to_string()),
-                name: cl.name.clone(),
-                meta: format!(
-                    "{} bars · {}",
-                    duration_in_bars(cl.length, beats_per_bar),
-                    romans.join(" "),
-                ),
-            }
-        })
-        .collect()
-}
-
-/// Round-1 chord loops are stored as `Duration::bars(n, beats_per_bar)`,
-/// which encodes the length in PPQ ticks. Reconstruct the bar count by
-/// dividing the tick count by `PPQ * beats_per_bar`.
-fn duration_in_bars(d: rawdaw_model::time::Duration, beats_per_bar: u32) -> u32 {
-    let ticks_per_bar = rawdaw_model::time::PPQ * beats_per_bar.max(1) as i64;
-    (d.as_ticks() / ticks_per_bar).max(0) as u32
-}
-
-#[component]
 fn SectionsGroup() -> NodeHandle {
     let rows = build_section_rows();
     let count = rows.len() as u32;
@@ -223,7 +169,7 @@ fn SectionsGroup() -> NodeHandle {
                         highlighted: false,
                     }
                 }
-                NewRow { label: "new section" }
+                NewRow { label: "new section", onclick: move || {} }
             }
         }
     }
@@ -258,14 +204,16 @@ fn build_section_rows() -> Vec<LibraryRowData> {
         .collect()
 }
 
-fn group_outer_style() -> String {
+/// Shared outer chrome for every Library group. `pub(super)` so the
+/// `chord_loops` submodule can reuse it.
+pub(super) fn group_outer_style() -> String {
     format!("border-bottom: 1px solid {line};", line = theme::LINE)
 }
 
 // ─── Header + Row + New-row helpers ───────────────────────────────────────
 
 #[component]
-fn GroupHeader(title: String, count: u32, glyph: String) -> NodeHandle {
+pub(super) fn GroupHeader(title: String, count: u32, glyph: String) -> NodeHandle {
     let header_style = "display: flex; align-items: center; gap: 6px; \
          width: 100%; padding: 8px 10px; \
          background: transparent; border: 0; \
@@ -343,7 +291,7 @@ fn LibraryRow(
 }
 
 #[component]
-fn NewRow(label: String) -> NodeHandle {
+pub(super) fn NewRow(label: String, onclick: Callback) -> NodeHandle {
     let btn_style = "display: flex; align-items: center; gap: 6px; \
          margin: 4px 10px 8px; padding: 4px 6px; \
          background: transparent; border: 0; \
@@ -356,6 +304,7 @@ fn NewRow(label: String) -> NodeHandle {
         button {
             r#type: "button",
             style: {btn_style.to_string()},
+            onclick: move || onclick.invoke(),
             Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
             span { {label.clone()} }
         }
