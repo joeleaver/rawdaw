@@ -30,12 +30,10 @@
 //!   sentinel `__silent__` (sub-range silence), otherwise
 //!   `Some(variant_id.as_str().to_string())`.
 
-use std::collections::BTreeMap;
-
 use rawdaw_model::activation::ActivationEntry as ModelActivation;
 use rawdaw_model::chord::ChordSpec;
 use rawdaw_model::fixtures::{build_round1_project, Round1Keys};
-use rawdaw_model::id::{ChordLoopId, PatternId, SectionId, TrackId};
+use rawdaw_model::id::TrackId;
 use rawdaw_model::pattern::{Pattern as ModelPattern, PatternBody};
 use rawdaw_model::project::Project as ModelProject;
 use rawdaw_model::scale::Scale;
@@ -50,13 +48,14 @@ use super::{
     OctaveSpec, Pattern, Project, Realization, Round1, ScheduleEntry, Section, SectionRef, Track,
     TrackKind, Variant, VariantOverride, Voicing,
 };
+use crate::overlay::{CellOverlay, ProjectOverlay};
 use crate::theme;
 
 // ─── Entry point ──────────────────────────────────────────────────────────
 
 pub(super) fn build_round1() -> Round1 {
     let (project, keys) = build_round1_project();
-    let overlay = Overlay::build(&keys);
+    let overlay = build_round1_overlay(&keys);
     Round1 {
         project: build_project_meta(),
         tracks: build_tracks(&project),
@@ -68,131 +67,95 @@ pub(super) fn build_round1() -> Round1 {
     }
 }
 
-// ─── Overlay ──────────────────────────────────────────────────────────────
+// ─── Overlay (round-1 build helper) ───────────────────────────────────────
 //
-// UI-only decorations the model doesn't carry. Keyed by model ids and
-// (for cell realizations) section / variant / track triples so the
-// adapter can look them up while walking the model.
+// UI-only decorations the model doesn't carry. The struct itself lives in
+// `crate::overlay::ProjectOverlay`; this file populates a round-1 instance
+// of it. Subsequent commits will move this build helper to
+// `crate::initial_project::overlay` once the C1 read-site migration is done.
 
-struct Overlay {
-    pattern_color: BTreeMap<PatternId, &'static str>,
-    pattern_meta: BTreeMap<PatternId, &'static str>,
-    section_color: BTreeMap<SectionId, &'static str>,
-    chord_loop_color: BTreeMap<ChordLoopId, &'static str>,
-    /// `(section, variant-name, track)` → realization decorations plus
-    /// pinned-note count. The literal `"base"` keys the section's base
-    /// activation; any other string keys a specific variant override.
-    cell: BTreeMap<(SectionId, &'static str, TrackId), CellOverlay>,
-}
+fn build_round1_overlay(k: &Round1Keys) -> ProjectOverlay {
+    let mut o = ProjectOverlay::empty();
 
-#[derive(Clone, Copy)]
-struct CellOverlay {
-    realization: Realization,
-    pinned: u32,
-}
+    o.pattern_color.insert(k.patterns.bass,  theme::PAL_TEAL.to_string());
+    o.pattern_color.insert(k.patterns.lead,  theme::PAL_PLUM.to_string());
+    o.pattern_color.insert(k.patterns.drums, theme::PAL_SAGE.to_string());
+    o.pattern_color.insert(k.patterns.pad,   theme::PAL_SLATE.to_string());
 
-impl Overlay {
-    fn build(k: &Round1Keys) -> Self {
-        let mut o = Overlay {
-            pattern_color: BTreeMap::new(),
-            pattern_meta: BTreeMap::new(),
-            section_color: BTreeMap::new(),
-            chord_loop_color: BTreeMap::new(),
-            cell: BTreeMap::new(),
-        };
+    o.pattern_meta.insert(k.patterns.bass,  "Pitched · 2 variants".to_string());
+    o.pattern_meta.insert(k.patterns.lead,  "Pitched · 1 variant".to_string());
+    o.pattern_meta.insert(k.patterns.drums, "Drum · 2 variants".to_string());
+    o.pattern_meta.insert(k.patterns.pad,   "Pitched · 1 variant".to_string());
 
-        o.pattern_color.insert(k.patterns.bass,  theme::PAL_TEAL);
-        o.pattern_color.insert(k.patterns.lead,  theme::PAL_PLUM);
-        o.pattern_color.insert(k.patterns.drums, theme::PAL_SAGE);
-        o.pattern_color.insert(k.patterns.pad,   theme::PAL_SLATE);
+    o.section_color.insert(k.sections.intro,  theme::PAL_ROSE.to_string());
+    o.section_color.insert(k.sections.verse,  theme::PAL_BLUE.to_string());
+    o.section_color.insert(k.sections.chorus, theme::PAL_SAND.to_string());
 
-        o.pattern_meta.insert(k.patterns.bass,  "Pitched · 2 variants");
-        o.pattern_meta.insert(k.patterns.lead,  "Pitched · 1 variant");
-        o.pattern_meta.insert(k.patterns.drums, "Drum · 2 variants");
-        o.pattern_meta.insert(k.patterns.pad,   "Pitched · 1 variant");
+    o.chord_loop_color.insert(k.chord_loops.verse,  theme::PAL_TERRA.to_string());
+    o.chord_loop_color.insert(k.chord_loops.chorus, theme::PAL_OLIVE.to_string());
 
-        o.section_color.insert(k.sections.intro,  theme::PAL_ROSE);
-        o.section_color.insert(k.sections.verse,  theme::PAL_BLUE);
-        o.section_color.insert(k.sections.chorus, theme::PAL_SAND);
+    // Round-2 cell realization decorations. Mirrors the mockup data in
+    // `mockups/round-2/components/data.js`. The model's
+    // `RealizationParams` only carries voicing + humanization scalars;
+    // octave is per-event, and the UI's humanization semantics
+    // (fractional velocity, ticks, swing, seed) differ from
+    // `RealizationParams`'s u8 jitter fields. Until the model grows a
+    // richer realization vocabulary, the per-cell display values live
+    // here.
+    let verse = k.sections.verse;
+    let chorus = k.sections.chorus;
+    let bass = k.tracks.bass;
+    let lead = k.tracks.lead;
+    let drums = k.tracks.drums;
+    let pad = k.tracks.pad;
 
-        o.chord_loop_color.insert(k.chord_loops.verse,  theme::PAL_TERRA);
-        o.chord_loop_color.insert(k.chord_loops.chorus, theme::PAL_OLIVE);
+    o.cell.insert((verse, "base".into(), bass), CellOverlay {
+        realization: pitched(Voicing::Power, OctaveSpec::Nearest,
+            Humanization { velocity: 0.04, timing: 4, swing: 0.0, seed: 1742 }),
+        pinned: 0,
+    });
+    o.cell.insert((verse, "base".into(), lead), CellOverlay {
+        realization: pitched(Voicing::TriadClose, OctaveSpec::Anchored(4),
+            Humanization { velocity: 0.06, timing: 5, swing: 0.0, seed: 913 }),
+        pinned: 2,
+    });
+    o.cell.insert((verse, "base".into(), drums), CellOverlay {
+        realization: drum(Humanization { velocity: 0.10, timing: 7, swing: 0.05, seed: 8821 }),
+        pinned: 0,
+    });
 
-        // Round-2 cell realization decorations. Mirrors the mockup data
-        // in `mockups/round-2/components/data.js`. The model's
-        // `RealizationParams` only carries voicing + humanization
-        // scalars; octave is per-event, and the UI's humanization
-        // semantics (fractional velocity, ticks, swing, seed) differ
-        // from `RealizationParams`'s u8 jitter fields. Until the model
-        // grows a richer realization vocabulary, the per-cell display
-        // values live here.
-        let verse = k.sections.verse;
-        let chorus = k.sections.chorus;
-        let bass = k.tracks.bass;
-        let lead = k.tracks.lead;
-        let drums = k.tracks.drums;
-        let pad = k.tracks.pad;
+    // Verse-stripped: bass is fully silenced (no realization needed);
+    // lead is replaced with anchored(4) but lower humanization.
+    o.cell.insert((verse, "stripped".into(), lead), CellOverlay {
+        realization: pitched(Voicing::TriadClose, OctaveSpec::Anchored(4),
+            Humanization { velocity: 0.05, timing: 4, swing: 0.0, seed: 913 }),
+        pinned: 2,
+    });
 
-        o.cell.insert((verse, "base", bass), CellOverlay {
-            realization: pitched(Voicing::Power, OctaveSpec::Nearest,
-                Humanization { velocity: 0.04, timing: 4, swing: 0.0, seed: 1742 }),
-            pinned: 0,
-        });
-        o.cell.insert((verse, "base", lead), CellOverlay {
-            realization: pitched(Voicing::TriadClose, OctaveSpec::Anchored(4),
-                Humanization { velocity: 0.06, timing: 5, swing: 0.0, seed: 913 }),
-            pinned: 2,
-        });
-        o.cell.insert((verse, "base", drums), CellOverlay {
-            realization: drum(Humanization { velocity: 0.10, timing: 7, swing: 0.05, seed: 8821 }),
-            pinned: 0,
-        });
+    // Chorus base — all four tracks active.
+    o.cell.insert((chorus, "base".into(), bass), CellOverlay {
+        realization: pitched(Voicing::Power, OctaveSpec::Nearest,
+            Humanization { velocity: 0.04, timing: 4, swing: 0.0, seed: 1742 }),
+        pinned: 0,
+    });
+    o.cell.insert((chorus, "base".into(), lead), CellOverlay {
+        realization: pitched(Voicing::TriadClose, OctaveSpec::UpFromPrev,
+            Humanization { velocity: 0.07, timing: 5, swing: 0.0, seed: 913 }),
+        pinned: 3,
+    });
+    o.cell.insert((chorus, "base".into(), drums), CellOverlay {
+        realization: drum(Humanization { velocity: 0.12, timing: 8, swing: 0.05, seed: 8821 }),
+        pinned: 0,
+    });
+    o.cell.insert((chorus, "base".into(), pad), CellOverlay {
+        // drop2 overrides role:pad's default triad-open; Nearest
+        // overrides role:pad's default Anchored(3).
+        realization: pitched(Voicing::Drop2, OctaveSpec::Nearest,
+            Humanization { velocity: 0.02, timing: 2, swing: 0.0, seed: 3104 }),
+        pinned: 0,
+    });
 
-        // Verse-stripped: bass is fully silenced (no realization needed);
-        // lead is replaced with anchored(4) but lower humanization.
-        o.cell.insert((verse, "stripped", lead), CellOverlay {
-            realization: pitched(Voicing::TriadClose, OctaveSpec::Anchored(4),
-                Humanization { velocity: 0.05, timing: 4, swing: 0.0, seed: 913 }),
-            pinned: 2,
-        });
-
-        // Chorus base — all four tracks active.
-        o.cell.insert((chorus, "base", bass), CellOverlay {
-            realization: pitched(Voicing::Power, OctaveSpec::Nearest,
-                Humanization { velocity: 0.04, timing: 4, swing: 0.0, seed: 1742 }),
-            pinned: 0,
-        });
-        o.cell.insert((chorus, "base", lead), CellOverlay {
-            realization: pitched(Voicing::TriadClose, OctaveSpec::UpFromPrev,
-                Humanization { velocity: 0.07, timing: 5, swing: 0.0, seed: 913 }),
-            pinned: 3,
-        });
-        o.cell.insert((chorus, "base", drums), CellOverlay {
-            realization: drum(Humanization { velocity: 0.12, timing: 8, swing: 0.05, seed: 8821 }),
-            pinned: 0,
-        });
-        o.cell.insert((chorus, "base", pad), CellOverlay {
-            // drop2 overrides role:pad's default triad-open; Nearest overrides
-            // role:pad's default Anchored(3).
-            realization: pitched(Voicing::Drop2, OctaveSpec::Nearest,
-                Humanization { velocity: 0.02, timing: 2, swing: 0.0, seed: 3104 }),
-            pinned: 0,
-        });
-
-        o
-    }
-
-    fn lookup_cell(&self, section: SectionId, variant: &str, track: TrackId) -> Option<CellOverlay> {
-        // The overlay table is keyed by `&'static str` for variant names,
-        // so callers passing dynamic strings (verse vs. stripped vs. base)
-        // need the same literal — fall through gracefully when missing.
-        for (&(s, v, t), c) in &self.cell {
-            if s == section && t == track && v == variant {
-                return Some(*c);
-            }
-        }
-        None
-    }
+    o
 }
 
 fn pitched(voicing: Voicing, octave: OctaveSpec, h: Humanization) -> Realization {
@@ -256,7 +219,7 @@ fn role_name(role: Role) -> &'static str {
 
 // ─── Patterns ─────────────────────────────────────────────────────────────
 
-fn build_patterns(project: &ModelProject, overlay: &Overlay) -> Vec<Pattern> {
+fn build_patterns(project: &ModelProject, overlay: &ProjectOverlay) -> Vec<Pattern> {
     project
         .patterns
         .values()
@@ -264,7 +227,7 @@ fn build_patterns(project: &ModelProject, overlay: &Overlay) -> Vec<Pattern> {
         .collect()
 }
 
-fn build_pattern(m: &ModelPattern, overlay: &Overlay) -> Pattern {
+fn build_pattern(m: &ModelPattern, overlay: &ProjectOverlay) -> Pattern {
     let (kind_label, variants) = match &m.body {
         PatternBody::Pitched(b) => ("Pitched", b.variants.len() as u32),
         PatternBody::Drum(b) => ("Drum", b.variants.len() as u32),
@@ -272,27 +235,27 @@ fn build_pattern(m: &ModelPattern, overlay: &Overlay) -> Pattern {
     let color = overlay
         .pattern_color
         .get(&m.id)
-        .copied()
-        .unwrap_or(theme::TEXT2);
+        .cloned()
+        .unwrap_or_else(|| theme::TEXT2.to_string());
     let meta = overlay
         .pattern_meta
         .get(&m.id)
-        .copied()
-        .unwrap_or("");
+        .cloned()
+        .unwrap_or_default();
     Pattern {
         id: m.name.clone(),
         name: m.name.clone(),
-        color: color.into(),
+        color,
         kind: kind_label.into(),
         variants,
         default_variant: m.default_variant.as_str().to_string(),
-        meta: meta.into(),
+        meta,
     }
 }
 
 // ─── Chord loops ──────────────────────────────────────────────────────────
 
-fn build_chord_loops(project: &ModelProject, overlay: &Overlay) -> Vec<ChordLoop> {
+fn build_chord_loops(project: &ModelProject, overlay: &ProjectOverlay) -> Vec<ChordLoop> {
     project
         .chord_loops
         .values()
@@ -302,12 +265,12 @@ fn build_chord_loops(project: &ModelProject, overlay: &Overlay) -> Vec<ChordLoop
             let color = overlay
                 .chord_loop_color
                 .get(&cl.id)
-                .copied()
-                .unwrap_or(theme::TEXT2);
+                .cloned()
+                .unwrap_or_else(|| theme::TEXT2.to_string());
             ChordLoop {
                 id: cl.name.clone(),
                 name: cl.name.clone(),
-                color: color.into(),
+                color,
                 length_bars: 4, // round-1 fixture: every loop is 4 bars (1 beat per chord × 4).
                 events,
             }
@@ -342,7 +305,7 @@ fn effective_scale(project: &ModelProject, section_override: Option<&Scale>) -> 
 fn build_sections(
     project: &ModelProject,
     keys: &Round1Keys,
-    overlay: &Overlay,
+    overlay: &ProjectOverlay,
 ) -> Vec<Section> {
     // Walk in the order intro / verse / chorus to match the round-1
     // fixture. The model's BTreeMap order is by SectionId, which lines
@@ -355,12 +318,12 @@ fn build_sections(
         .collect()
 }
 
-fn build_section(s: &ModelSection, project: &ModelProject, overlay: &Overlay) -> Section {
+fn build_section(s: &ModelSection, project: &ModelProject, overlay: &ProjectOverlay) -> Section {
     let color = overlay
         .section_color
         .get(&s.id)
-        .copied()
-        .unwrap_or(theme::TEXT2);
+        .cloned()
+        .unwrap_or_else(|| theme::TEXT2.to_string());
     let variants = section_variants(s);
     let chord_loops = section_chord_loops(s, project);
     let activations = section_activations(s, project, overlay);
@@ -368,7 +331,7 @@ fn build_section(s: &ModelSection, project: &ModelProject, overlay: &Overlay) ->
     Section {
         id: s.name.clone(),
         name: s.name.clone(),
-        color: color.into(),
+        color,
         variants,
         default_variant: s.default_variant.as_str().to_string(),
         base_duration_bars: s.base.duration_bars,
@@ -404,7 +367,7 @@ fn section_chord_loops(s: &ModelSection, project: &ModelProject) -> Vec<String> 
 fn section_activations(
     s: &ModelSection,
     project: &ModelProject,
-    overlay: &Overlay,
+    overlay: &ProjectOverlay,
 ) -> Vec<(String, Activation)> {
     s.base
         .activations
@@ -422,7 +385,7 @@ fn section_activations(
 fn section_variant_overrides(
     s: &ModelSection,
     project: &ModelProject,
-    overlay: &Overlay,
+    overlay: &ProjectOverlay,
 ) -> Vec<(String, VariantOverride)> {
     s.variants
         .iter()

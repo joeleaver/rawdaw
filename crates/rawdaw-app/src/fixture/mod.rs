@@ -68,175 +68,17 @@ pub struct Pattern {
 
 // ─── Realization model (round-2 additions) ────────────────────────────────
 //
-// Mirrors the realization vocabulary in `docs/design/realization.md` and
-// `docs/design/composition-model.md`. Pitched cells have a voicing
-// strategy + octave spec + humanization; drum cells have only
-// humanization (drums are pitch-symbolic — voicing & octave do not
-// apply, per round-2 decision 17).
-//
-// `voicingFromRole` / `octaveFromRole` flags from the JS fixture are
-// intentionally NOT modelled here. The "matches role default"
-// inheritance signal is computed at render time by comparing the
-// activation's value against `role_defaults(track.role)`. Storing both
-// the value and a flag would be two pieces of state for one fact — a
-// drift hazard called out in the round-2 README's port-time notes.
+// The decoration types previously defined here (Voicing, OctaveSpec,
+// Humanization, Realization, RoleDefaults, role_defaults, ActivationState,
+// ScheduleEntry) moved to `crate::overlay::types` in C1 of the
+// composition-writability milestone. Re-exported below so existing
+// `use crate::fixture::Voicing` imports keep compiling while the rest of
+// the fixture is dismantled phase by phase. New code should import from
+// `crate::overlay` directly.
 
-/// Voicing strategies available v1 (per `realization.md`).
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub enum Voicing {
-    #[default]
-    TriadClose,
-    TriadOpen,
-    FourWayClose,
-    Drop2,
-    Drop3,
-    Shell,
-    Rootless,
-    Power,
-}
-
-impl Voicing {
-    /// Mockup-facing label.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::TriadClose => "triad-close",
-            Self::TriadOpen => "triad-open",
-            Self::FourWayClose => "four-way-close",
-            Self::Drop2 => "drop2",
-            Self::Drop3 => "drop3",
-            Self::Shell => "shell",
-            Self::Rootless => "rootless",
-            Self::Power => "power",
-        }
-    }
-}
-
-/// Per-event octave choice (`OctaveSpec` in `composition-model.md`).
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub enum OctaveSpec {
-    /// Voice-leading minimal-motion (default).
-    #[default]
-    Nearest,
-    /// Pin to a specific octave.
-    Anchored(u32),
-    /// Force an upward leap from the previous note.
-    UpFromPrev,
-    /// Force a downward leap from the previous note.
-    DownFromPrev,
-    /// Use the role's default register, ignoring `last_pitch`.
-    RelativeToRole,
-}
-
-impl OctaveSpec {
-    /// Mockup-facing label.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Nearest => "Nearest",
-            Self::Anchored(2) => "Anchored · 2",
-            Self::Anchored(3) => "Anchored · 3",
-            Self::Anchored(4) => "Anchored · 4",
-            Self::Anchored(5) => "Anchored · 5",
-            // Other octaves fall back to a generic format (no allocation
-            // for the common pre-baked octaves above).
-            Self::Anchored(_) => "Anchored · n",
-            Self::UpFromPrev => "Up from prev",
-            Self::DownFromPrev => "Down from prev",
-            Self::RelativeToRole => "Relative to role",
-        }
-    }
-}
-
-/// Humanization parameters (per `realization.md`). Seed lives on the
-/// activation entry, so two activations using the same pattern can
-/// humanize differently.
-#[derive(Clone, Copy, PartialEq, Default, Debug)]
-pub struct Humanization {
-    /// Velocity jitter as a fraction (0.04 = ±4 %).
-    pub velocity: f32,
-    /// Timing jitter in ticks (PPQ 960).
-    pub timing: u32,
-    /// 0.0 = straight, 0.5 = full triplet swing.
-    pub swing: f32,
-    /// `u64` per `realization.md`. Display as a 5–6 digit decimal in the
-    /// fixture; the real engine surface exposes the full range.
-    pub seed: u64,
-}
-
-/// Pitched cells carry a full `Realization`; drum cells have only
-/// `humanization` (the other two fields are `None`).
-#[derive(Clone, Copy, PartialEq, Default, Debug)]
-pub struct Realization {
-    pub voicing: Option<Voicing>,
-    pub octave: Option<OctaveSpec>,
-    pub humanization: Humanization,
-}
-
-/// Per-role defaults for the realization parameters. The activation cell
-/// renders a `↳ role default` tag when the activation's value equals the
-/// role's default for the corresponding field.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct RoleDefaults {
-    pub voicing: Voicing,
-    pub octave: OctaveSpec,
-    pub humanization: Humanization,
-}
-
-/// Look up the per-role defaults table. Drum tracks have no role and
-/// receive `None`. Returns `None` for unknown roles too — the activation
-/// cell will treat that as "no role default applies."
-pub fn role_defaults(role: &str) -> Option<RoleDefaults> {
-    match role {
-        "bass" => Some(RoleDefaults {
-            voicing: Voicing::Power,
-            octave: OctaveSpec::Nearest,
-            humanization: Humanization { velocity: 0.04, timing: 4, swing: 0.0, seed: 0 },
-        }),
-        "voicing" => Some(RoleDefaults {
-            voicing: Voicing::FourWayClose,
-            octave: OctaveSpec::Nearest,
-            humanization: Humanization { velocity: 0.06, timing: 6, swing: 0.0, seed: 0 },
-        }),
-        "arp" => Some(RoleDefaults {
-            voicing: Voicing::TriadClose,
-            octave: OctaveSpec::Nearest,
-            humanization: Humanization { velocity: 0.05, timing: 3, swing: 0.0, seed: 0 },
-        }),
-        "melodic" => Some(RoleDefaults {
-            voicing: Voicing::TriadClose,
-            octave: OctaveSpec::Nearest,
-            humanization: Humanization { velocity: 0.06, timing: 5, swing: 0.0, seed: 0 },
-        }),
-        "pad" => Some(RoleDefaults {
-            voicing: Voicing::TriadOpen,
-            octave: OctaveSpec::Anchored(3),
-            humanization: Humanization { velocity: 0.02, timing: 2, swing: 0.0, seed: 0 },
-        }),
-        "countermel" => Some(RoleDefaults {
-            voicing: Voicing::Shell,
-            octave: OctaveSpec::Nearest,
-            humanization: Humanization { velocity: 0.05, timing: 4, swing: 0.0, seed: 0 },
-        }),
-        _ => None,
-    }
-}
-
-/// One entry in an activation's `variant_schedule`:
-/// `(BarRange, Option<VariantId>)`.
-///
-/// - `range = (start, end)` — inclusive-start, exclusive-end bars.
-/// - `variant = Some(id)` — non-default pattern variant for this range.
-/// - `variant = None` — silenced sub-range (`(BarRange, None)`).
-///
-/// The list is **sparse**. Bar ranges not covered by any entry play the
-/// pattern's `default_variant`. The render-time schedule builder fills
-/// implicit-default gaps; there must never be a phantom default entry in
-/// the data.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ScheduleEntry {
-    pub start_bar: u32,
-    pub end_bar: u32,
-    pub variant: Option<String>,
-}
+pub use crate::overlay::{
+    role_defaults, ActivationState, Humanization, OctaveSpec, Realization, ScheduleEntry, Voicing,
+};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ChordEvent {
@@ -254,17 +96,8 @@ pub struct ChordLoop {
     pub events: Vec<ChordEvent>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub enum ActivationState {
-    Active,
-    Silent,
-    /// No entry in the section's activation map for this track. Displayed
-    /// as a third pill purely so the user sees something; per the round-1
-    /// README this MUST NOT become an `ActivationOverride::Inherit`
-    /// variant in the engine-side data model.
-    #[default]
-    Inherit,
-}
+// `ActivationState` moved to `crate::overlay::types` in C1; re-exported
+// at the top of this module for back-compat.
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Activation {

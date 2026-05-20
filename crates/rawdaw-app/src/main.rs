@@ -11,7 +11,13 @@
 //!
 //! - `theme` — design tokens (dark surfaces, identity palette, sizes).
 //! - `fixture` — UI view of the round-1 project, built via an adapter
-//!   over `rawdaw_model::fixtures::build_round1_project()`.
+//!   over `rawdaw_model::fixtures::build_round1_project()`. Being
+//!   dismantled in the composition-writability milestone (C1) —
+//!   structural data moves to `AppState.project`, decorations to
+//!   `crate::overlay`.
+//! - `overlay` — UI-only decorations layered on `rawdaw_model::Project`
+//!   (colors, library meta strings, per-cell realization values).
+//!   `ProjectOverlay` is the parallel store to the model project.
 //! - `state` — `EditorMode` + `AppState` shared via a Rinch store.
 //! - `audio` — `AudioResources`: engine instantiation + per-track sine
 //!   graph + realize→translate→push, also shared via a Rinch store.
@@ -26,6 +32,7 @@ mod app;
 mod audio;
 mod fixture;
 mod midi_input;
+mod overlay;
 mod parts;
 mod presets;
 mod regions;
