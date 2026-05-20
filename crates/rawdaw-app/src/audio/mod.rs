@@ -91,7 +91,7 @@ use rawdaw_engine::{
     BlockEvent, Engine, EngineHandle, MidiInputHandle, NodeId, TrackRouting, Transport,
     TransportHandle,
 };
-use rawdaw_model::fixtures::build_round1_project;
+use crate::initial_project;
 use rawdaw_model::project::Project;
 use rawdaw_model::tempo::TempoMap;
 use rawdaw_synth_drum::DrumPublishers;
@@ -288,7 +288,11 @@ impl AudioResources {
     pub fn build() -> Self {
         let sample_rate =
             CpalDriver::probe_default_sample_rate().unwrap_or(FALLBACK_SAMPLE_RATE);
-        let (project, _keys) = build_round1_project();
+        // Boot from the shared initial-project factory; the overlay is
+        // produced too but only the model side is fed into the audio
+        // graph. AppState consumes the overlay separately in
+        // `app::main_window`.
+        let (project, _overlay) = initial_project::build_initial();
         let mut resources = Self::build_from_project_and_rate(&project, sample_rate);
         resources._poller = Some(Rc::new(PlayheadPoller::spawn(
             Arc::clone(&resources.sample_clock),

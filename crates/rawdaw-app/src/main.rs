@@ -31,6 +31,7 @@
 mod app;
 mod audio;
 mod fixture;
+mod initial_project;
 mod midi_input;
 mod overlay;
 mod parts;

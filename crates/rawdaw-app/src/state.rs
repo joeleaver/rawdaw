@@ -19,7 +19,15 @@
 //! `section_key: String` here for consistency — the role in `EditorMode`
 //! is identical (uniquely identifies which section is being edited).
 
+use std::rc::Rc;
+
 use rinch::prelude::*;
+
+use rawdaw_model::pitch::PitchClass;
+use rawdaw_model::project::Project;
+use rawdaw_model::scale::Scale;
+
+use crate::overlay::ProjectOverlay;
 
 /// Which top-level surface the app is rendering below the top bar.
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -83,6 +91,30 @@ pub struct AppState {
     /// an Effect in `MainWindow` propagates changes to
     /// [`AudioResources::set_midi_target_track`](crate::audio::AudioResources::set_midi_target_track).
     pub midi_target_track: Signal<Option<usize>>,
+
+    /// The live, mutable project. C1 of the composition-writability
+    /// milestone introduces this signal as the replacement for
+    /// `fixture::round1()` reads; subsequent C1 commits migrate every
+    /// UI region to read through it instead of the static fixture.
+    ///
+    /// Wrapped in `Rc` so reads are O(refcount bump) regardless of
+    /// project size. Mutations replace the inner `Rc` wholesale via
+    /// `Signal::set` after cloning-on-write the inner `Project`.
+    /// Granular per-field signals can come later if profiling shows
+    /// the whole-project re-read is too coarse (see C1 design
+    /// decision 1 in `docs/composition-writability-plan.md`).
+    ///
+    /// Seeded with an empty default in `AppState::new()`; the real
+    /// round-1 demo project is installed by `app::main_window` right
+    /// after `create_store(AppState::new())` runs, before any region
+    /// renders.
+    pub project: Signal<Rc<Project>>,
+
+    /// UI-only decorations layered on top of [`Self::project`]: colors,
+    /// library meta strings, per-cell realization values. Parallel
+    /// signal — same lifecycle as `project`. See [`ProjectOverlay`]
+    /// for the structure.
+    pub overlay: Signal<Rc<ProjectOverlay>>,
 }
 
 impl AppState {
@@ -97,6 +129,15 @@ impl AppState {
             // pure (no special-case for "before-init"); the Effect
             // overwrites on first run.
             midi_target_track: Signal::new(None),
+            // Project + overlay are seeded with an empty default here;
+            // `app::main_window` overwrites them with the real
+            // `initial_project::build_initial()` payload right after
+            // `create_store(AppState::new())` runs, before any
+            // component renders. Tests that don't care about project
+            // content (selection-mutex tests below) can construct
+            // `AppState::new()` and ignore these.
+            project: Signal::new(Rc::new(Project::new(Scale::major(PitchClass::C)))),
+            overlay: Signal::new(Rc::new(ProjectOverlay::empty())),
         }
     }
 

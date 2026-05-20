@@ -10,7 +10,10 @@ use rinch::core::reactive::Effect;
 use rinch::prelude::*;
 use rawdaw_engine::Transport;
 
+use std::rc::Rc;
+
 use crate::audio::AudioResources;
+use crate::initial_project;
 use crate::regions::{Arrangement, BottomStrip, Inspector, Library, TopBar, TracksPane};
 use crate::section_editor::SectionEditor;
 use crate::state::{AppState, EditorMode};
@@ -24,6 +27,16 @@ pub fn main_window() -> NodeHandle {
     // transport, future MIDI) can consume them from any closure.
     let app = create_store(AppState::new());
     let audio = create_store(AudioResources::build());
+
+    // C1b: seed AppState's project + overlay signals from the shared
+    // `initial_project::build_initial()` factory. `AudioResources::build`
+    // above also invokes the factory internally for its own audio-graph
+    // seed (separate `Rc` allocation today; C2's edit pump unifies them).
+    // The seed happens before the rsx tree below renders so no region
+    // ever observes the empty `AppState::new()` defaults.
+    let (initial, initial_overlay) = initial_project::build_initial();
+    app.project.set(Rc::new(initial));
+    app.overlay.set(Rc::new(initial_overlay));
 
     // K3: seed the MIDI routing target from the first Pitched track
     // (matches the boot-time `midi_target` atomic on AudioResources)
