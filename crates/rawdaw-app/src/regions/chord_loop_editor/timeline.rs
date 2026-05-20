@@ -24,6 +24,7 @@ use super::event_block::EventBlock;
 use super::helpers::{
     default_chord_event, insert_chord_event_sorted, snap_ticks_to_beat, ticks_to_bars,
 };
+use super::realized_strip::RealizedStrip;
 
 #[component]
 pub(crate) fn ChordLoopTimeline(id: ChordLoopId) -> NodeHandle {
@@ -39,6 +40,7 @@ pub(crate) fn ChordLoopTimeline(id: ChordLoopId) -> NodeHandle {
         div { style: {surface_style.clone()},
             ToolbarRow { id: id }
             EventStrip { id: id }
+            RealizedStrip { id: id }
             BarRuler { id: id }
         }
     }

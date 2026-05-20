@@ -40,6 +40,7 @@ use crate::theme;
 mod event_block;
 mod helpers;
 mod inspector;
+mod realized_strip;
 mod timeline;
 
 pub(crate) use inspector::Inspector as ChordLoopInspector;

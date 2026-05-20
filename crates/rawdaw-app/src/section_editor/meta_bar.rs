@@ -42,12 +42,6 @@ pub fn SectionMetaBar(section_name_key: String) -> NodeHandle {
     // variant inside FieldLabelRow.
     let default_variant = section.default_variant.as_str().to_string();
     let duration = section.base.duration_bars;
-    let loop_name = section
-        .base
-        .chord_loops
-        .first()
-        .and_then(|(_, clid)| project.chord_loops.get(clid).map(|cl| cl.name.clone()))
-        .unwrap_or_default();
 
     let bar_style = format!(
         "flex: 0 0 auto; padding: 12px 20px; \
@@ -62,7 +56,7 @@ pub fn SectionMetaBar(section_name_key: String) -> NodeHandle {
             DurationField  { default_variant: default_variant.clone(), duration: duration }
             ScaleField     { default_variant: default_variant.clone() }
             ChordLoopsField { default_variant: default_variant.clone(),
-                              loop_name: loop_name,
+                              section_name_key: section_name_key.clone(),
                               duration_bars: duration }
         }
     }
@@ -104,7 +98,7 @@ fn ScaleField(default_variant: String) -> NodeHandle {
 #[component]
 fn ChordLoopsField(
     default_variant: String,
-    loop_name: String,
+    section_name_key: String,
     duration_bars: u32,
 ) -> NodeHandle {
     rsx! {
@@ -112,7 +106,7 @@ fn ChordLoopsField(
             FieldLabelRow { label: "Chord loops",
                             default_variant: default_variant,
                             action_label: "Loop range" }
-            ChordLoopBar { loop_name: loop_name, duration_bars: duration_bars }
+            ChordLoopBar { section_name_key: section_name_key, duration_bars: duration_bars }
         }
     }
 }

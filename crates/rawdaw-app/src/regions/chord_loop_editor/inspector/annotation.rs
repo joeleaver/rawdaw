@@ -15,8 +15,6 @@ use rawdaw_model::id::ChordLoopId;
 use rawdaw_model::pitch::PitchClass;
 use rawdaw_model::scale::{Mode, Scale};
 
-use crate::theme;
-
 use super::mutate_event;
 
 // ─── in_key (Borrowed key) ───────────────────────────────────────────────
@@ -131,21 +129,17 @@ pub(super) fn commit_cadence(id: ChordLoopId, idx: usize, encoded: String) {
 
 #[component]
 pub(super) fn CommentInput(id: ChordLoopId, idx: usize, seed: String) -> NodeHandle {
-    let buffer = Signal::new(seed.clone());
-    let input_style = format!(
-        "width: 100%; box-sizing: border-box; \
-         height: 26px; padding: 0 8px; \
-         border-radius: 4px; background: {bg0}; border: 1px solid {line}; \
-         color: rgba(232,234,238,0.96); font-size: 12px;",
-        bg0 = theme::BG0,
-        line = theme::LINE,
-    );
+    // Use `TextInput` rather than raw `input { onsubmit }`: rinch's
+    // html.rs codegen routes `onsubmit` on a raw input to `data-rid`
+    // (catch-all) instead of `data-onsubmit`, so the Enter handler
+    // would never fire. The `TextInput` component sets the right
+    // attribute. Surfaced during CL3 visual verification.
+    let buffer = Signal::new(seed);
     rsx! {
-        input {
-            r#type: "text",
-            title: "Press Enter to commit",
-            style: {input_style.clone()},
-            value: {|| buffer.get()},
+        TextInput {
+            size: "sm",
+            placeholder: "Comment…",
+            value_fn: move || buffer.get(),
             oninput: move |v: String| buffer.set(v),
             onsubmit: move || commit_comment(id, idx, buffer.get()),
         }
