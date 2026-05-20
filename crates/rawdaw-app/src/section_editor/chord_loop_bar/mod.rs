@@ -1,11 +1,13 @@
-//! Section meta bar's chord-loop strip (CL4 editable).
+//! Section meta bar's chord-loop strip (CL4 editable + CL4.x
+//! right-click split/merge).
 //!
 //! Renders one cell per bar of the section's duration. Each cell
 //! shows the chord active at that bar's downbeat, sourced from the
 //! `(BarRange, ChordLoopId)` schedule on `Section.base.chord_loops`
-//! (multi-loop ready — bars 1–4 can use loop A and 5–8 loop B).
-//! Clicking a cell opens a [`DropdownMenu`] that picks a different
-//! loop (or removes coverage entirely) for that single-bar slice.
+//! (multi-loop ready — bars 1–4 can use loop A and 5–8 loop B). The
+//! primary picker is a [`Select`] embedded in each cell; right-
+//! clicking opens a [`ContextMenu`] with merge-left / merge-right /
+//! clear-range shortcuts.
 //!
 //! ## Case preservation (UI principle 3)
 //!
@@ -14,14 +16,15 @@
 //! `chord_display::roman_label` returns the canonical case (`I`,
 //! `V`, `vi`, `IV`); the cell renders the string verbatim.
 //!
-//! ## Schedule mutation (CL4)
+//! ## Schedule mutation (CL4 + CL4.x)
 //!
-//! Committing a single-bar loop change goes through
-//! [`set_loop_for_bar`], a pure helper that splits the covering
-//! range at the target bar, inserts the new selection (or omits it
-//! for "None"), then merges adjacent ranges that share a loop id.
-//! The C2 edit pump (`apply_project_edit`) routes the resulting
-//! schedule into the model + engine.
+//! Single-bar loop changes go through [`schedule::set_loop_for_bar`];
+//! the right-click bulk actions route through
+//! [`schedule::merge_range_left`], [`schedule::merge_range_right`],
+//! and [`schedule::clear_range_at_bar`]. All four are pure functions
+//! living in the sibling [`schedule`] module so this file stays
+//! UI-focused. The C2 edit pump (`apply_project_edit`) wraps the
+//! resulting schedule into a project edit + engine re-arm.
 //!
 //! ## Sub-bar events (deferred)
 //!
@@ -30,17 +33,21 @@
 //! cell shows whichever event covers `bar * PPQ * 4`. Sub-bar UX
 //! lives in the per-loop editor — the section view stays per-bar.
 
+mod schedule;
+
 use rinch::prelude::*;
 
 use rawdaw_model::chord::{ChordEvent, ChordLoop, ChordSpec};
 use rawdaw_model::id::{ChordLoopId, SectionId};
 use rawdaw_model::scale::Scale;
-use rawdaw_model::time::{BarRange, PPQ};
+use rawdaw_model::time::PPQ;
 
 use crate::chord_display::{absolute_label, pitch_class_name, quality_suffix, roman_label};
 use crate::parts::rgba;
 use crate::state::AppState;
 use crate::theme;
+
+use schedule::{clear_range_at_bar, merge_range_left, merge_range_right, set_loop_for_bar};
 
 #[component]
 pub fn ChordLoopBar(section_name_key: String, duration_bars: u32) -> NodeHandle {
@@ -245,13 +252,18 @@ fn EditableChordCell(
     );
 
     let _ = loop_id_present; // reserved for "active" highlight (future)
-    let section_key_for_commit = section_name_key.clone();
     // CL4 v1: cell IS a Select with the current loop's name visible.
     // The richer Roman+absolute display we had in CL2 lives below
     // the Select as a smaller secondary line. DropdownMenu's
     // absolute-positioned popover doesn't render visibly inside
     // rinch's flex chord-loop bar; Select works because it's the
     // pattern every other inspector dropdown uses.
+    //
+    // CL4.x adds a right-click ContextMenu on each cell for the
+    // common bulk-range actions (merge-left / merge-right / clear
+    // the range). ContextMenu portals into the body via
+    // `position: fixed`, sidestepping the flex-clipping bug that
+    // forced `Select` over `DropdownMenu` for the primary picker.
     let wrapper_style = format!(
         "flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; \
          background: {bg}; border: 1px solid {bc}; border-left: {lb}; \
@@ -264,23 +276,53 @@ fn EditableChordCell(
          padding: 0 4px; line-height: 1;"
         .to_string();
 
+    // The cell's two interactive surfaces (Select onchange and the
+    // three context-menu items) each need their own clone of the
+    // section-name key; closures take ownership. One per call site.
+    let key_for_select = section_name_key.clone();
+    let key_for_merge_left = section_name_key.clone();
+    let key_for_merge_right = section_name_key.clone();
+    let key_for_clear = section_name_key.clone();
+    let key_for_value_fn = section_name_key;
+
     rsx! {
-        div { style: {wrapper_style.clone()},
-            Select {
-                size: "sm",
-                value_fn: move || current_loop_id_str_for_bar(section_name_key.clone(), bar),
-                data: loop_picker_select_options(),
-                onchange: move |v: String| {
-                    commit_loop_for_bar(
-                        section_key_for_commit.clone(),
-                        bar,
-                        decode_loop_id_opt(&v),
-                    );
-                },
+        ContextMenu {
+            ContextMenuTarget {
+                div { style: {wrapper_style.clone()},
+                    Select {
+                        size: "sm",
+                        value_fn: move || {
+                            current_loop_id_str_for_bar(key_for_value_fn.clone(), bar)
+                        },
+                        data: loop_picker_select_options(),
+                        onchange: move |v: String| {
+                            commit_loop_for_bar(
+                                key_for_select.clone(),
+                                bar,
+                                decode_loop_id_opt(&v),
+                            );
+                        },
+                    }
+                    div { style: {chord_line_style.clone()},
+                        span { style: {roman_style.clone()}, {label.clone()} }
+                        span { style: {abs_style.clone()}, {absolute.clone()} }
+                    }
+                }
             }
-            div { style: {chord_line_style.clone()},
-                span { style: {roman_style.clone()}, {label.clone()} }
-                span { style: {abs_style.clone()}, {absolute.clone()} }
+            ContextMenuDropdown {
+                DropdownMenuItem {
+                    onclick: move || commit_merge_left(key_for_merge_left.clone(), bar),
+                    "Merge with left"
+                }
+                DropdownMenuItem {
+                    onclick: move || commit_merge_right(key_for_merge_right.clone(), bar),
+                    "Merge with right"
+                }
+                DropdownMenuDivider {}
+                DropdownMenuItem {
+                    onclick: move || commit_clear_range(key_for_clear.clone(), bar),
+                    "Clear this range"
+                }
             }
         }
     }
@@ -339,6 +381,58 @@ fn commit_loop_for_bar(section_name_key: String, bar: u32, new_loop: Option<Chor
     }
 }
 
+/// CL4.x context-menu handler: extend the left-adjacent loop over
+/// the entire range containing `bar`. No-op against the model when
+/// the helper says so (uncovered, no left neighbor, same loop).
+fn commit_merge_left(section_name_key: String, bar: u32) {
+    let app = use_store::<AppState>();
+    let Some(section_id) = section_id_by_name(&app, &section_name_key) else {
+        return;
+    };
+    if let Err(e) = app.apply_project_edit(move |p| {
+        if let Some(section) = p.sections.get_mut(&section_id) {
+            section.base.chord_loops =
+                merge_range_left(section.base.chord_loops.clone(), bar);
+        }
+    }) {
+        eprintln!("chord_loop_bar: merge-left failed: {e}");
+    }
+}
+
+/// Symmetric counterpart to [`commit_merge_left`].
+fn commit_merge_right(section_name_key: String, bar: u32) {
+    let app = use_store::<AppState>();
+    let Some(section_id) = section_id_by_name(&app, &section_name_key) else {
+        return;
+    };
+    if let Err(e) = app.apply_project_edit(move |p| {
+        if let Some(section) = p.sections.get_mut(&section_id) {
+            section.base.chord_loops =
+                merge_range_right(section.base.chord_loops.clone(), bar);
+        }
+    }) {
+        eprintln!("chord_loop_bar: merge-right failed: {e}");
+    }
+}
+
+/// CL4.x context-menu handler: uncover the entire range containing
+/// `bar`. Stronger than `commit_loop_for_bar(None)` which only
+/// removes the single-bar slice.
+fn commit_clear_range(section_name_key: String, bar: u32) {
+    let app = use_store::<AppState>();
+    let Some(section_id) = section_id_by_name(&app, &section_name_key) else {
+        return;
+    };
+    if let Err(e) = app.apply_project_edit(move |p| {
+        if let Some(section) = p.sections.get_mut(&section_id) {
+            section.base.chord_loops =
+                clear_range_at_bar(section.base.chord_loops.clone(), bar);
+        }
+    }) {
+        eprintln!("chord_loop_bar: clear-range failed: {e}");
+    }
+}
+
 fn section_id_by_name(app: &AppState, name: &str) -> Option<SectionId> {
     app.project
         .get()
@@ -348,164 +442,3 @@ fn section_id_by_name(app: &AppState, name: &str) -> Option<SectionId> {
         .map(|(id, _)| *id)
 }
 
-// ─── Pure schedule mutation ─────────────────────────────────────────────
-
-/// Replace coverage of `bar` in `schedule` with `new_loop` (or
-/// uncover when `None`). Splits any range covering `bar` into
-/// before/after slices, inserts the new single-bar entry, then
-/// merges adjacent ranges sharing a loop id. Resulting schedule is
-/// sorted by `start` with non-overlapping ranges.
-pub(crate) fn set_loop_for_bar(
-    schedule: Vec<(BarRange, ChordLoopId)>,
-    bar: u32,
-    new_loop: Option<ChordLoopId>,
-) -> Vec<(BarRange, ChordLoopId)> {
-    let mut split = Vec::with_capacity(schedule.len() + 2);
-    for (range, loop_id) in schedule {
-        if range.contains(bar) {
-            if range.start < bar {
-                split.push((BarRange::new(range.start, bar), loop_id));
-            }
-            if bar + 1 < range.end {
-                split.push((BarRange::new(bar + 1, range.end), loop_id));
-            }
-        } else {
-            split.push((range, loop_id));
-        }
-    }
-    if let Some(id) = new_loop {
-        split.push((BarRange::new(bar, bar + 1), id));
-    }
-    split.sort_by_key(|(r, _)| r.start);
-    merge_adjacent(split)
-}
-
-fn merge_adjacent(
-    schedule: Vec<(BarRange, ChordLoopId)>,
-) -> Vec<(BarRange, ChordLoopId)> {
-    let mut out: Vec<(BarRange, ChordLoopId)> = Vec::with_capacity(schedule.len());
-    for (range, loop_id) in schedule {
-        if let Some(last) = out.last_mut()
-            && last.1 == loop_id
-            && last.0.end == range.start
-        {
-            last.0 = BarRange::new(last.0.start, range.end);
-            continue;
-        }
-        out.push((range, loop_id));
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rawdaw_model::id::ChordLoopId;
-
-    fn id(n: u64) -> ChordLoopId {
-        ChordLoopId::new(n)
-    }
-
-    #[test]
-    fn set_loop_into_uncovered_section() {
-        let result = set_loop_for_bar(Vec::new(), 2, Some(id(1)));
-        assert_eq!(result, vec![(BarRange::new(2, 3), id(1))]);
-    }
-
-    #[test]
-    fn set_same_loop_at_boundary_merges() {
-        // Existing: bars 0–4 = loop A. Set bar 2 to A → still one range 0–4.
-        let schedule = vec![(BarRange::new(0, 4), id(1))];
-        let result = set_loop_for_bar(schedule, 2, Some(id(1)));
-        assert_eq!(result, vec![(BarRange::new(0, 4), id(1))]);
-    }
-
-    #[test]
-    fn set_different_loop_splits_range() {
-        // Existing: bars 0–4 = loop A. Set bar 2 to B → split into
-        // 0–2=A, 2–3=B, 3–4=A.
-        let schedule = vec![(BarRange::new(0, 4), id(1))];
-        let result = set_loop_for_bar(schedule, 2, Some(id(2)));
-        assert_eq!(
-            result,
-            vec![
-                (BarRange::new(0, 2), id(1)),
-                (BarRange::new(2, 3), id(2)),
-                (BarRange::new(3, 4), id(1)),
-            ]
-        );
-    }
-
-    #[test]
-    fn set_none_removes_coverage() {
-        // Existing: bars 0–4 = loop A. Clear bar 2 → 0–2=A, 3–4=A.
-        let schedule = vec![(BarRange::new(0, 4), id(1))];
-        let result = set_loop_for_bar(schedule, 2, None);
-        assert_eq!(
-            result,
-            vec![
-                (BarRange::new(0, 2), id(1)),
-                (BarRange::new(3, 4), id(1)),
-            ]
-        );
-    }
-
-    #[test]
-    fn set_loop_at_start_of_range() {
-        // Existing: bars 0–4 = A. Set bar 0 to B → 0–1=B, 1–4=A.
-        let schedule = vec![(BarRange::new(0, 4), id(1))];
-        let result = set_loop_for_bar(schedule, 0, Some(id(2)));
-        assert_eq!(
-            result,
-            vec![
-                (BarRange::new(0, 1), id(2)),
-                (BarRange::new(1, 4), id(1)),
-            ]
-        );
-    }
-
-    #[test]
-    fn set_loop_at_end_of_range() {
-        // Existing: bars 0–4 = A. Set bar 3 to B → 0–3=A, 3–4=B.
-        let schedule = vec![(BarRange::new(0, 4), id(1))];
-        let result = set_loop_for_bar(schedule, 3, Some(id(2)));
-        assert_eq!(
-            result,
-            vec![
-                (BarRange::new(0, 3), id(1)),
-                (BarRange::new(3, 4), id(2)),
-            ]
-        );
-    }
-
-    #[test]
-    fn merges_two_adjacent_ranges_of_same_loop() {
-        // Existing: 0–2=A, 3–4=A (gap at bar 2). Set bar 2 to A →
-        // 0–4=A (single merged range).
-        let schedule = vec![
-            (BarRange::new(0, 2), id(1)),
-            (BarRange::new(3, 4), id(1)),
-        ];
-        let result = set_loop_for_bar(schedule, 2, Some(id(1)));
-        assert_eq!(result, vec![(BarRange::new(0, 4), id(1))]);
-    }
-
-    #[test]
-    fn multi_loop_section_preserves_uncovered_ranges() {
-        // Existing: 0–4=A, 4–8=B. Set bar 1 to C → 0–1=A, 1–2=C, 2–4=A, 4–8=B.
-        let schedule = vec![
-            (BarRange::new(0, 4), id(1)),
-            (BarRange::new(4, 8), id(2)),
-        ];
-        let result = set_loop_for_bar(schedule, 1, Some(id(3)));
-        assert_eq!(
-            result,
-            vec![
-                (BarRange::new(0, 1), id(1)),
-                (BarRange::new(1, 2), id(3)),
-                (BarRange::new(2, 4), id(1)),
-                (BarRange::new(4, 8), id(2)),
-            ]
-        );
-    }
-}
