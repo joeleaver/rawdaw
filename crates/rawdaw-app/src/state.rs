@@ -12,12 +12,12 @@
 //!
 //! ## Naming: `section_key` vs `section_idx`
 //!
-//! The round-2 port plan called for `section_idx: usize`. The existing
-//! fixture API is keyed by section name (`fixture::section_by_key`), and
-//! every other piece of UI code identifies sections by their `name` field
-//! rather than their index in `fixture::round1().sections`. We use
-//! `section_key: String` here for consistency — the role in `EditorMode`
-//! is identical (uniquely identifies which section is being edited).
+//! The round-2 port plan called for `section_idx: usize`. Round-1 / C1c
+//! migrated UI lookups to `Project.sections.values().find(|s| s.name ==
+//! key)`, so the discriminator stays a name string for now. A follow-up
+//! C1 slice flips this to the typed `SectionId` (design decision 4 in
+//! the composition-writability plan) once the section_editor and
+//! inspector both consume the new type end-to-end.
 
 use std::rc::Rc;
 
@@ -39,8 +39,10 @@ pub enum EditorMode {
     /// Round-2 section editor for a specific section + variant. Replaces
     /// the arrangement view's middle row; the top bar stays.
     SectionEditor {
-        /// Section identifier — `Section.name` from the fixture. Looked up
-        /// via `fixture::section_by_key`.
+        /// Section identifier — `Section.name` from the live project.
+        /// Resolved at consumer sites via
+        /// `project.sections.values().find(|s| s.name == key)`. Will
+        /// become the typed `SectionId` in a follow-up C1 slice.
         section_key: String,
         /// Currently active variant tab (`"base"`, `"stripped"`, …).
         variant: String,
@@ -68,10 +70,10 @@ pub enum EditorMode {
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub editor_mode: Signal<EditorMode>,
-    /// Index into `fixture::round1().arrangement` of the currently
-    /// selected SectionRef. Round-1 boot value is `Some(1)`
-    /// (verse@bar5) so the inspector lands populated; users can change
-    /// it by clicking a SectionBlock in the arrangement.
+    /// Index into the live `project.arrangement.sections` Vec of the
+    /// currently selected SectionRef. Round-1 boot value is `Some(1)`
+    /// (verse@bar5) so the inspector lands populated; users change it
+    /// by clicking a SectionBlock in the arrangement.
     pub selected_idx: Signal<Option<usize>>,
     /// Index into the model `Project.tracks` of the currently
     /// selected project track. `None` by default; clicking a row in
@@ -93,9 +95,10 @@ pub struct AppState {
     pub midi_target_track: Signal<Option<usize>>,
 
     /// The live, mutable project. C1 of the composition-writability
-    /// milestone introduces this signal as the replacement for
-    /// `fixture::round1()` reads; subsequent C1 commits migrate every
-    /// UI region to read through it instead of the static fixture.
+    /// milestone introduces this signal as the replacement for the old
+    /// `fixture::round1()` adapter; every UI region reads through it
+    /// now. C2's edit pump writes into it via `Signal::set` with a
+    /// freshly cloned `Rc<Project>` per structural edit.
     ///
     /// Wrapped in `Rc` so reads are O(refcount bump) regardless of
     /// project size. Mutations replace the inner `Rc` wholesale via

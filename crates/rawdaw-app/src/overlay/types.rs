@@ -4,10 +4,9 @@
 //!
 //! These types describe per-cell realization values, role defaults, schedule
 //! entries, and the visual state of an activation row. They were originally
-//! defined in `crate::fixture::mod` as part of the static round-1 Round1
-//! view. C1 of the composition-writability milestone relocates them here so
-//! they can be imported as types from a stable address (no longer tangled
-//! with the fixture's lifecycle, which is being dismantled).
+//! defined in the now-deleted `crate::fixture` module as part of the round-
+//! 1 Round1 view. C1c of the composition-writability milestone relocated
+//! them here so they live at a stable import address.
 //!
 //! Some of these will move into `rawdaw-model` when Tier-1 patterns ship
 //! (`OctaveSpec`, `Humanization`, `Realization` correspond directly to

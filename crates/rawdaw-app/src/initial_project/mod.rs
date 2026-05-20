@@ -20,6 +20,9 @@ use crate::overlay::ProjectOverlay;
 
 pub(crate) mod overlay;
 
+#[cfg(test)]
+mod tests;
+
 /// Build the initial project + UI overlay that the app boots into.
 ///
 /// Today this returns the round-1 demo project. Tier-1 work (chord-loop
@@ -34,7 +37,7 @@ pub fn build_initial() -> (Project, ProjectOverlay) {
 }
 
 #[cfg(test)]
-mod tests {
+mod build_initial_contract {
     use super::*;
 
     #[test]

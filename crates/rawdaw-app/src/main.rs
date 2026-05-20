@@ -3,18 +3,17 @@
 //! Round-1 shipped the main window mirroring
 //! `docs/design/mockups/round-1/main-window.html`. Round 2 adds the
 //! section editor (`docs/design/mockups/round-2/`); both surfaces share
-//! the top bar and toggle below it via `state::EditorMode`. The engine
-//! is not yet wired in; the view is driven from a static Rust fixture
-//! (`fixture::round1`).
+//! the top bar and toggle below it via `state::EditorMode`. The live
+//! project + overlay come from [`initial_project::build_initial`] at
+//! boot and live on [`state::AppState`] for the UI to read reactively.
 //!
 //! Architecture:
 //!
 //! - `theme` — design tokens (dark surfaces, identity palette, sizes).
-//! - `fixture` — UI view of the round-1 project, built via an adapter
-//!   over `rawdaw_model::fixtures::build_round1_project()`. Being
-//!   dismantled in the composition-writability milestone (C1) —
-//!   structural data moves to `AppState.project`, decorations to
-//!   `crate::overlay`.
+//! - `initial_project` — one-shot factory that builds the
+//!   `(Project, ProjectOverlay)` pair `AppState` boots into. Replaced
+//!   the old `fixture` adapter at C1c of the composition-writability
+//!   milestone.
 //! - `overlay` — UI-only decorations layered on `rawdaw_model::Project`
 //!   (colors, library meta strings, per-cell realization values).
 //!   `ProjectOverlay` is the parallel store to the model project.
@@ -31,7 +30,6 @@
 mod app;
 mod audio;
 mod chord_display;
-mod fixture;
 mod initial_project;
 mod midi_input;
 mod overlay;

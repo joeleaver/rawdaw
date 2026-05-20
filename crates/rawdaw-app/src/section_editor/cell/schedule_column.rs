@@ -20,7 +20,7 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::ScheduleEntry;
+use crate::overlay::ScheduleEntry;
 use crate::parts::{
     rgba, Icon, ScheduleSegment, ScheduleSegmentStyle, ScheduleTimeline,
 };

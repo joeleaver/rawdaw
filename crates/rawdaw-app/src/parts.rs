@@ -14,7 +14,7 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::ActivationState;
+use crate::overlay::ActivationState;
 
 /// Convert a `#RRGGBB` literal to an `rgba(r,g,b,a)` CSS string.
 ///
