@@ -38,13 +38,22 @@ mod wavetable_editor;
 
 use rinch::prelude::*;
 
-use crate::fixture;
+use rawdaw_model::chord::ChordSpec;
+use rawdaw_model::time::PPQ;
+
+use crate::chord_display::roman_label;
 use crate::parts::{rgba, Icon, StripePaper};
 use crate::state::AppState;
 use crate::theme;
 
 use activation_table::ActivationTable;
 use synth_editor::SynthEditor;
+
+/// Beats per bar baked into the round-1 fixture — mirrors the
+/// arrangement module's constant. Switches to the model
+/// `tempo_map.beats_per_bar_at(...)` lookup when the arrangement
+/// honors mid-arrangement time-signature changes.
+const BEATS_PER_BAR: u32 = 4;
 
 /// Inspector — branches on (`selected_idx`, `selected_track`) and
 /// renders one of three subtrees. The pane width is reactive: 600 px
@@ -127,31 +136,54 @@ fn InspectorEmpty() -> NodeHandle {
 
 #[component]
 fn SelectedInspector(idx: usize) -> NodeHandle {
-    let r = fixture::round1();
-    let Some(block) = r.arrangement.get(idx).cloned() else {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
+
+    let Some(section_ref) = project.arrangement.sections.get(idx).cloned() else {
         return rsx! { InspectorEmpty { } };
     };
-    let Some(section) = fixture::section_by_key(r, block.section_key.as_str()).cloned() else {
+    let Some(section) = project.sections.get(&section_ref.section).cloned() else {
         return rsx! { InspectorEmpty { } };
     };
 
-    let instance_count = fixture::instance_count(r, block.section_key.as_str());
-
-    // Resolve all the strings/numbers we'll need up front so subcomponents
-    // can take primitive props (every `#[component]` field type must impl
-    // `Default`; pushing structs through props means deriving `Default`
-    // on the whole fixture).
-    let section_color = section.color.to_string();
-    let section_name = section.name.to_string();
-    let variant_id = block.variant.to_string();
-    let default_variant = section.default_variant.to_string();
-    let base_duration_bars = section.base_duration_bars;
-    let start_bar = block.start_bar;
-    let bars = block.bars;
-    let chord_loop_name = section.chord_loops.first().cloned().unwrap_or_default();
-    let chord_loop_color = fixture::chord_loop_by_name(r, chord_loop_name.as_str())
-        .map(|c| c.color.clone())
-        .unwrap_or_else(|| theme::PAL_TERRA.to_string());
+    // Pre-resolve everything subcomponents will need into primitive
+    // props (every `#[component]` field type must impl `Default`).
+    let instance_count = project
+        .arrangement
+        .sections
+        .iter()
+        .filter(|sr| sr.section == section_ref.section)
+        .count();
+    let section_color = overlay
+        .section_color
+        .get(&section_ref.section)
+        .cloned()
+        .unwrap_or_else(|| theme::TEXT2.to_string());
+    let section_name = section.name.clone();
+    let variant_id = section_ref.variant.as_str().to_string();
+    let default_variant = section.default_variant.as_str().to_string();
+    let bars = section
+        .variants
+        .get(&section_ref.variant)
+        .and_then(|v| v.duration_bars)
+        .unwrap_or(section.base.duration_bars);
+    let base_duration_bars = section.base.duration_bars;
+    let start_bar = (section_ref.start.as_ticks() / (PPQ * BEATS_PER_BAR as i64)).max(0) as u32;
+    let (chord_loop_name, chord_loop_color) = section
+        .base
+        .chord_loops
+        .first()
+        .and_then(|(_, clid)| project.chord_loops.get(clid).map(|cl| (cl.name.clone(), *clid)))
+        .map(|(name, clid)| {
+            let color = overlay
+                .chord_loop_color
+                .get(&clid)
+                .cloned()
+                .unwrap_or_else(|| theme::PAL_TERRA.to_string());
+            (name, color)
+        })
+        .unwrap_or_else(|| (String::new(), theme::PAL_TERRA.to_string()));
 
     rsx! {
         div { style: "display: flex; flex-direction: column; min-height: 0; flex: 1;",
@@ -298,13 +330,7 @@ fn VariantTabs(
 
     rsx! {
         div { style: {strip_style.clone()},
-            for v in fixture::round1()
-                .sections
-                .iter()
-                .find(|s| s.name == key.as_str())
-                .map(|s| s.variants.clone())
-                .unwrap_or_default()
-            {
+            for v in variant_options_for_section(key.clone()) {
                 VariantTab {
                     key: v.id.clone(),
                     variant_id: v.id.clone(),
@@ -319,6 +345,40 @@ fn VariantTabs(
             }
         }
     }
+}
+
+/// One variant tab payload — owned strings so the rsx `for` source
+/// closure can be `Fn` (returns a fresh `Vec` per call).
+#[derive(Clone, PartialEq)]
+pub(crate) struct VariantOption {
+    pub id: String,
+    pub name: String,
+}
+
+/// Variants surface as: the base "main"/"base" tab plus every named
+/// variant override on the section. Caller passes the section's `name`
+/// string (back-compat with the section_key plumbing in
+/// `EditorMode::SectionEditor`); migration to `SectionId` lookups is
+/// the next C1c slice.
+pub(crate) fn variant_options_for_section(name: String) -> Vec<VariantOption> {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let Some(section) = project.sections.values().find(|s| s.name == name) else {
+        return Vec::new();
+    };
+    let default_id = section.default_variant.as_str().to_string();
+    let mut out = vec![VariantOption {
+        id: default_id.clone(),
+        name: default_id,
+    }];
+    for variant_id in section.variants.keys() {
+        let id = variant_id.as_str().to_string();
+        out.push(VariantOption {
+            id: id.clone(),
+            name: id,
+        });
+    }
+    out
 }
 
 #[component]
@@ -506,12 +566,21 @@ fn Select(value: String) -> NodeHandle {
 
 #[component]
 fn ChordLoopRow(bar_range: String, loop_name: String, color: String) -> NodeHandle {
-    let r = fixture::round1();
-    let romans = fixture::chord_loop_by_name(r, loop_name.as_str())
-        .map(|c| {
-            c.events
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let romans = project
+        .chord_loops
+        .values()
+        .find(|cl| cl.name == loop_name)
+        .map(|cl| {
+            cl.events
                 .iter()
-                .map(|e| e.roman.as_str())
+                .filter_map(|e| match &e.chord {
+                    ChordSpec::Functional { roman, suffix, .. } => {
+                        Some(roman_label(*roman, &suffix.quality))
+                    }
+                    ChordSpec::Absolute { .. } => None,
+                })
                 .collect::<Vec<_>>()
                 .join(" ")
         })

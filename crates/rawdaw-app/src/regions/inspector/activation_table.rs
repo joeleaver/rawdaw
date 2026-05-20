@@ -9,13 +9,18 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{self, ActivationOverride, ActivationState};
+use rawdaw_model::id::{TrackId, VariantId};
+use rawdaw_model::section::{ActivationOverride as ModelActivationOverride, Section};
+use rawdaw_model::track::TrackKind;
+
+use crate::overlay::ActivationState;
 use crate::parts::StatePill;
+use crate::state::AppState;
 use crate::theme;
 
 #[component]
 pub fn ActivationTable(section_name_key: String, variant_id: String) -> NodeHandle {
-    let r = fixture::round1();
+    let rows = build_activation_rows();
     let outer_style = format!(
         "border-radius: 4px; overflow: hidden; \
          border: 1px solid {line}; background: {bg0};",
@@ -37,18 +42,39 @@ pub fn ActivationTable(section_name_key: String, variant_id: String) -> NodeHand
                 div { "Pattern" }
                 div { style: "text-align: right;", "State" }
             }
-            for track in r.tracks.iter().cloned() {
+            for row in rows.clone() {
                 ActivationRow {
-                    key: track.id.clone(),
+                    key: row.track_id.get(),
                     section_name_key: section_name_key.clone(),
                     variant_id: variant_id.clone(),
-                    track_id: track.id,
-                    track_name: track.name,
-                    track_is_drum: track.kind == fixture::TrackKind::Drum,
+                    track_id: row.track_id,
+                    track_name: row.track_name,
+                    track_is_drum: row.track_is_drum,
                 }
             }
         }
     }
+}
+
+#[derive(Clone, PartialEq)]
+struct ActivationTrackRow {
+    track_id: TrackId,
+    track_name: String,
+    track_is_drum: bool,
+}
+
+fn build_activation_rows() -> Vec<ActivationTrackRow> {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    project
+        .tracks
+        .iter()
+        .map(|t| ActivationTrackRow {
+            track_id: t.id,
+            track_name: t.name.clone(),
+            track_is_drum: matches!(t.kind, TrackKind::Drum { .. }),
+        })
+        .collect()
 }
 
 /// Effective state for `track_id` in the named section under `variant_id`.
@@ -60,57 +86,73 @@ pub fn ActivationTable(section_name_key: String, variant_id: String) -> NodeHand
 /// and renders as `Inherit` (the round-1 inspector treats this as a
 /// quiet third pill).
 fn effective_state(
-    section_name_key: &str,
+    section_name: &str,
     variant_id: &str,
-    track_id: &str,
-) -> (Option<&'static str>, ActivationState, bool) {
-    let r = fixture::round1();
-    let Some(section) = fixture::section_by_key(r, section_name_key) else {
+    track_id: TrackId,
+) -> (Option<String>, ActivationState, bool) {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let Some(section) = project.sections.values().find(|s| s.name == section_name) else {
         return (None, ActivationState::Inherit, false);
     };
+    let variant = VariantId::from(variant_id);
 
-    // Variant override takes precedence over base. The override list is
-    // sparse — absence means "inherit base." The pattern strings borrow
-    // into the `'static Round1` returned by `fixture::round1()`, so
-    // `Option<&'static str>` is honest.
-    for (vid, ov) in section.variant_overrides.iter() {
-        if vid != variant_id {
-            continue;
-        }
-        for (tid, entry) in ov.iter() {
-            if tid != track_id {
-                continue;
+    // Variant override takes precedence over base. SectionVariantOverride.activations
+    // is sparse — absence means "inherit base."
+    if let Some(variant_override) = section.variants.get(&variant)
+        && let Some(activation_override) = variant_override.activations.get(&track_id)
+    {
+        return match activation_override {
+            ModelActivationOverride::Silent => {
+                let base_pattern = section
+                    .base
+                    .activations
+                    .get(&track_id)
+                    .and_then(|a| a.pattern_ref);
+                (
+                    pattern_name(&project, base_pattern),
+                    ActivationState::Silent,
+                    true,
+                )
             }
-            return match entry {
-                ActivationOverride::Silent => {
-                    let pat = section
-                        .activations
-                        .iter()
-                        .find(|(t, _)| t == track_id)
-                        .map(|(_, a)| a.pattern.as_str());
-                    (pat, ActivationState::Silent, true)
-                }
-                ActivationOverride::Replace(act) => (Some(act.pattern.as_str()), act.state, true),
-            };
-        }
+            ModelActivationOverride::Replace(entry) => {
+                let state = if entry.pattern_ref.is_some() {
+                    ActivationState::Active
+                } else {
+                    ActivationState::Silent
+                };
+                (pattern_name(&project, entry.pattern_ref), state, true)
+            }
+        };
     }
 
-    let Some(base) = section
-        .activations
-        .iter()
-        .find(|(tid, _)| tid == track_id)
-        .map(|(_, a)| a)
-    else {
+    let Some(base) = section.base.activations.get(&track_id) else {
         return (None, ActivationState::Inherit, false);
     };
-    (Some(base.pattern.as_str()), base.state, false)
+    let state = if base.pattern_ref.is_some() {
+        ActivationState::Active
+    } else {
+        ActivationState::Silent
+    };
+    (pattern_name(&project, base.pattern_ref), state, false)
 }
+
+fn pattern_name(
+    project: &rawdaw_model::project::Project,
+    pattern_ref: Option<rawdaw_model::id::PatternId>,
+) -> Option<String> {
+    let pid = pattern_ref?;
+    project.patterns.get(&pid).map(|p| p.name.clone())
+}
+
+#[allow(dead_code)]
+fn _section_lookup_helper(_s: &Section) {} // keeps Section import used after migration
 
 #[component]
 fn ActivationRow(
     section_name_key: String,
     variant_id: String,
-    track_id: String,
+    track_id: TrackId,
     track_name: String,
     track_is_drum: bool,
 ) -> NodeHandle {
@@ -133,15 +175,18 @@ fn ActivationRow(
          display: flex; align-items: center; gap: 5px;";
 
     let (pat_name_opt, state, overridden) =
-        effective_state(section_name_key.as_str(), variant_id.as_str(), track_id.as_str());
+        effective_state(section_name_key.as_str(), variant_id.as_str(), track_id);
 
-    let r = fixture::round1();
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
     let pat_swatch_color = pat_name_opt
-        .and_then(|n| fixture::pattern_by_name(r, n))
-        .map(|p| p.color.to_string())
+        .as_deref()
+        .and_then(|n| project.patterns.values().find(|p| p.name == n))
+        .and_then(|p| overlay.pattern_color.get(&p.id).cloned())
         .unwrap_or_default();
     let has_swatch = !pat_swatch_color.is_empty();
-    let pat_label = pat_name_opt.unwrap_or("—").to_string();
+    let pat_label = pat_name_opt.clone().unwrap_or_else(|| "—".to_string());
     let pat_cell_color = if pat_name_opt.is_some() {
         "rgba(232,234,238,0.62)"
     } else {
