@@ -1,5 +1,25 @@
 # Composition writability plan (v1)
 
+**Status as of 2026-05-20: Tier 0 ✅ CLOSED.** All five phases (C0–C5)
+landed across `6c94a05` (plan), C1's eight commits, C2 + C3's bundled
+`e59ab2a`, C4's `d7b0c03`, and this close-out. The fixture is gone,
+`AppState` carries `Signal<Rc<Project>>` + `Signal<Rc<ProjectOverlay>>`
++ `current_path`, edits flow through `AudioResources::apply_project_edit`
+which drains the engine's song queue and re-arms in lockstep with the
+host signal swap. Save / load round-trips through `.rawd` bundles via
+`project_io::{bundle,save,load}` + rfd file dialogs. The TopBar carries
+real editable name + BPM (number-input + ± nudges) + key dropdown
+(12 × {major, minor}); model schema bumped to v2 with a transparent
+v1 migration. 381 workspace tests; clippy clean across default /
+`--no-default-features` / `--features cpal-driver`; release build
+clean. **The next plan to land is `docs/chord-loop-editing-plan.md`**
+(Tier-1 first bite per design decision 12), tracked in
+[[project-next-session-pickup]]. The Tier-1 list in "Out of scope"
+below remains the open backlog for an actual end-to-end "compose a
+song" workflow.
+
+---
+
 Make the UI's view of the project **mutable**. Today every UI surface
 (`Arrangement`, `Library`, `TracksPane`, `Inspector`, `SectionEditor`) reads
 through `fixture::round1()` — a `OnceLock<Round1>` populated once at boot
@@ -203,7 +223,20 @@ smaller and build on C1. C5 closes out.
     assertion in `project_roundtrips_through_save_load`). Clippy clean
     across default / `--no-default-features` / `--features cpal-driver`;
     release build clean.
-- C5 — not started.
+- C5 ✅ — close-out + Tier-1 handoff.
+  - Summary paragraph at the top of this doc records what Tier 0
+    delivered + points at the Tier-1 first plan
+    (`docs/chord-loop-editing-plan.md`, written as part of C5 per
+    design decision 12).
+  - `project_status` + `project_next_session_pickup` memory
+    files flipped to Tier-0 ✅ CLOSED + point at the chord-loop
+    editing plan's CL0.
+  - `docs/design/composition-model.md` re-read; no C1–C4
+    clarifications required (Tier 0 didn't add editing surfaces,
+    so the activation-vs-ownership story stayed unchanged — the
+    prediction in the original C5 plan section was right).
+  - No code changes; test count + clippy/release status carry
+    over from C4 (`d7b0c03`).
 
 ---
 
