@@ -91,6 +91,15 @@ pub struct AppState {
     /// mutex). Drives the chord-loop editor surface introduced in CL2
     /// of `docs/chord-loop-editing-plan.md`.
     pub selected_chord_loop: Signal<Option<ChordLoopId>>,
+    /// Index into the focused chord loop's event vec of the
+    /// currently-focused chord event. Drives the chord-loop editor's
+    /// inspector pane (CL2). Lives on AppState rather than as a
+    /// component-local Signal so the timeline + inspector + future
+    /// CL4 realized strip share a single source of truth and
+    /// don't need to plumb a `Signal<Option<usize>>` through props
+    /// (rinch's `#[component]` requires every prop's type to
+    /// implement `Default`, which `Signal<Option<usize>>` does not).
+    pub focused_chord_event_idx: Signal<Option<usize>>,
     /// MIDI input routing target — *sticky* version of
     /// `selected_track`. Updates whenever the user picks a track
     /// (`select_track(Some(_))`); does NOT clear when a section
@@ -147,6 +156,7 @@ impl AppState {
             selected_idx: Signal::new(Some(1usize)),
             selected_track: Signal::new(None),
             selected_chord_loop: Signal::new(None),
+            focused_chord_event_idx: Signal::new(None),
             // The MIDI target seed is filled in by an Effect at boot
             // that reads the first Pitched track's index from
             // `AudioResources`. Starting as `None` keeps the contract
@@ -234,11 +244,23 @@ impl AppState {
     /// [`Self::select_track`] for the mirrors). MIDI routing
     /// (`midi_target_track`) is untouched — chord-loop selection is
     /// not a synth-target switch.
+    ///
+    /// Also resets [`EditorMode`] to `Arrangement` so the chord-
+    /// loop editor mounts inside the arrangement surface regardless
+    /// of whether the user was previously in the section editor —
+    /// the chord-loop editor is the new "center stage" content
+    /// (CL0 design decision 1 of `chord-loop-editing-plan.md`).
     pub fn select_chord_loop(&self, id: Option<ChordLoopId>) {
         if id.is_some() {
             self.selected_idx.set(None);
             self.selected_track.set(None);
+            self.editor_mode.set(EditorMode::Arrangement);
         }
+        // Switching which loop is open invalidates whatever event
+        // index was focused — clear it so the inspector lands in
+        // its empty state rather than pointing at a stale event
+        // in a different loop.
+        self.focused_chord_event_idx.set(None);
         self.selected_chord_loop.set(id);
     }
 

@@ -14,7 +14,9 @@ use std::rc::Rc;
 
 use crate::audio::AudioResources;
 use crate::initial_project;
-use crate::regions::{Arrangement, BottomStrip, Inspector, Library, TopBar, TracksPane};
+use crate::regions::{
+    Arrangement, BottomStrip, ChordLoopEditor, Inspector, Library, TopBar, TracksPane,
+};
 use crate::section_editor::SectionEditor;
 use crate::state::{AppState, EditorMode};
 use crate::theme;
@@ -116,20 +118,53 @@ fn ArrangementSurface() -> NodeHandle {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
             div { style: {row_style},
                 Library { }
-                TracksPane { }
-                Arrangement { }
-                // The for-loop drives an Inspector re-mount whenever
-                // `inspector_selection_keys()` returns a different
-                // string. The macro's key-fallback path Debug-formats
-                // the iteration variable for `for_each_dom_typed`'s
-                // identity, so the loop body itself never has to
-                // reference `sel` directly — the `_` prefix mirrors
-                // that intent and silences rustc's unused warning.
-                for _sel in inspector_selection_keys() {
-                    Inspector { }
+                // CL2: when a chord loop is selected, the editor
+                // takes over the center stage and the regular
+                // TracksPane + Arrangement + Inspector triplet
+                // disappears (per CL0 design decision 1 of the
+                // chord-loop-editing plan). The match scrutinee
+                // reads a Signal so rsx tracks selection changes
+                // and surgically swaps the subtree.
+                // `_chord_loop_id` underscore prefix silences the
+                // unused-variable lint — the rsx macro hides the
+                // inner prop use from the lint pass, but
+                // `_`-prefixed names are still usable in Rust.
+                if let Some(_chord_loop_id) =
+                    use_store::<AppState>().selected_chord_loop.get()
+                {
+                    ChordLoopEditor { id: _chord_loop_id }
+                } else {
+                    StandardArrangementRow { }
                 }
             }
             BottomStrip { }
+        }
+    }
+}
+
+/// The default arrangement row: TracksPane + Arrangement +
+/// Inspector. Pulled out so the chord-loop-editor swap above
+/// reads cleanly and the for-loop wrapping the Inspector keeps
+/// its existing selection-key re-mount behavior.
+#[component]
+fn StandardArrangementRow() -> NodeHandle {
+    rsx! {
+        // rsx fragment-like wrapper — the parent's flex row owns
+        // layout, so emit the three siblings inside a transparent
+        // wrapper.
+        div { style: "flex: 1; display: flex; min-width: 0;",
+            TracksPane { }
+            Arrangement { }
+            // The for-loop drives an Inspector re-mount whenever
+            // `inspector_selection_keys()` returns a different
+            // string. The macro's key-fallback path Debug-formats
+            // the iteration variable for `for_each_dom_typed`'s
+            // identity, so the loop body itself never has to
+            // reference `sel` directly — the `_` prefix mirrors
+            // that intent and silences rustc's unused warning.
+            for _sel in inspector_selection_keys() {
+                Inspector { }
+            }
         }
     }
 }

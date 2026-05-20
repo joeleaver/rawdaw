@@ -7,6 +7,7 @@
 
 pub mod arrangement;
 pub mod bottom_strip;
+pub mod chord_loop_editor;
 pub mod inspector;
 pub mod library;
 pub mod topbar;
@@ -14,6 +15,7 @@ pub mod tracks_pane;
 
 pub use arrangement::Arrangement;
 pub use bottom_strip::BottomStrip;
+pub use chord_loop_editor::ChordLoopEditor;
 pub use inspector::Inspector;
 pub use library::Library;
 pub use topbar::TopBar;

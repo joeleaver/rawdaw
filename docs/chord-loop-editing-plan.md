@@ -88,7 +88,84 @@ and points at the next Tier-1 bite.
     +5 selection-mutex). Clippy clean across default /
     `--no-default-features` / `--features cpal-driver`; release
     build clean.
-- CL2 — not started.
+- CL2 ✅ — single-loop timeline editor + per-event inspector.
+  - **New region** `regions/chord_loop_editor/` fanned into the
+    planned files from day one (per CL0 design decision 11):
+    `mod.rs` (top-level surface + EditorHeader + LoopLengthControls
+    — 316 lines), `timeline.rs` (toolbar + EventStrip + BarRuler +
+    append/delete actions — 329 lines), `event_block.rs` (one cell
+    with reactive focused-state highlight — 76 lines),
+    `helpers.rs` (pure helpers: `ticks_to_bars`,
+    `snap_ticks_to_beat`, `default_chord_event`,
+    `insert_chord_event_sorted` — 143 lines with 6 unit tests).
+  - **Inspector pane** split into its own sub-directory
+    (`regions/chord_loop_editor/inspector/`) when the single file
+    crested 998 lines: `mod.rs` carries `Inspector` +
+    `FocusedFields` + `ChordSpecKind` decomposer + `fetch_event` /
+    `mutate_event` + the `current_*_str` value-fn dispatchers
+    (324 lines); per-field modules — `roman_quality.rs` (152),
+    `chips.rs` (217, Extension + Alteration toggles via CSV
+    encoding), `bass.rs` (181, kind dropdown + Inversion /
+    Absolute sub-editors; ChordDegree + ScaleDegree defer to CL3),
+    `annotation.rs` (194, in_key + cadence + comment).
+  - **Selection model** extended: `AppState.focused_chord_event_idx:
+    Signal<Option<usize>>` (rather than a component-local Signal
+    threaded through props — rinch's `#[component]` requires every
+    prop to implement `Default`, and `Signal<Option<usize>>` does
+    not). `select_chord_loop` clears focus alongside its existing
+    mutex when the user switches loops.
+  - **App composition wiring**: `ArrangementSurface` now matches on
+    `selected_chord_loop.get()` — `Some(id)` renders
+    `ChordLoopEditor { id }`, `None` renders the
+    `StandardArrangementRow` (TracksPane + Arrangement + Inspector).
+    Library stays visible on the left; BottomStrip stays on the
+    bottom. The header bar's × button calls
+    `select_chord_loop(None)` to exit.
+  - **Header bar** carries inline-rename for the loop name
+    (`NameControl`-style untracked-Effect pattern), a numeric
+    bar-count editor with − / + nudges, and the close affordance.
+  - **Timeline** shows events as proportionally-sized blocks
+    (`EventBlock`); clicking selects (writes
+    `focused_chord_event_idx`); `+ Chord` appends a default
+    `Functional { I major }` event at the next free position;
+    `Delete` removes the focused event with focus-fixup logic.
+    Drag-to-move + resize-handle wiring deferred to a CL2.x
+    follow-up per CL plan ("the v1 surface uses the toolbar plus
+    insert/delete affordances plus the inspector's per-field
+    editors").
+  - **Per-event inspector** ships: RomanDegree dropdown (17
+    diatonic + chromatic), ChordQuality dropdown (18 named
+    variants — `Custom { intervals }` decode-rejected pending
+    CL3), Extension + Alteration chip rows (6 + 8 toggles via
+    CSV-encoded `active` props), BassSpec kind dropdown +
+    conditional Inversion / Absolute sub-editor, `in_key`
+    overlay-key picker (12 × {major, minor} + None), cadence
+    tag dropdown, comment text input. ChordDegree + ScaleDegree
+    bass-degree sub-editors render a deferral banner to be
+    expanded in CL3 alongside the shorthand parser.
+  - **Reactive value-fn pattern**: each `Select`'s `value_fn`
+    is a `move ||` closure capturing only the `Copy (id, idx)`
+    pair and reading the live event from the store on every
+    call. The earlier "capture an owned String in the outer
+    closure and clone inside" pattern hits rinch's
+    `Fn` capture rules — the value-fn dispatcher functions
+    (`current_roman_str`, `current_quality_str`,
+    `current_in_key_str`, `current_cadence_str`,
+    `current_bass_kind_str`) factor that re-fetch out.
+  - **rsx capture gotchas surfaced during CL2**: (a) `for x in vec`
+    inside rsx binds `x: &T` in the `key:` closure but `T` in the
+    body closure — `key: encode_extension(*ext)` plus
+    `label: ext_label(ext)` in the same prop list; (b)
+    `key: cell.idx as u64` fails because the macro borrows the
+    iteration var for `key:` only — use `key: cell.idx.to_string()`;
+    (c) `if let Some(x) = ... { Component { x } }` inside rsx
+    confuses the unused-variable lint — use `_x` prefix to silence
+    (the name is still usable in Rust). All documented inline.
+  - 408 workspace tests (was 395; +13 net: 6 helpers + 3
+    roman_quality + 1 chips + 1 bass + 2 annotation). Clippy clean
+    across default / `--no-default-features` / `--features
+    cpal-driver`; release build clean. All files under the 700-line
+    cap (largest is `timeline.rs` at 329).
 - CL3 — not started.
 - CL4 — not started.
 - CL5 — not started.
