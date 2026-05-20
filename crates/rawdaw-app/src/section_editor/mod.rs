@@ -17,7 +17,6 @@
 
 use rinch::prelude::*;
 
-use crate::fixture;
 use crate::state::{AppState, EditorMode};
 use crate::theme;
 
@@ -54,13 +53,18 @@ pub fn SectionEditor() -> NodeHandle {
         EditorMode::Arrangement => String::new(),
     };
 
-    let r = fixture::round1();
-    let section = fixture::section_by_key(r, section_key.as_str());
+    let project = app.project.get();
+    let overlay = app.overlay.get();
+    let section = project.sections.values().find(|s| s.name == section_key);
     let (section_name, section_color, default_variant) = match section {
         Some(s) => (
-            s.name.to_string(),
-            s.color.to_string(),
-            s.default_variant.to_string(),
+            s.name.clone(),
+            overlay
+                .section_color
+                .get(&s.id)
+                .cloned()
+                .unwrap_or_else(|| theme::TEXT2.to_string()),
+            s.default_variant.as_str().to_string(),
         ),
         None => (
             "(unknown section)".to_string(),

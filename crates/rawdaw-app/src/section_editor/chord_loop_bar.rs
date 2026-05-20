@@ -10,10 +10,11 @@
 //! ## Case preservation (UI principle 3)
 //!
 //! Roman numerals encode quality through case (`I` major, `vi` minor).
-//! Don't lowercase, uppercase, or small-caps them. The fixture stores
-//! the canonical case (`I`, `V`, `vi`, `IV`); the cell renders the
-//! string verbatim. The font sets `font-feature-settings: "tnum"` for
-//! tabular alignment with the absolute label below.
+//! Don't lowercase, uppercase, or small-caps them. `chord_display::
+//! roman_label` returns the canonical case (`I`, `V`, `vi`, `IV`); the
+//! cell renders the string verbatim. The font sets
+//! `font-feature-settings: "tnum"` for tabular alignment with the
+//! absolute label below.
 //!
 //! ## Multi-loop schedule (round-3 deferred)
 //!
@@ -27,8 +28,11 @@
 
 use rinch::prelude::*;
 
-use crate::fixture;
+use rawdaw_model::chord::ChordSpec;
+
+use crate::chord_display::{absolute_label, pitch_class_name, quality_suffix, roman_label};
 use crate::parts::rgba;
+use crate::state::AppState;
 use crate::theme;
 
 #[component]
@@ -46,9 +50,7 @@ pub fn ChordLoopBar(loop_name: String, duration_bars: u32) -> NodeHandle {
     // generated effect re-invokes the source. Following the round-1
     // arrangement pattern (`for cell in build_ribbon_cells()`), the
     // iteration source calls a free helper that re-runs the lookup on
-    // each tick. The lookups are cheap (linear scan of CHORD_LOOPS) and
-    // run on mount + on any signal read inside the for body (currently
-    // none).
+    // each tick.
     rsx! {
         div { style: {outer_style.clone()},
             for cell in build_cells_by_name(loop_name.clone(), duration_bars) {
@@ -66,11 +68,56 @@ pub fn ChordLoopBar(loop_name: String, duration_bars: u32) -> NodeHandle {
 }
 
 fn build_cells_by_name(loop_name: String, duration_bars: u32) -> Vec<ChordCellData> {
-    let r = fixture::round1();
-    match fixture::chord_loop_by_name(r, loop_name.as_str()) {
-        Some(loop_data) => build_cells(loop_data, duration_bars),
-        None => Vec::new(),
-    }
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
+    let Some(loop_data) = project.chord_loops.values().find(|cl| cl.name == loop_name) else {
+        return Vec::new();
+    };
+    let color = overlay
+        .chord_loop_color
+        .get(&loop_data.id)
+        .cloned()
+        .unwrap_or_else(|| theme::TEXT2.to_string());
+    // The chord loop floats with the section's scale by default; round-1
+    // chord loops carry no `key` override, so use the project default.
+    // Section scale overrides aren't yet plumbed through this helper —
+    // when they are, propagate the (section_id, scale) through alongside
+    // the loop name.
+    let scale = loop_data
+        .key
+        .clone()
+        .unwrap_or_else(|| project.default_key.clone());
+
+    // Pre-resolve each event's labels through chord_display so build_cells
+    // only deals with already-formatted strings.
+    let resolved: Vec<(String, String)> = loop_data
+        .events
+        .iter()
+        .map(|ev| match &ev.chord {
+            ChordSpec::Functional {
+                roman,
+                suffix,
+                in_key,
+            } => {
+                let s = in_key.as_ref().unwrap_or(&scale);
+                (
+                    roman_label(*roman, &suffix.quality),
+                    absolute_label(*roman, &suffix.quality, s),
+                )
+            }
+            ChordSpec::Absolute { root, suffix } => (
+                String::new(),
+                format!(
+                    "{}{}",
+                    pitch_class_name(*root),
+                    quality_suffix(&suffix.quality),
+                ),
+            ),
+        })
+        .collect();
+
+    build_cells(&resolved, color.as_str(), duration_bars)
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -83,23 +130,32 @@ struct ChordCellData {
     is_first_of_loop: bool,
 }
 
-fn build_cells(loop_data: &fixture::ChordLoop, duration_bars: u32) -> Vec<ChordCellData> {
-    if loop_data.events.is_empty() || duration_bars == 0 {
+/// Pure tiling: takes pre-resolved `(roman_label, absolute_label)`
+/// pairs for one chord-loop iteration, plus the loop's color and the
+/// target bar count, and produces one `ChordCellData` per bar by
+/// repeating the loop. The `(roman, absolute)` strings are already
+/// quality-coded — see `chord_display::roman_label`.
+///
+/// Tests construct the resolved pairs directly to exercise the
+/// tiling logic without depending on the chord_display or model
+/// machinery.
+fn build_cells(events: &[(String, String)], color: &str, duration_bars: u32) -> Vec<ChordCellData> {
+    if events.is_empty() || duration_bars == 0 {
         return Vec::new();
     }
     let mut cells = Vec::with_capacity(duration_bars as usize);
     let mut bar = 0u32;
     'outer: loop {
-        for (ei, ev) in loop_data.events.iter().enumerate() {
+        for (ei, (roman, absolute)) in events.iter().enumerate() {
             if bar >= duration_bars {
                 break 'outer;
             }
             cells.push(ChordCellData {
                 bar,
-                roman: ev.roman.to_string(),
-                quality: ev.quality.to_string(),
-                absolute: ev.absolute.to_string(),
-                color: loop_data.color.to_string(),
+                roman: roman.clone(),
+                quality: String::new(),
+                absolute: absolute.clone(),
+                color: color.to_string(),
                 is_first_of_loop: ei == 0,
             });
             bar += 1;
@@ -154,9 +210,9 @@ fn ChordCell(
     );
 
     // Mockup concatenates roman + quality into a single label. quality
-    // is the empty string for round-1/2 fixtures (the case carries the
-    // quality), but mirror the concat so a future `m7`/`maj7` quality
-    // string renders next to the numeral.
+    // is the empty string for round-1/2 chord-loop events (the case
+    // carries the quality), but mirror the concat so a future
+    // `m7`/`maj7` quality string renders next to the numeral.
     let label = format!("{roman}{quality}");
 
     rsx! {
@@ -171,30 +227,18 @@ fn ChordCell(
 mod tests {
     use super::*;
 
-    fn fake_loop(events: Vec<fixture::ChordEvent>, color: &str) -> fixture::ChordLoop {
-        let len = events.len() as u32;
-        fixture::ChordLoop {
-            id: "test".into(),
-            name: "test".into(),
-            color: color.into(),
-            length_bars: len,
-            events,
-        }
-    }
-
-    fn four_events() -> Vec<fixture::ChordEvent> {
+    fn four_events() -> Vec<(String, String)> {
         vec![
-            fixture::ChordEvent { roman: "I".into(),  quality: "".into(), absolute: "C".into()  },
-            fixture::ChordEvent { roman: "V".into(),  quality: "".into(), absolute: "G".into()  },
-            fixture::ChordEvent { roman: "vi".into(), quality: "".into(), absolute: "Am".into() },
-            fixture::ChordEvent { roman: "IV".into(), quality: "".into(), absolute: "F".into()  },
+            ("I".into(), "C".into()),
+            ("V".into(), "G".into()),
+            ("vi".into(), "Am".into()),
+            ("IV".into(), "F".into()),
         ]
     }
 
     #[test]
     fn one_iteration_yields_one_first_of_loop_stripe() {
-        let cl = fake_loop(four_events(), "#000000");
-        let cells = build_cells(&cl, 4);
+        let cells = build_cells(&four_events(), "#000000", 4);
         assert_eq!(cells.len(), 4);
         let firsts = cells.iter().filter(|c| c.is_first_of_loop).count();
         assert_eq!(firsts, 1);
@@ -204,8 +248,7 @@ mod tests {
 
     #[test]
     fn two_iterations_yield_two_first_of_loop_stripes() {
-        let cl = fake_loop(four_events(), "#000000");
-        let cells = build_cells(&cl, 8);
+        let cells = build_cells(&four_events(), "#000000", 8);
         assert_eq!(cells.len(), 8);
         let firsts: Vec<u32> = cells
             .iter()
@@ -217,8 +260,7 @@ mod tests {
 
     #[test]
     fn partial_iteration_truncates_to_duration() {
-        let cl = fake_loop(four_events(), "#000000");
-        let cells = build_cells(&cl, 6);
+        let cells = build_cells(&four_events(), "#000000", 6);
         assert_eq!(cells.len(), 6);
         // Second iteration was cut after two events.
         let firsts: Vec<u32> = cells
@@ -232,19 +274,15 @@ mod tests {
 
     #[test]
     fn empty_loop_or_zero_duration_yields_no_cells() {
-        let empty = fake_loop(Vec::new(), "#000000");
-        assert!(build_cells(&empty, 4).is_empty());
-
-        let cl = fake_loop(four_events(), "#000000");
-        assert!(build_cells(&cl, 0).is_empty());
+        assert!(build_cells(&Vec::new(), "#000000", 4).is_empty());
+        assert!(build_cells(&four_events(), "#000000", 0).is_empty());
     }
 
     #[test]
     fn roman_case_is_preserved() {
         // Principle 3: case carries chord quality. Don't lowercase
         // major or uppercase minor.
-        let cl = fake_loop(four_events(), "#000000");
-        let cells = build_cells(&cl, 4);
+        let cells = build_cells(&four_events(), "#000000", 4);
         let romans: Vec<&str> = cells.iter().map(|c| c.roman.as_str()).collect();
         assert_eq!(romans, vec!["I", "V", "vi", "IV"]);
     }

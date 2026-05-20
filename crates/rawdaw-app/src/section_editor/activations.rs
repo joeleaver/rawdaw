@@ -4,14 +4,14 @@
 
 use rinch::prelude::*;
 
-use crate::fixture;
 use crate::parts::Icon;
+use crate::state::AppState;
 use crate::theme;
 
 #[component]
 pub fn ActivationsHeader() -> NodeHandle {
-    let r = fixture::round1();
-    let n = r.tracks.len();
+    let app = use_store::<AppState>();
+    let n = app.project.get().tracks.len();
 
     let row_style = format!(
         "display: flex; align-items: center; gap: 8px; \

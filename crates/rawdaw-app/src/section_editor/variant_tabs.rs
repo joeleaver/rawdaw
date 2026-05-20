@@ -16,8 +16,8 @@
 
 use rinch::prelude::*;
 
-use crate::fixture;
 use crate::parts::Icon;
+use crate::regions::inspector::variant_options_for_section;
 use crate::state::{AppState, EditorMode};
 use crate::theme;
 
@@ -41,13 +41,7 @@ pub fn VariantTabs(
 
     rsx! {
         div { style: {strip_style.clone()},
-            for v in fixture::round1()
-                .sections
-                .iter()
-                .find(|s| s.name == key.as_str())
-                .map(|s| s.variants.clone())
-                .unwrap_or_default()
-            {
+            for v in variant_options_for_section(key.clone()) {
                 VariantTab {
                     key: v.id.clone(),
                     variant_id: v.id.clone(),

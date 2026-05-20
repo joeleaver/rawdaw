@@ -27,10 +27,21 @@
 
 use rinch::prelude::*;
 
-use crate::fixture::{self, Activation, ActivationOverride, Section};
-use crate::overlay::{ActivationState, TrackKindTag};
+use rawdaw_model::id::{TrackId, VariantId};
+use rawdaw_model::pattern::PatternBody;
+use rawdaw_model::project::Project;
+use rawdaw_model::section::{ActivationOverride as ModelActivationOverride, Section};
+use rawdaw_model::track::{Role, TrackKind as ModelTrackKind};
+
+use crate::overlay::{ActivationState, ProjectOverlay, Realization, ScheduleEntry, TrackKindTag};
 use crate::state::{AppState, EditorMode};
 use crate::theme;
+
+/// Sentinel `VariantId` value the round-2 model uses to mean "this
+/// sub-range is silent." Surfaced here as a constant rather than a
+/// literal so subsequent C2 work can replace the sentinel with a
+/// typed `Option<VariantId>` on `ActivationEntry.variant_schedule`.
+const SILENT_VARIANT_SENTINEL: &str = "__silent__";
 
 mod activation_cell;
 mod cell_inherit;
@@ -64,7 +75,7 @@ pub fn CellList() -> NodeHandle {
         div { style: {outer_style.clone()},
             for slot in resolve_cells(section_key_for_iter.clone(), variant_from_store()) {
                 CellRow {
-                    key: slot.track_id.clone(),
+                    key: slot.track_id.get(),
                     slot: slot,
                 }
             }
@@ -91,7 +102,7 @@ fn variant_from_store() -> String {
 /// requires every field type to itself implement `Default`).
 #[derive(Clone, PartialEq, Default)]
 pub struct CellSlot {
-    pub track_id: String,
+    pub track_id: TrackId,
     pub track_name: String,
     pub track_kind: TrackKindTag,
     pub track_role: String,
@@ -103,13 +114,13 @@ pub struct CellSlot {
     pub variant: ResolvedVariant,
 }
 
-// `Active` carries a fully-resolved Activation (with its variant_schedule
-// Vec and pattern String) so it's substantially bigger than `Inherit`.
-// ResolvedVariant lives briefly inside per-render `Vec<CellSlot>` — at
-// most one entry per project track per cell render — so boxing the
-// Active payload to equalize variant sizes would trade a meaningful
-// allocation for negligible memory savings. Suppress the warning here
-// rather than introduce that indirection.
+// `Active` carries a fully-resolved set of UI strings plus the
+// realization + schedule the cell components consume; substantially
+// bigger than `Inherit`. ResolvedVariant lives briefly inside per-
+// render `Vec<CellSlot>` — at most one entry per project track per
+// cell render — so boxing to equalize variant sizes would trade a
+// meaningful allocation for negligible memory savings. Suppress the
+// warning rather than add the indirection.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq)]
 pub enum ResolvedVariant {
@@ -132,10 +143,18 @@ pub enum ResolvedVariant {
         /// when the variant override produced this slot; `None` on
         /// pure-base entries.
         source_label: Option<String>,
-        /// Carry the resolved `Activation` so future phases (realization,
-        /// schedule) can read humanization / overrides without
-        /// re-walking the merge.
-        activation: Activation,
+        /// Realization decorations — humanization / voicing / octave —
+        /// resolved from overlay.lookup_cell. `None` when the overlay
+        /// has no cell entry for this `(section, variant, track)`
+        /// triple, in which case the realization column falls back to
+        /// role defaults.
+        realization: Option<Realization>,
+        /// Variant-schedule sub-range pins, converted from the model's
+        /// `(BarRange, VariantId)` entries. The sentinel
+        /// `SILENT_VARIANT_SENTINEL` collapses to `variant: None`
+        /// (silenced sub-range); any other id becomes
+        /// `variant: Some(name)`.
+        schedule: Vec<ScheduleEntry>,
     },
     /// Track has no entry in either base or the active variant. This
     /// is the natural empty state, so it's the `Default` impl —
@@ -154,95 +173,171 @@ impl Default for ResolvedVariant {
 }
 
 fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
-    let r = fixture::round1();
-    let Some(section) = fixture::section_by_key(r, section_key.as_str()) else {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let overlay = app.overlay.get();
+    let Some(section) = project
+        .sections
+        .values()
+        .find(|s| s.name == section_key)
+        .cloned()
+    else {
         return Vec::new();
     };
 
-    let total_bars = section.base_duration_bars;
-    r.tracks
+    let total_bars = section.base.duration_bars;
+    project
+        .tracks
         .iter()
         .map(|track| {
-            let variant = resolve_one(section, variant.as_str(), track.id.as_str());
+            let resolved = resolve_one(&project, &overlay, &section, &variant, track.id);
             CellSlot {
-                track_id: track.id.clone(),
+                track_id: track.id,
                 track_name: track.name.clone(),
-                track_kind: match track.kind {
-                    fixture::TrackKind::Pitched => TrackKindTag::Pitched,
-                    fixture::TrackKind::Drum => TrackKindTag::Drum,
-                },
-                track_role: track.role.clone(),
+                track_kind: TrackKindTag::from_model(&track.kind),
+                track_role: track_role_label(&track.kind),
                 total_bars,
-                variant,
+                variant: resolved,
             }
         })
         .collect()
 }
 
-fn resolve_one(section: &Section, variant_id: &str, track_id: &str) -> ResolvedVariant {
-    // Look up the variant-override entry for (variant_id, track_id), if
-    // any. `variant_overrides` is sparse — absence means "inherit base."
-    let override_entry = section
-        .variant_overrides
-        .iter()
-        .find(|(vid, _)| vid == variant_id)
-        .and_then(|(_, list)| list.iter().find(|(tid, _)| tid == track_id))
-        .map(|(_, ov)| ov);
+fn track_role_label(kind: &ModelTrackKind) -> String {
+    match kind {
+        ModelTrackKind::Drum { .. } => String::new(),
+        ModelTrackKind::Pitched { role } => match role {
+            Role::Bass => "bass",
+            Role::Voicing => "voicing",
+            Role::Arp => "arp",
+            Role::Melodic => "melodic",
+            Role::Pad => "pad",
+            Role::Countermelody => "countermel",
+            Role::Other => "other",
+        }
+        .to_string(),
+    }
+}
 
-    let base = section
-        .activations
-        .iter()
-        .find(|(tid, _)| tid == track_id)
-        .map(|(_, a)| a.clone());
+fn resolve_one(
+    project: &Project,
+    overlay: &ProjectOverlay,
+    section: &Section,
+    variant_id: &str,
+    track_id: TrackId,
+) -> ResolvedVariant {
+    let variant = VariantId::from(variant_id);
+
+    // Variant override takes precedence over base. SectionVariantOverride.activations
+    // is sparse — absence means "inherit base."
+    let override_entry = section
+        .variants
+        .get(&variant)
+        .and_then(|v| v.activations.get(&track_id));
+    let base = section.base.activations.get(&track_id);
 
     match (override_entry, base) {
         (None, None) => ResolvedVariant::Inherit {
             reason: "no entry in base",
         },
-        (None, Some(base)) => activation_to_variant(base, false, None),
-        (Some(ActivationOverride::Silent), Some(base)) => {
-            // Silent keeps base's pattern + realization, flips state.
-            let mut act = base;
-            act.state = ActivationState::Silent;
-            act.overridden = true;
-            activation_to_variant(act, true, Some("silenced in this variant".to_string()))
+        (None, Some(entry)) => entry_to_variant(
+            project, overlay, section, variant_id, track_id, entry, false, None,
+        ),
+        (Some(ModelActivationOverride::Silent), Some(base)) => {
+            // Silent keeps base's pattern + realization but flips state.
+            // We re-use entry_to_variant on the base entry then patch
+            // the state to Silent + flag overridden.
+            let mut resolved = entry_to_variant(
+                project,
+                overlay,
+                section,
+                variant_id,
+                track_id,
+                base,
+                true,
+                Some("silenced in this variant".to_string()),
+            );
+            if let ResolvedVariant::Active { state, .. } = &mut resolved {
+                *state = ActivationState::Silent;
+            }
+            resolved
         }
-        (Some(ActivationOverride::Silent), None) => ResolvedVariant::Inherit {
-            // The mockup doesn't render this combination — base has to
-            // exist for a Silent override to silence anything. Mirror
-            // that: fall back to Inherit with a diagnostic reason.
+        (Some(ModelActivationOverride::Silent), None) => ResolvedVariant::Inherit {
             reason: "silent override without base",
         },
-        (Some(ActivationOverride::Replace(act)), _) => {
-            let mut act = act.clone();
-            act.overridden = true;
-            activation_to_variant(act, true, Some("replaced in this variant".to_string()))
-        }
+        (Some(ModelActivationOverride::Replace(entry)), _) => entry_to_variant(
+            project,
+            overlay,
+            section,
+            variant_id,
+            track_id,
+            entry,
+            true,
+            Some("replaced in this variant".to_string()),
+        ),
     }
 }
 
-fn activation_to_variant(
-    act: Activation,
+#[allow(clippy::too_many_arguments)] // intermediate helper inside resolve_one;
+                                     // each param is load-bearing and pulling
+                                     // them into a struct here would just rename
+                                     // the noise.
+fn entry_to_variant(
+    project: &Project,
+    overlay: &ProjectOverlay,
+    section: &Section,
+    variant_id: &str,
+    track_id: TrackId,
+    entry: &rawdaw_model::activation::ActivationEntry,
     overridden_by_variant: bool,
     source_label: Option<String>,
 ) -> ResolvedVariant {
-    let r = fixture::round1();
-    let pat = fixture::pattern_by_name(r, act.pattern.as_str());
+    let pat = entry.pattern_ref.and_then(|pid| project.patterns.get(&pid));
     let pattern_default_variant = pat
-        .map(|p| p.default_variant.clone())
+        .map(|p| p.default_variant.as_str().to_string())
         .unwrap_or_default();
-    let (pattern_color, pattern_kind) = pat
-        .map(|p| (p.color.clone(), p.kind.clone()))
-        .unwrap_or_else(|| (theme::TEXT2.to_string(), String::new()));
+    let pattern_name = pat.map(|p| p.name.clone()).unwrap_or_default();
+    let pattern_color = pat
+        .and_then(|p| overlay.pattern_color.get(&p.id).cloned())
+        .unwrap_or_else(|| theme::TEXT2.to_string());
+    let pattern_kind = pat
+        .map(|p| match &p.body {
+            PatternBody::Pitched(_) => "Pitched".to_string(),
+            PatternBody::Drum(_) => "Drum".to_string(),
+        })
+        .unwrap_or_default();
+    let state = if entry.pattern_ref.is_some() {
+        ActivationState::Active
+    } else {
+        ActivationState::Silent
+    };
+    let realization = overlay
+        .lookup_cell(section.id, variant_id, track_id)
+        .map(|c| c.realization);
+    let schedule = entry
+        .variant_schedule
+        .iter()
+        .map(|(range, vid)| ScheduleEntry {
+            start_bar: range.start,
+            end_bar: range.end,
+            variant: if vid.as_str() == SILENT_VARIANT_SENTINEL {
+                None
+            } else {
+                Some(vid.as_str().to_string())
+            },
+        })
+        .collect();
+
     ResolvedVariant::Active {
-        pattern_name: act.pattern.clone(),
+        pattern_name,
         pattern_color,
         pattern_kind,
         pattern_default_variant,
-        state: act.state,
+        state,
         overridden_by_variant,
         source_label,
-        activation: act,
+        realization,
+        schedule,
     }
 }
 
@@ -259,19 +354,9 @@ fn CellRow(slot: CellSlot) -> NodeHandle {
             state,
             overridden_by_variant,
             source_label,
-            activation,
+            realization,
+            schedule,
         } => {
-            // The realization parameters travel into the cell so Phase 5's
-            // RealizationColumn can compare them against the track role's
-            // defaults (`fixture::role_defaults`) and surface
-            // `↳ role default` vs `*` overrides per field. Phase 6 reads
-            // `activation.variant_schedule` similarly. Converting the
-            // sparse `&'static [ScheduleEntry]` into an owned
-            // `Vec<ScheduleEntry>` keeps `ScheduleColumn`'s prop owned
-            // (the `#[component]` macro requires owned param types).
-            let realization = activation.realization;
-            let schedule: Vec<crate::fixture::ScheduleEntry> =
-                activation.variant_schedule.to_vec();
             let total_bars = slot.total_bars;
             rsx! {
                 ActivationCell {
@@ -305,13 +390,31 @@ fn CellRow(slot: CellSlot) -> NodeHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rawdaw_model::fixtures::build_round1_project;
+
+    fn round1_setup() -> (Project, ProjectOverlay, Section, TrackId, TrackId, TrackId) {
+        let (project, keys) = build_round1_project();
+        let overlay = crate::initial_project::overlay::build_round1_overlay(&keys);
+        let section = project
+            .sections
+            .get(&keys.sections.verse)
+            .cloned()
+            .expect("verse exists");
+        (
+            project,
+            overlay,
+            section,
+            keys.tracks.pad,
+            keys.tracks.bass,
+            keys.tracks.lead,
+        )
+    }
 
     #[test]
     fn pad_in_verse_base_resolves_to_inherit() {
-        // Per fixture: verse@base has no pad entry (decision 14).
-        let r = fixture::round1();
-        let section = fixture::section_by_key(r, "verse").expect("verse exists");
-        let resolved = resolve_one(section, "base", "t_pad");
+        // Per round-2 decision 14: verse@base has no pad entry.
+        let (project, overlay, section, pad, _bass, _lead) = round1_setup();
+        let resolved = resolve_one(&project, &overlay, &section, "base", pad);
         match resolved {
             ResolvedVariant::Inherit { reason } => {
                 assert_eq!(reason, "no entry in base");
@@ -322,10 +425,9 @@ mod tests {
 
     #[test]
     fn bass_in_verse_stripped_resolves_to_silent_variant_override() {
-        // Per fixture: verse-stripped overrides bass with Silent.
-        let r = fixture::round1();
-        let section = fixture::section_by_key(r, "verse").expect("verse exists");
-        let resolved = resolve_one(section, "stripped", "t_bass");
+        // Per round-2 decision 20: verse-stripped overrides bass with Silent.
+        let (project, overlay, section, _pad, bass, _lead) = round1_setup();
+        let resolved = resolve_one(&project, &overlay, &section, "stripped", bass);
         match resolved {
             ResolvedVariant::Active {
                 state,
@@ -343,9 +445,8 @@ mod tests {
 
     #[test]
     fn lead_in_verse_stripped_resolves_to_replace_override() {
-        let r = fixture::round1();
-        let section = fixture::section_by_key(r, "verse").expect("verse exists");
-        let resolved = resolve_one(section, "stripped", "t_lead");
+        let (project, overlay, section, _pad, _bass, lead) = round1_setup();
+        let resolved = resolve_one(&project, &overlay, &section, "stripped", lead);
         match resolved {
             ResolvedVariant::Active {
                 overridden_by_variant,
@@ -361,9 +462,14 @@ mod tests {
 
     #[test]
     fn drums_in_verse_base_resolves_to_active_no_override() {
-        let r = fixture::round1();
-        let section = fixture::section_by_key(r, "verse").expect("verse exists");
-        let resolved = resolve_one(section, "base", "t_drums");
+        let (project, overlay, section, _pad, _bass, _lead) = round1_setup();
+        let drums = project
+            .tracks
+            .iter()
+            .find(|t| t.name == "drums")
+            .expect("drums track")
+            .id;
+        let resolved = resolve_one(&project, &overlay, &section, "base", drums);
         match resolved {
             ResolvedVariant::Active {
                 state,
