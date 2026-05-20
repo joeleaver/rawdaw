@@ -5,44 +5,8 @@
 //! presentation concern — model crate stays free of display logic per
 //! CLAUDE.md rule 1.
 
-use rawdaw_model::scale::{Mode, Scale};
 use rawdaw_model::tempo::TempoMap;
 use rawdaw_model::time::MusicalTime;
-
-use crate::chord_display::pitch_class_name;
-
-/// `"C major"`, `"A minor"`, `"D dorian"`, etc.
-///
-/// Reads the tonic via `pitch_class_name` to share the chord-display
-/// spelling convention (sharp-leaning, e.g. `"C#"` not `"D♭"`).
-pub fn scale_label(scale: &Scale) -> String {
-    let tonic = pitch_class_name(scale.tonic);
-    let mode = mode_label(&scale.mode);
-    format!("{tonic} {mode}")
-}
-
-fn mode_label(mode: &Mode) -> &'static str {
-    match mode {
-        Mode::Ionian => "major",
-        Mode::Aeolian => "minor",
-        Mode::Dorian => "dorian",
-        Mode::Phrygian => "phrygian",
-        Mode::Lydian => "lydian",
-        Mode::Mixolydian => "mixolydian",
-        Mode::Locrian => "locrian",
-        Mode::HarmonicMinor => "harmonic minor",
-        Mode::MelodicMinor => "melodic minor",
-        Mode::PhrygianDominant => "phrygian dominant",
-        Mode::Lydian7 => "lydian dominant",
-        Mode::Altered => "altered",
-        Mode::MajorPentatonic => "major pentatonic",
-        Mode::MinorPentatonic => "minor pentatonic",
-        Mode::Blues => "blues",
-        Mode::WholeTone => "whole tone",
-        Mode::Chromatic => "chromatic",
-        Mode::Custom { .. } => "custom",
-    }
-}
 
 /// Current BPM in effect at the start of the arrangement. Reads the
 /// first BPM event in the map; returns the model's documented fallback
@@ -88,14 +52,7 @@ fn beat_unit_denominator(unit: rawdaw_model::tempo::BeatUnit) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rawdaw_model::pitch::PitchClass;
     use rawdaw_model::tempo::BeatUnit;
-
-    #[test]
-    fn scale_label_formats_tonic_and_mode() {
-        assert_eq!(scale_label(&Scale::major(PitchClass::C)), "C major");
-        assert_eq!(scale_label(&Scale::natural_minor(PitchClass::A)), "A minor");
-    }
 
     #[test]
     fn current_bpm_falls_back_to_120() {

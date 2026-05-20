@@ -41,12 +41,6 @@ pub use types::{
 /// project as part of `SavedBundle` in C3 of the writability plan.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProjectOverlay {
-    /// User-facing project name shown in the top bar. The model
-    /// `Project` doesn't carry a `name` field yet — C4 of the
-    /// writability plan promotes this into the model with a schema
-    /// version bump. For Tier 0 the name lives here so the TopBar can
-    /// render and persist a real value via `SavedBundle`.
-    pub project_name: String,
     /// Per-pattern accent color (`#RRGGBB`). Absent entries fall back to
     /// `theme::TEXT2` at render time.
     pub pattern_color: BTreeMap<PatternId, String>,

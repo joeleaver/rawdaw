@@ -136,7 +136,73 @@ smaller and build on C1. C5 closes out.
     pushes it harder.
   - 369 workspace tests (was 362; +7 project_io). Clippy clean
     across all three feature builds; release build clean.
-- C4 — not started.
+- C4 ✅ — editable tempo / key / project name in TopBar.
+  - Model: schema v1 → v2. `Project.name: String` added with
+    `#[serde(default = "default_project_name")]` defaulting missing
+    fields to `"Untitled"`. New helpers
+    `Project::check_loadable(version)` and
+    `Project::migrate_to_current(project)` carry the dispatch logic;
+    `Project::load` uses both internally, and the app's
+    `project_io::load::load_from_path` calls them too so v1 bundles
+    (the `.rawd` files C3 users may have on disk already) load through
+    the same migration path.
+  - Two new model tests pin the migration:
+    `v2_project_round_trip_preserves_name` (set a non-default name,
+    save, load, assert preserved) and
+    `v1_project_migrates_to_v2_with_default_name` (derives a v1 RON
+    fixture by stripping `name:` and lowering the schema_version line
+    of a v2 empty project, then asserts `Project::load` produces
+    `name = "Untitled"` and `schema_version = 2`).
+  - TopBar split into the four-file structure the C3 plan
+    anticipated: `regions/topbar/{mod,project_meta,transport,
+    midi_picker}.rs`. `mod.rs` composes the columns and exposes the
+    shared `Tag` micro-helper; `transport.rs` owns `TransportBtn`;
+    `midi_picker.rs` owns the K2 dropdown; `project_meta.rs` carries
+    all C4 controls plus the C3 `ProjectMenu` + its dialog Effects +
+    new/save/save_as actions + `IconBtn` for zoom/gear.
+  - **Three new editable controls in `project_meta.rs`:**
+    - `NameControl` — inline text input bound to `Project.name`. Local
+      `Signal<String>` buffer; an `Effect` reads the project signal
+      and syncs the display when external mutations (load, future
+      automation) change the canonical name. The Effect peeks the
+      buffer via `rinch::core::reactive::untracked` so mid-edit typing
+      isn't a feedback loop. Enter commits via
+      `app.apply_project_edit(|p| p.name = new_name)`; empty input on
+      Enter reverts to canonical (never commits a blank).
+    - `BpmControls` — `−` / `+` nudges (1 BPM each, floored at
+      `MIN_BPM = 1.0`) plus a text input with the same buffer +
+      untracked-Effect pattern. Commits via
+      `apply_project_edit(|p| p.tempo_map = TempoMap::constant(new_bpm,
+      beats_per_bar, beat_unit))` preserving the existing time
+      signature. Replaces the C2 `BumpBpmDebug` placeholder (deleted,
+      along with `bump_bpm_by_one`). Free-standing helpers
+      `parse_bpm` / `format_bpm` / `nudge_bpm` / `commit_bpm` carry
+      the contract and have unit tests.
+    - `KeyDropdown` — `Select` with 24 options (12 pitch classes ×
+      {major, minor} = Ionian/Aeolian only for v1; non-major/minor
+      scales fall back to displaying their major equivalent in the
+      dropdown). Value encoding is structured
+      `"<semitones-from-C>/<mode>"`; helpers `scale_dropdown_value` /
+      `parse_scale_dropdown_value` / `key_dropdown_options` carry the
+      encoding contract with round-trip + malformed-input tests.
+      Commits via `apply_project_edit(|p| p.default_key = new_scale)`,
+      which re-realizes every Roman-numeral chord under the new key.
+  - `crate::project_display::scale_label` + private `mode_label` were
+    deleted — the KeyDropdown owns its own labeling now and no other
+    call site reads them. `current_bpm` + `time_signature_label`
+    stayed; the time signature is still read-only chrome (model + UI
+    only honor constant time signatures today).
+  - File-cap watch: `project_meta.rs` lands at 676 lines, under the
+    700 cap but at the watermark. The next non-trivial addition to
+    project_meta (likely a Preferences panel migration of the MIDI
+    picker, per [[project-preferences-screen]]) will force a split
+    into `project_meta/{mod,bpm,key,name,menu}.rs`.
+  - 381 workspace tests (was 369; +12 net: +2 model migration, +5 BPM,
+    +5 key dropdown, +0 NameControl helpers (no pure functions to test),
+    −1 deleted `scale_label_formats_tonic_and_mode`, +1 substring
+    assertion in `project_roundtrips_through_save_load`). Clippy clean
+    across default / `--no-default-features` / `--features cpal-driver`;
+    release build clean.
 - C5 — not started.
 
 ---

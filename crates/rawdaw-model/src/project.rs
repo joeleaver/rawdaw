@@ -23,9 +23,19 @@ use crate::track::Track;
 /// of `Project` (or anything reachable from it) changes in a way that an
 /// older version of rawdaw wouldn't understand.
 ///
-/// When this changes, also: add a migration entry, update the test
-/// `loading_an_unsupported_version_fails`, and document the change.
-pub const SCHEMA_VERSION: u32 = 1;
+/// When this changes, also add a migration entry to [`Project::migrate_to_current`]
+/// plus a `loadable_versions` entry in [`Project::check_loadable`], update the
+/// test `loading_an_unsupported_version_fails`, and document the change here.
+///
+/// # Version history
+///
+/// - **v1** (initial): `schema_version, default_key, tempo_map, patterns,
+///   chord_loops, sections, drum_kits, tracks, arrangement, id_allocators`.
+/// - **v2** (composition-writability C4): adds `name: String`. v1 files
+///   migrate via the `serde(default = "default_project_name")` attribute
+///   on `Project.name` (defaults missing field to `"Untitled"`) and
+///   [`Project::migrate_to_current`] bumps the in-memory version.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Top-level project state.
 ///
@@ -39,6 +49,13 @@ pub const SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub schema_version: u32,
+
+    /// User-facing project name. Shown in the top bar; seeds the
+    /// default filename in "Save As…". Added in schema v2; v1 files
+    /// load with this defaulted to `"Untitled"` via
+    /// [`default_project_name`].
+    #[serde(default = "default_project_name")]
+    pub name: String,
 
     /// Project-wide default key. Sections inherit unless they override.
     pub default_key: Scale,
@@ -123,10 +140,18 @@ impl IdAllocators {
     }
 }
 
+/// Default value for [`Project::name`] when loading a v1 file (which
+/// doesn't carry the field) and when [`Project::new`] builds an empty
+/// project. Kept in sync with `composition-writability-plan.md` C4.
+pub fn default_project_name() -> String {
+    "Untitled".to_string()
+}
+
 impl Project {
     pub fn new(default_key: Scale) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
+            name: default_project_name(),
             default_key,
             tempo_map: TempoMap::default(),
             patterns: BTreeMap::new(),
@@ -144,26 +169,70 @@ impl Project {
         ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()).map_err(SaveError::Ron)
     }
 
-    /// Deserialize a project from RON, verifying the schema version matches
-    /// [`SCHEMA_VERSION`].
+    /// Deserialize a project from RON, with migration support for
+    /// older known versions.
     ///
-    /// **Migration is not yet implemented.** Loading a file with a different
-    /// schema version returns `LoadError::UnsupportedSchemaVersion`. When we
-    /// add migrations, they'll dispatch by version after a lightweight peek
-    /// that doesn't require parsing the full body.
+    /// Loading dispatches in three steps:
+    /// 1. Peek the on-disk `schema_version` via a header-only
+    ///    deserialize. A version this build doesn't recognize returns
+    ///    [`LoadError::UnsupportedSchemaVersion`] before any heavy
+    ///    parsing — see [`Project::check_loadable`].
+    /// 2. Deserialize the full body. Missing fields added in newer
+    ///    versions are populated by `serde(default = ...)` attributes
+    ///    on the field declarations.
+    /// 3. Run [`Project::migrate_to_current`] to bump the in-memory
+    ///    `schema_version` so any follow-up `save` writes the current
+    ///    format.
     pub fn load(s: &str) -> Result<Self, LoadError> {
-        // First peek at just the version. If the body has shifted in a way
-        // that the *full* `Project` deserialize can't handle, we still want
-        // to give the user a clean "wrong version" error instead of a parse
-        // error from somewhere deep inside the file.
         let header: SchemaHeader = ron::de::from_str(s).map_err(LoadError::Parse)?;
-        if header.schema_version != SCHEMA_VERSION {
-            return Err(LoadError::UnsupportedSchemaVersion {
-                found: header.schema_version,
+        Self::check_loadable(header.schema_version)?;
+        let project: Project = ron::de::from_str(s).map_err(LoadError::Parse)?;
+        Ok(Self::migrate_to_current(project))
+    }
+
+    /// Return `Ok` if `version` is a version this build knows how to
+    /// load (current [`SCHEMA_VERSION`] plus any older versions
+    /// covered by [`Project::migrate_to_current`]). Returns
+    /// [`LoadError::UnsupportedSchemaVersion`] otherwise.
+    ///
+    /// Exposed so callers that deserialize a `Project` *outside* of
+    /// [`Project::load`] (notably the app's `project_io` bundle
+    /// loader, which deserializes the project as a sub-value of a
+    /// `SavedBundle`) can run the same version check + migration
+    /// without duplicating the dispatch logic.
+    pub fn check_loadable(version: u32) -> Result<(), LoadError> {
+        match version {
+            1 | 2 => Ok(()),
+            v => Err(LoadError::UnsupportedSchemaVersion {
+                found: v,
                 expected: SCHEMA_VERSION,
-            });
+            }),
         }
-        ron::de::from_str(s).map_err(LoadError::Parse)
+    }
+
+    /// Apply any required migrations to bring `project` up to the
+    /// current [`SCHEMA_VERSION`]. Idempotent — re-running on an
+    /// already-current project is a no-op.
+    ///
+    /// Migration entries (newest first):
+    ///
+    /// - **v1 → v2** (composition-writability C4): `Project.name` was
+    ///   added. v1 RON files don't carry the field; serde's
+    ///   `default = "default_project_name"` attribute on `Project.name`
+    ///   populates it with `"Untitled"` during the deserialize step
+    ///   that precedes this call. The migration step here only needs
+    ///   to bump the in-memory `schema_version`.
+    pub fn migrate_to_current(mut project: Project) -> Project {
+        if project.schema_version == 1 {
+            project.schema_version = 2;
+        }
+        debug_assert_eq!(
+            project.schema_version, SCHEMA_VERSION,
+            "migrate_to_current must leave the project at SCHEMA_VERSION; \
+             missing migration entry for v{}?",
+            project.schema_version,
+        );
+        project
     }
 }
 

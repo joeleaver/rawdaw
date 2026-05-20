@@ -83,12 +83,9 @@ mod tests {
         // The headline contract: serialize → parse → equal value.
         // Uses the round-1 fixture so the bundle exercises the real
         // shape (every track, every chord loop, every section).
-        let (project, _) = build_round1_project();
-        let overlay = ProjectOverlay {
-            project_name: "Test Song".into(),
-            ..Default::default()
-        };
-        let bundle = SavedBundle::new(project, overlay);
+        let (mut project, _) = build_round1_project();
+        project.name = "Test Song".into();
+        let bundle = SavedBundle::new(project, ProjectOverlay::default());
 
         let serialized = ron::ser::to_string_pretty(&bundle, ron::ser::PrettyConfig::default())
             .expect("serialize succeeds");

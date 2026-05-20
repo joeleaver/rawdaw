@@ -31,7 +31,12 @@ mod tests;
 /// project" depending on user choice. This function's signature is the
 /// stable contract for that future swap.
 pub fn build_initial() -> (Project, ProjectOverlay) {
-    let (project, keys) = build_round1_project();
+    let (mut project, keys) = build_round1_project();
+    // C4 promoted the project name into the model. The round-1 demo
+    // ships with a recognizable seed name so the TopBar's name field
+    // renders something other than the `Project::new` default of
+    // "Untitled" out of the box.
+    project.name = "untitled-1".to_string();
     let overlay = overlay::build_round1_overlay(&keys);
     (project, overlay)
 }

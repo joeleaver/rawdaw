@@ -17,6 +17,7 @@ fn project_roundtrips_through_save_load() {
     // Sanity-check a few distinctive substrings so we notice if the on-disk
     // shape changes unexpectedly.
     assert!(serialized.contains(&format!("schema_version: {SCHEMA_VERSION}")));
+    assert!(serialized.contains("name: \"Untitled\""));
     assert!(serialized.contains("default_key:"));
     assert!(serialized.contains("Functional("));
     assert!(serialized.contains("Chord("));
@@ -25,6 +26,63 @@ fn project_roundtrips_through_save_load() {
 
     let deserialized = Project::load(&serialized).unwrap();
     assert_eq!(original, deserialized);
+}
+
+#[test]
+fn v2_project_round_trip_preserves_name() {
+    // The v2 field-add: `Project.name`. A non-default value must
+    // survive save → load — pins both the serialize and the
+    // deserialize sides of the new field.
+    let mut original = common::build_tiny_project();
+    original.name = "My Verse".into();
+
+    let serialized = original.save().unwrap();
+    assert!(serialized.contains("name: \"My Verse\""));
+
+    let deserialized = Project::load(&serialized).unwrap();
+    assert_eq!(deserialized.name, "My Verse");
+    assert_eq!(original, deserialized);
+}
+
+#[test]
+fn v1_project_migrates_to_v2_with_default_name() {
+    // composition-writability C4 migration contract: a v1 project
+    // (no `name` field, schema_version: 1) loads into a v2 build by
+    // defaulting `name` to "Untitled" via the `serde(default = ...)`
+    // attribute and bumping the in-memory schema_version.
+    //
+    // The fixture is derived from a current empty project rather than
+    // hand-crafted RON so it tracks the model's evolution — when a
+    // future schema version adds another field, the same strip-and-
+    // version-rewrite trick covers it.
+    let current = Project::new(Scale::major(PitchClass::C));
+    let v2_ron = current.save().unwrap();
+
+    // Build a v1 RON by lowering the version line and stripping the
+    // `name: "..."` line (v1 RON didn't carry that field). Filtering
+    // by `starts_with("name:")` on the trimmed line is robust to
+    // pretty-printer indentation; the project's nested types don't
+    // currently carry a field literally named `name:` at the top
+    // level of a struct (track names sit under `name:` too, but
+    // there's only one top-level `Project.name` so trimming + line
+    // filtering catches it cleanly given the empty-project fixture
+    // has zero tracks).
+    let v1_ron = v2_ron
+        .replacen("schema_version: 2", "schema_version: 1", 1)
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("name:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(v1_ron.contains("schema_version: 1"));
+    assert!(!v1_ron.contains("name:"));
+
+    let migrated = Project::load(&v1_ron).expect("v1 → v2 migration succeeds");
+    assert_eq!(migrated.schema_version, SCHEMA_VERSION);
+    assert_eq!(migrated.name, "Untitled");
+    // The rest of the project should round-trip identically (the
+    // only change between v1 and v2 is the name field).
+    assert_eq!(migrated.default_key, current.default_key);
+    assert_eq!(migrated.tempo_map, current.tempo_map);
 }
 
 #[test]
@@ -40,7 +98,9 @@ fn loading_an_unsupported_version_fails() {
     let project = common::build_tiny_project();
     let serialized = project.save().unwrap();
 
-    // Surgically rewrite the version to a value we don't support.
+    // Surgically rewrite the version to a value we don't support. `+999`
+    // guarantees we're past the loadable range (currently {1, 2}); when a
+    // future v3 lands, the migration check still rejects vN+999.
     let fake_version = SCHEMA_VERSION + 999;
     let tampered = serialized.replacen(
         &format!("schema_version: {SCHEMA_VERSION}"),

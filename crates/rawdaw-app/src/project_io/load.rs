@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 
-use rawdaw_model::project::{LoadError as ProjectLoadError, SCHEMA_VERSION};
+use rawdaw_model::project::{LoadError as ProjectLoadError, Project};
 
 use crate::audio::AudioResources;
 use crate::state::AppState;
@@ -38,20 +38,20 @@ pub fn load_from_path(path: &Path) -> Result<SavedBundle, LoadBundleError> {
             expected: BUNDLE_VERSION,
         });
     }
-    let bundle: SavedBundle = ron::de::from_str(&raw).map_err(LoadBundleError::Parse)?;
-    // Extra defense: the inner `Project` already carries its own
-    // schema_version field that serde checks during decode (every
-    // missing-field error surfaces as `Parse`). Validate it against
-    // the current model SCHEMA_VERSION too so the user gets a
-    // version-shape error rather than a confusing partial parse.
-    if bundle.project.schema_version != SCHEMA_VERSION {
-        return Err(LoadBundleError::Project(
-            ProjectLoadError::UnsupportedSchemaVersion {
-                found: bundle.project.schema_version,
-                expected: SCHEMA_VERSION,
-            },
-        ));
-    }
+    let mut bundle: SavedBundle = ron::de::from_str(&raw).map_err(LoadBundleError::Parse)?;
+    // The inner `Project` deserializes with whatever `schema_version`
+    // is on disk; serde's `default = ...` attributes on individual
+    // fields (e.g. `Project.name`, added in v2) populate anything the
+    // file omits. We still need to (a) reject versions outside the
+    // loadable range and (b) bump the in-memory schema_version to the
+    // current value via `Project::migrate_to_current` so any
+    // subsequent save writes the current shape. Sharing
+    // `check_loadable` + `migrate_to_current` with `Project::load`
+    // keeps the dispatch logic in one place — see
+    // `composition-writability-plan.md` C4.
+    Project::check_loadable(bundle.project.schema_version)
+        .map_err(LoadBundleError::Project)?;
+    bundle.project = Project::migrate_to_current(bundle.project);
     Ok(bundle)
 }
 

@@ -18,8 +18,6 @@ use crate::theme;
 pub fn build_round1_overlay(k: &Round1Keys) -> ProjectOverlay {
     let mut o = ProjectOverlay::empty();
 
-    o.project_name = "untitled-1".to_string();
-
     o.pattern_color.insert(k.patterns.bass,  theme::PAL_TEAL.to_string());
     o.pattern_color.insert(k.patterns.lead,  theme::PAL_PLUM.to_string());
     o.pattern_color.insert(k.patterns.drums, theme::PAL_SAGE.to_string());
