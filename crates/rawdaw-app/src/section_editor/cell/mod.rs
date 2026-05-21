@@ -194,12 +194,13 @@ fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
 
     let total_bars = section.base.duration_bars;
     let section_id = section.id;
+    let variant_id = VariantId::from(variant.as_str());
     project
         .tracks
         .iter()
         .map(|track| {
             let resolved = resolve_one(&project, &overlay, &section, &variant, track.id);
-            let bound_pattern_value = bound_pattern_id(&section, track.id)
+            let bound_pattern_value = effective_pattern_id(&section, track.id, &variant_id)
                 .map(PatternId::get)
                 .unwrap_or(pattern_select::NO_PATTERN_SENTINEL);
             CellSlot {
@@ -216,11 +217,29 @@ fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
         .collect()
 }
 
-/// The pattern id bound to `(section.base, track)`. We always pull from
-/// base for the pattern-picker initial value because P4 edits target
-/// base only; variant overrides are read-only for now. Variant-context
-/// editing comes in P4.x.
-fn bound_pattern_id(section: &Section, track_id: TrackId) -> Option<PatternId> {
+/// Effective pattern id at `(section, track)` for the currently-active
+/// variant tab. Walks the override chain so the picker shows what the
+/// user is actually editing in this variant: variant `Replace` →
+/// `Silent` → fall back to `section.base.activations[track].pattern_ref`.
+///
+/// The base-tab path skips the override lookup (no override should ever
+/// be keyed by `section.default_variant`, but we shortcut anyway).
+fn effective_pattern_id(
+    section: &Section,
+    track_id: TrackId,
+    variant_id: &VariantId,
+) -> Option<PatternId> {
+    if section.default_variant != *variant_id
+        && let Some(over) = section.variants.get(variant_id)
+    {
+        match over.activations.get(&track_id) {
+            Some(ModelActivationOverride::Replace(entry)) => return entry.pattern_ref,
+            // `Silent` overrides base entirely — show "(no pattern)"
+            // in the picker so picking a pattern re-Replaces.
+            Some(ModelActivationOverride::Silent) => return None,
+            None => {}
+        }
+    }
     section
         .base
         .activations

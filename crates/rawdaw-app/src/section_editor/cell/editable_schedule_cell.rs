@@ -21,7 +21,7 @@ use crate::pattern_actions::{
     clear_activation_variant_range, merge_activation_variant_left,
     merge_activation_variant_right, set_activation_variant_for_bar,
 };
-use crate::state::AppState;
+use crate::state::{AppState, EditorMode};
 use crate::theme;
 
 use super::schedule_column::BarCellKind;
@@ -214,6 +214,17 @@ fn silent_variant_id() -> VariantId {
     VariantId::new("__silent__")
 }
 
+/// Read the active variant from `EditorMode`. Returns `None` when the
+/// section editor isn't mounted (shouldn't fire — these handlers only
+/// exist inside the section editor — but the closure paths can't
+/// `unreachable!` safely without surfacing in panic logs).
+fn active_variant_id(app: &AppState) -> Option<VariantId> {
+    match app.editor_mode.get() {
+        EditorMode::SectionEditor { variant, .. } => Some(VariantId::from(variant)),
+        EditorMode::Arrangement => None,
+    }
+}
+
 fn commit_variant_for_bar(
     section_id: SectionId,
     track_id: TrackId,
@@ -222,6 +233,7 @@ fn commit_variant_for_bar(
     value: String,
 ) {
     let app = use_store::<AppState>();
+    let Some(variant_id) = active_variant_id(&app) else { return };
     if let Err(e) = app.apply_project_edit(move |p| {
         // Re-derive the pattern's default-variant string inside the
         // edit closure so the rsx onchange handler doesn't have to
@@ -241,7 +253,7 @@ fn commit_variant_for_bar(
             other if other == default_variant => None,
             other => Some(VariantId::new(other.to_string())),
         };
-        set_activation_variant_for_bar(p, section_id, track_id, bar, new_variant);
+        set_activation_variant_for_bar(p, section_id, track_id, &variant_id, bar, new_variant);
     }) {
         eprintln!("section_editor: set activation variant failed: {e}");
     }
@@ -249,8 +261,9 @@ fn commit_variant_for_bar(
 
 fn commit_merge_left(section_id: SectionId, track_id: TrackId, bar: u32) {
     let app = use_store::<AppState>();
+    let Some(variant_id) = active_variant_id(&app) else { return };
     if let Err(e) = app.apply_project_edit(move |p| {
-        merge_activation_variant_left(p, section_id, track_id, bar);
+        merge_activation_variant_left(p, section_id, track_id, &variant_id, bar);
     }) {
         eprintln!("section_editor: merge-left failed: {e}");
     }
@@ -258,8 +271,9 @@ fn commit_merge_left(section_id: SectionId, track_id: TrackId, bar: u32) {
 
 fn commit_merge_right(section_id: SectionId, track_id: TrackId, bar: u32) {
     let app = use_store::<AppState>();
+    let Some(variant_id) = active_variant_id(&app) else { return };
     if let Err(e) = app.apply_project_edit(move |p| {
-        merge_activation_variant_right(p, section_id, track_id, bar);
+        merge_activation_variant_right(p, section_id, track_id, &variant_id, bar);
     }) {
         eprintln!("section_editor: merge-right failed: {e}");
     }
@@ -267,8 +281,9 @@ fn commit_merge_right(section_id: SectionId, track_id: TrackId, bar: u32) {
 
 fn commit_clear_range(section_id: SectionId, track_id: TrackId, bar: u32) {
     let app = use_store::<AppState>();
+    let Some(variant_id) = active_variant_id(&app) else { return };
     if let Err(e) = app.apply_project_edit(move |p| {
-        clear_activation_variant_range(p, section_id, track_id, bar);
+        clear_activation_variant_range(p, section_id, track_id, &variant_id, bar);
     }) {
         eprintln!("section_editor: clear-range failed: {e}");
     }
