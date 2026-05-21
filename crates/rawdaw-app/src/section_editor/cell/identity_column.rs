@@ -16,12 +16,18 @@
 
 use rinch::prelude::*;
 
+use rawdaw_model::id::{SectionId, TrackId};
+
 use crate::overlay::{ActivationState, TrackKindTag as TrackKind};
 use crate::parts::{rgba, Icon, StatePill};
+use super::pattern_select::PatternSelect;
 use crate::theme;
 
 #[component]
 pub fn IdentityColumn(
+    section_id: SectionId,
+    track_id: TrackId,
+    bound_pattern_value: u64,
     track_name: String,
     track_kind: TrackKind,
     track_role: String,
@@ -69,6 +75,11 @@ pub fn IdentityColumn(
                     pattern_color: pattern_color.clone(),
                     pattern_kind: pattern_kind.clone(),
                 }
+            }
+            PatternSelect {
+                section_id: section_id,
+                track_id: track_id,
+                current_pattern_value: bound_pattern_value,
             }
             CellFooter {
                 pinned: pinned_count,

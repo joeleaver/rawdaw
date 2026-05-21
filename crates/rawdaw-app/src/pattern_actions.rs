@@ -20,7 +20,9 @@
 //!   rename / delete / duplicate) shared by pitched and drum bodies.
 //! - `pattern_actions/test_support.rs`: shared `#[cfg(test)]` fixtures.
 
+mod activations;
 mod events;
+mod variant_schedule;
 mod variants;
 mod voices;
 
@@ -31,13 +33,18 @@ pub use events::{
     delete_pitched_event, insert_drum_event, insert_pitched_event, set_pitched_pattern_length,
     update_pitched_event,
 };
+pub use activations::{
+    clear_activation_variant_range, merge_activation_variant_left,
+    merge_activation_variant_right, set_activation_pattern, set_activation_variant_for_bar,
+};
+// `remove_activation` is the explicit "drop the entry, not just clear
+// the pattern_ref" path. No UI consumer yet — the PatternSelect's
+// "(no pattern)" option just nulls pattern_ref. Suppress the unused
+// re-export until a delete affordance lands.
+#[allow(unused_imports)]
+pub use activations::remove_activation;
 pub use variants::{create_variant, delete_variant, duplicate_variant, VariantEditError};
-// Drum CRUD + voice CRUD re-exports land here ahead of their UI
-// consumers (P3 step 4-5 mount the inspector + voice management
-// header). Suppress unused-imports until those land.
-#[allow(unused_imports)]
 pub use events::{delete_drum_event, set_drum_pattern_length, update_drum_event};
-#[allow(unused_imports)]
 pub use voices::{add_drum_voice, remove_drum_voice, VoiceEditError};
 // `rename_variant` + `rename_drum_voice` land in polish passes (no UI
 // consumers yet) — re-exports suppressed so the unused-import lint

@@ -15,6 +15,8 @@
 
 use rinch::prelude::*;
 
+use rawdaw_model::id::{SectionId, TrackId};
+
 use crate::overlay::{ActivationState, Realization, ScheduleEntry, TrackKindTag as TrackKind};
 use crate::parts::StripePaper;
 use crate::section_editor::cell::identity_column::IdentityColumn;
@@ -24,6 +26,11 @@ use crate::theme;
 
 #[component]
 pub fn ActivationCell(
+    section_id: SectionId,
+    track_id: TrackId,
+    /// Currently-bound pattern id (raw u64); 0 = unbound. Drives the
+    /// PatternSelect's `value` prop in the IdentityColumn.
+    bound_pattern_value: u64,
     track_name: String,
     track_kind: TrackKind,
     track_role: String,
@@ -73,6 +80,9 @@ pub fn ActivationCell(
                 radius: radius,
                 div { style: {grid_style.clone()},
                     IdentityColumn {
+                        section_id: section_id,
+                        track_id: track_id,
+                        bound_pattern_value: bound_pattern_value,
                         track_name: track_name,
                         track_kind: track_kind,
                         track_role: track_role,
@@ -89,6 +99,9 @@ pub fn ActivationCell(
                         track_role: realization_track_role,
                     }
                     ScheduleColumn {
+                        section_id: section_id,
+                        track_id: track_id,
+                        bound_pattern_value: bound_pattern_value,
                         schedule: schedule,
                         total_bars: total_bars,
                         pattern_color: pattern_color_for_schedule,

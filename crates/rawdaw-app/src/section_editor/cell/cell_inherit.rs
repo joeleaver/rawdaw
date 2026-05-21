@@ -4,12 +4,18 @@
 
 use rinch::prelude::*;
 
+use rawdaw_model::id::{SectionId, TrackId};
+
 use crate::overlay::TrackKindTag as TrackKind;
 use crate::parts::Icon;
 use crate::theme;
 
+use super::pattern_select::PatternSelect;
+
 #[component]
 pub fn CellInherit(
+    section_id: SectionId,
+    track_id: TrackId,
     track_name: String,
     track_kind: TrackKind,
     track_role: String,
@@ -45,14 +51,12 @@ pub fn CellInherit(
     let name_owned = track_name.clone();
     let reason_owned = reason.clone();
     let reason_style = format!("color: {text3};", text3 = theme::TEXT3);
-    let add_btn_style = format!(
-        "padding: 3px 10px; border-radius: 3px; \
-         background: transparent; border: 1px solid {line}; \
-         color: {text1}; cursor: pointer; font-size: 11px; \
-         font-family: inherit;",
-        line = theme::LINE,
-        text1 = theme::TEXT1,
-    );
+    // Inherit rows render the picker at "(no pattern)" via the
+    // shared sentinel. The `let` binding sidesteps the rsx macro's
+    // auto-Option-wrap on bare integer literals (same trick as
+    // IdentityColumn's `pinned_count` and the various Icon `size`
+    // call sites).
+    let no_pattern_value: u64 = super::pattern_select::NO_PATTERN_SENTINEL;
 
     rsx! {
         div { style: {outer_style.clone()},
@@ -64,9 +68,15 @@ pub fn CellInherit(
             }
             span { style: "flex: 1;" }
             span { style: {reason_style.clone()}, {reason_owned.clone()} }
-            button {
-                r#type: "button", style: {add_btn_style.clone()},
-                "+ Add activation"
+            // P4: picking a pattern here creates the activation
+            // entry via `set_activation_pattern`. The "+ Add
+            // activation" affordance from the round-2 mockup
+            // collapses into the picker itself — one click, one
+            // resulting entry.
+            PatternSelect {
+                section_id: section_id,
+                track_id: track_id,
+                current_pattern_value: no_pattern_value,
             }
         }
     }

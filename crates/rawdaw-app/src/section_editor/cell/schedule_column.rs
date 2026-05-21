@@ -20,20 +20,30 @@
 
 use rinch::prelude::*;
 
+use rawdaw_model::id::{SectionId, TrackId};
+
 use crate::overlay::ScheduleEntry;
-use crate::parts::{
-    rgba, Icon, ScheduleSegment, ScheduleSegmentStyle, ScheduleTimeline,
-};
+use crate::parts::{rgba, Icon, ScheduleSegment, ScheduleSegmentStyle};
 use crate::theme;
+
+use super::editable_schedule_cell::EditableScheduleCell;
 
 #[component]
 pub fn ScheduleColumn(
+    section_id: SectionId,
+    track_id: TrackId,
+    /// Bound pattern id (raw u64); 0 = unbound. When unbound the
+    /// editable cells render disabled (no variants to schedule).
+    bound_pattern_value: u64,
     schedule: Vec<ScheduleEntry>,
     total_bars: u32,
     pattern_color: String,
     pattern_default_variant: String,
     silent: bool,
 ) -> NodeHandle {
+    let _ = silent; // silent state is per-row, not per-bar — kept on
+                    // the prop list for future use; the per-bar cells
+                    // handle silence locally via the SILENT sentinel.
     let col_style =
         "padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;".to_string();
     let title_style = format!(
@@ -41,29 +51,47 @@ pub fn ScheduleColumn(
          color: {text2}; font-weight: 600;",
         text2 = theme::TEXT2,
     );
-    // Build segments for the timeline + the legend display.
+    // Build segments for the legend + the per-bar variant lookup.
     let segments = build_segments(&schedule, total_bars, pattern_default_variant.as_str());
     let legend_entries: Vec<LegendEntry> = segments
         .iter()
         .filter_map(LegendEntry::from_segment)
         .collect();
     let show_hint = !legend_entries.is_empty();
-    let segments_for_timeline = segments.clone();
-    let pattern_color_for_timeline = pattern_color.clone();
     let pattern_color_for_legend = pattern_color.clone();
     let legend_for_iter = legend_entries.clone();
 
-    // Same `Fn`-source rule as parts::ScheduleTimeline — `.clone()`
-    // inside the for source rebuilds the Vec from the captured
-    // borrow on each render tick.
+    // Per-bar cells. Each cell knows its bar index + the variant
+    // covering that bar (computed from `segments`). Click commits
+    // through pattern_actions::set_activation_variant_for_bar.
+    let bar_row_style = format!(
+        "display: flex; gap: 2px; padding: 2px; \
+         background: {bg0}; border: 1px solid {line}; border-radius: 4px; \
+         min-height: 36px;",
+        bg0 = theme::BG0,
+        line = theme::LINE,
+    );
+    let bar_cells = build_bar_cells(&segments, total_bars, pattern_default_variant.as_str());
+    let pattern_color_for_cells = pattern_color.clone();
+    let default_variant_for_cells = pattern_default_variant.clone();
+
     rsx! {
         div { style: {col_style.clone()},
             div { style: {title_style.clone()}, "Variant schedule" }
-            ScheduleTimeline {
-                total_bars: total_bars,
-                segments: segments_for_timeline,
-                pattern_color: pattern_color_for_timeline,
-                silent: silent,
+            div { style: {bar_row_style.clone()},
+                for cell in bar_cells.clone() {
+                    EditableScheduleCell {
+                        key: cell.bar.to_string(),
+                        section_id: section_id,
+                        track_id: track_id,
+                        bound_pattern_value: bound_pattern_value,
+                        default_variant: default_variant_for_cells.clone(),
+                        bar: cell.bar,
+                        variant_label: cell.variant_label.clone(),
+                        kind: cell.kind,
+                        pattern_color: pattern_color_for_cells.clone(),
+                    }
+                }
             }
             if show_hint {
                 ScheduleHint { }
@@ -77,6 +105,62 @@ pub fn ScheduleColumn(
             }
         }
     }
+}
+
+/// Per-bar cell data driving the editable bar row. Each cell carries
+/// the resolved variant label + which kind of segment covers it
+/// (default fill / named override / silent), so the EditableScheduleCell
+/// can render the right pill style without re-walking the segment
+/// list itself.
+#[derive(Clone, PartialEq, Default)]
+pub(super) struct BarCellData {
+    pub bar: u32,
+    pub variant_label: String,
+    pub kind: BarCellKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Default)]
+pub(super) enum BarCellKind {
+    #[default]
+    Default,
+    Named,
+    Silent,
+}
+
+fn build_bar_cells(
+    segments: &[ScheduleSegment],
+    total_bars: u32,
+    default_variant: &str,
+) -> Vec<BarCellData> {
+    (0..total_bars)
+        .map(|bar| {
+            let covering = segments.iter().find(|s| s.start_bar <= bar && bar < s.end_bar);
+            match covering {
+                Some(seg) => match seg.style {
+                    ScheduleSegmentStyle::Silent => BarCellData {
+                        bar,
+                        variant_label: "silent".to_string(),
+                        kind: BarCellKind::Silent,
+                    },
+                    ScheduleSegmentStyle::NonDefault => BarCellData {
+                        bar,
+                        variant_label: seg.label.clone(),
+                        kind: BarCellKind::Named,
+                    },
+                    ScheduleSegmentStyle::DefaultFill => BarCellData {
+                        bar,
+                        variant_label: default_variant.to_string(),
+                        kind: BarCellKind::Default,
+                    },
+                },
+                None => BarCellData {
+                    bar,
+                    variant_label: default_variant.to_string(),
+                    kind: BarCellKind::Default,
+                },
+            }
+        })
+        .collect()
 }
 
 /// Build the fully-populated segment list from the sparse fixture

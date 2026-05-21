@@ -27,7 +27,7 @@
 
 use rinch::prelude::*;
 
-use rawdaw_model::id::{TrackId, VariantId};
+use rawdaw_model::id::{PatternId, SectionId, TrackId, VariantId};
 use rawdaw_model::pattern::PatternBody;
 use rawdaw_model::project::Project;
 use rawdaw_model::section::{ActivationOverride as ModelActivationOverride, Section};
@@ -45,7 +45,9 @@ const SILENT_VARIANT_SENTINEL: &str = "__silent__";
 
 mod activation_cell;
 mod cell_inherit;
+mod editable_schedule_cell;
 mod identity_column;
+mod pattern_select;
 mod realization_column;
 mod schedule_column;
 
@@ -102,6 +104,7 @@ fn variant_from_store() -> String {
 /// requires every field type to itself implement `Default`).
 #[derive(Clone, PartialEq, Default)]
 pub struct CellSlot {
+    pub section_id: SectionId,
     pub track_id: TrackId,
     pub track_name: String,
     pub track_kind: TrackKindTag,
@@ -111,6 +114,10 @@ pub struct CellSlot {
     /// column needs it to draw the timeline. Cheaper than threading a
     /// parent prop down through CellRow / ActivationCell.
     pub total_bars: u32,
+    /// Currently-bound pattern id (raw u64), or 0 when no pattern is
+    /// bound. The pattern picker uses this as its `value` prop so
+    /// project edits re-bind the Select.
+    pub bound_pattern_value: u64,
     pub variant: ResolvedVariant,
 }
 
@@ -186,21 +193,39 @@ fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
     };
 
     let total_bars = section.base.duration_bars;
+    let section_id = section.id;
     project
         .tracks
         .iter()
         .map(|track| {
             let resolved = resolve_one(&project, &overlay, &section, &variant, track.id);
+            let bound_pattern_value = bound_pattern_id(&section, track.id)
+                .map(PatternId::get)
+                .unwrap_or(pattern_select::NO_PATTERN_SENTINEL);
             CellSlot {
+                section_id,
                 track_id: track.id,
                 track_name: track.name.clone(),
                 track_kind: TrackKindTag::from_model(&track.kind),
                 track_role: track_role_label(&track.kind),
                 total_bars,
+                bound_pattern_value,
                 variant: resolved,
             }
         })
         .collect()
+}
+
+/// The pattern id bound to `(section.base, track)`. We always pull from
+/// base for the pattern-picker initial value because P4 edits target
+/// base only; variant overrides are read-only for now. Variant-context
+/// editing comes in P4.x.
+fn bound_pattern_id(section: &Section, track_id: TrackId) -> Option<PatternId> {
+    section
+        .base
+        .activations
+        .get(&track_id)
+        .and_then(|e| e.pattern_ref)
 }
 
 fn track_role_label(kind: &ModelTrackKind) -> String {
@@ -297,9 +322,15 @@ fn entry_to_variant(
         .map(|p| p.default_variant.as_str().to_string())
         .unwrap_or_default();
     let pattern_name = pat.map(|p| p.name.clone()).unwrap_or_default();
+    // Pattern color must be a `#RRGGBB` hex literal because the
+    // downstream `parts::rgba(hex, alpha)` helper (used by
+    // `schedule_column` + the editable schedule cells) `debug_assert!`s
+    // that shape. `theme::ACCENT` is a real hex; `theme::TEXT2` is an
+    // already-baked rgba string and would crash the debug build when
+    // an unbound activation flows through this path.
     let pattern_color = pat
         .and_then(|p| overlay.pattern_color.get(&p.id).cloned())
-        .unwrap_or_else(|| theme::TEXT2.to_string());
+        .unwrap_or_else(|| theme::ACCENT.to_string());
     let pattern_kind = pat
         .map(|p| match &p.body {
             PatternBody::Pitched(_) => "Pitched".to_string(),
@@ -360,6 +391,9 @@ fn CellRow(slot: CellSlot) -> NodeHandle {
             let total_bars = slot.total_bars;
             rsx! {
                 ActivationCell {
+                    section_id: slot.section_id,
+                    track_id: slot.track_id,
+                    bound_pattern_value: slot.bound_pattern_value,
                     track_name: slot.track_name,
                     track_kind: slot.track_kind,
                     track_role: slot.track_role,
@@ -378,6 +412,8 @@ fn CellRow(slot: CellSlot) -> NodeHandle {
         }
         ResolvedVariant::Inherit { reason } => rsx! {
             CellInherit {
+                section_id: slot.section_id,
+                track_id: slot.track_id,
                 track_name: slot.track_name,
                 track_kind: slot.track_kind,
                 track_role: slot.track_role,
