@@ -1,5 +1,28 @@
 # Pattern editor plan (v1)
 
+> **Status (close-out, 2026-05-21):** All P0–P5 phases ✅ landed
+> across commits `c076d20` (P0 plan + design lock) → `3d0d8ca`
+> (P1 library CRUD) → `ccbd7b2` (P2 pitched piano-roll + per-note
+> inspector) → `214b335` (P3 drum step-grid) → `6e74b00` (P4
+> activation binding UI + variant scheduling) → `6497792` (P4.x
+> variant-context activation editing) → `e405cfd` (P4.x merge over
+> uncovered bars). The full pattern-editor surface is live: users
+> can create / rename / duplicate / delete patterns; edit pitched
+> patterns in a piano roll with the degree-relative inspector;
+> edit drum patterns on the step grid; bind patterns to activation
+> rows in the section editor; pin variants per-bar in the variant
+> schedule with right-click split/merge; and edit non-base
+> variants through `ActivationOverride::Replace` / `Silent`. 612
+> workspace tests; clippy clean across default / no-default /
+> cpal-driver. **Recommended next Tier-1 bite:** master-fx-chain
+> X1 — its plan already exists at `docs/master-fx-chain-plan.md`
+> and the soft-clipper replaces the audible `-12 dB` master-gain
+> workaround. Section-editor completeness (block drag in the
+> arrangement, inline rename, delete/duplicate) is the next
+> alternative once the CL2.x drag-handle infrastructure (commit
+> `71d4bd9`) is generalized to section-blocks. Out-of-scope items
+> still apply — see the bottom of this doc.
+
 The second Tier-1 plan after chord-loop-editing closed. Builds the
 **pattern editor UI** on top of the same Tier-0 edit pump that
 fed chord-loop editing.
@@ -71,13 +94,48 @@ or **round-3 arrangement polish**).
 
 ## Status
 
-- P0 ✅ — this document (commit pending; lands as part of
-  chord-loop-editing CL5).
-- P1 — not started.
-- P2 — not started.
-- P3 — not started.
-- P4 — not started.
-- P5 — not started.
+- P0 ✅ — this document. Landed as part of CL5 (commit `c076d20`).
+- P1 ✅ — pattern library CRUD (commit `3d0d8ca`, 2026-05-20).
+  Adds create / rename / duplicate / delete for pitched + drum
+  patterns through the C2 edit pump. `selected_pattern` becomes
+  the fourth selection axis on `AppState`.
+- P2 ✅ — pitched-pattern piano-roll editor (commit `ccbd7b2`,
+  2026-05-20). Piano-roll surface with degree-relative pitch
+  axis, click-empty-bar insert, focused-note inspector
+  (`PitchSpec` kind selector, `OctaveSpec` controls, articulation
+  + humanization). Selection-axis state: `focused_pattern_note:
+  Signal<Option<NoteId>>` + `focused_variant: Signal<Option<VariantId>>`.
+- P3 ✅ — drum-pattern step-grid editor (commit `214b335`,
+  2026-05-20). 16-step grid with click-to-toggle, per-voice
+  rows, drag-to-set velocity deferred (P3 design decision).
+- P4 ✅ — activation binding UI + variant scheduling (commit
+  `6e74b00`, 2026-05-21). Pattern picker on every activation row
+  (Active + CellInherit placeholder); per-bar variant scheduler
+  with right-click split/merge ContextMenu; pure helpers in
+  `pattern_actions/variant_schedule.rs` mirror CL4's chord-loop
+  schedule contract.
+- P4.x ✅ — variant-context activation editing (commit `6497792`,
+  2026-05-21). Edits on a non-base section variant route to
+  `Section.variants[v].activations` via `ActivationOverride::Replace`
+  / `Silent`; schedule mutators auto-promote a clone of base to
+  Replace when no override exists yet.
+- P4.x ✅ — merge over uncovered bars (commit `e405cfd`,
+  2026-05-21). The variant-schedule merge helpers treat
+  default-fill ranges as first-class segments: right-clicking a
+  default-fill bar and picking merge-left/right adopts the
+  adjacent override's variant id; right-clicking an explicit
+  entry adjacent to default-fill drops the entry.
+- P5 ✅ — this close-out. 612 workspace tests; clippy clean across
+  default / `--no-default-features` / `--features cpal-driver`;
+  release build clean. Recommended next Tier-1 bite recorded in
+  the top-of-doc paragraph (master-fx-chain X1).
+
+**File-cap split (incidental):** `8d6bc7b` split the pitched
+inspector and `pattern_actions` to keep every source file under
+the ~700-line cap as the editor grew. The two remaining
+pre-existing cap violations — `piano_roll.rs` (790) and
+`regions/inspector/mod.rs` (705) — are not introduced by this
+milestone and remain on the hygiene list.
 
 ---
 

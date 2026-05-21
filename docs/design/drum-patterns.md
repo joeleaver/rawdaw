@@ -179,3 +179,20 @@ Patterns stay clean (exact grid positions, exact velocities). Humanization (rand
 - **Articulation tag vocabulary.** Is articulation an open string namespace (kits declare what they support) or a fixed enum? Lean toward open, but a small fixed core (`ghost`, `accent`, `flam`, `roll`, `open`, `closed`, `half`, `mute`, `rim`, `bell`, `edge`, `bow`) for UI affordances.
 - **Multi-channel layouts beyond stereo.** Mono outputs (for tight kick), 5.1/Atmos (not v1). Probably mono+stereo only.
 - **Per-voice mixer pre-fader processing in the kit itself.** Some kits internally compress/EQ before output. Defer to the user putting plugins on the mixer channel; don't bake it into kits.
+
+## Editor scope shipped in P3 (2026-05-21)
+
+The drum step-grid editor shipped a deliberately minimal first
+surface; a few items the doc anticipates remain deferred:
+
+- **Click-to-toggle only; drag-to-set-velocity deferred.** Velocity
+  lives on `DrumEvent` and is honored at realization, but P3 ships
+  a binary on/off step grid. Velocity editing surface is a P3
+  follow-up bite.
+- **Grid resolution is hardcoded to `STRAIGHT_SIXTEENTH`.** The
+  Signal-driven design for a per-pattern resolution selector is
+  scoped in the pattern-editor plan's P2 § 6 but unimplemented.
+- **`Extra(_)` voices have no creation UI.** The `DrumVoice::Extra`
+  open namespace is decodable in the model but the editor can
+  only edit voices that already exist; there's no `+ voice`
+  affordance for naming a new `extras.*` slot.

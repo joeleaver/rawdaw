@@ -137,6 +137,38 @@ sections/
 - **Chord-loop variants?** No (v1). Clone chord loops instead.
 - **Per-arrangement-instance overrides?** No — make another variant.
 
+## UI semantics shipped with the pattern editor (P4.x)
+
+The activation cell's editor surface lays a few interpretive
+decisions on top of the model that aren't directly visible from
+the type definitions:
+
+- **Picker walks the override chain.** The pattern dropdown on a
+  non-base variant row shows the *effective* pattern: variant
+  `Replace.pattern_ref` if present, `None` for `Silent`, base's
+  `pattern_ref` otherwise.
+- **"(no pattern)" semantics differ by tab.** On the base tab it
+  keeps the entry and nulls `pattern_ref` ("placed but silent").
+  On a non-base variant tab it installs `ActivationOverride::Silent`
+  for that track — the variant-level "silence this track here"
+  affordance.
+- **Schedule edits auto-promote a base clone.** Right-clicking a
+  bar in the variant schedule on a non-base tab that has no
+  override yet clones the base entry into a `Replace` and applies
+  the schedule mutation to the clone. Base stays untouched.
+  `Silent` overrides remain Silent (no schedule edit promotes
+  them); rows with no base entry no-op.
+- **Default-fill ranges are first-class for merge.** Right-click
+  merge-left/right on a default-fill bar adopts the adjacent
+  segment's variant id (extending coverage); the inverse
+  (explicit entry adjacent to default-fill) drops the entry back
+  to default. `clear-range` on default-fill is a no-op since
+  the bar is already cleared.
+- **`merge_range_right` conservatively no-ops at the end of the
+  schedule** when no entry exists past the source — the pure
+  helper doesn't take `total_bars`, so it can't tell whether the
+  trailing range has anywhere to merge into.
+
 ## Open questions
 
 - **Variant rename / delete propagation.** If a variant is deleted, what happens to `SectionRef`s pointing at it in the arrangement? Probably fall back to `default_variant` with a warning. Same for rename — by ID, not name, so renames are safe.
