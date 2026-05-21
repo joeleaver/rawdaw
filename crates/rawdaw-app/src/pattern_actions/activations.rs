@@ -132,8 +132,11 @@ pub fn set_activation_variant_for_bar(
     });
 }
 
-/// Merge the range containing `bar` with its left neighbor.
-/// See `variant_schedule::merge_range_left` for semantics.
+/// Merge the segment containing `bar` with its left neighbor segment.
+/// Treats default-fill ranges as first-class segments (see
+/// `variant_schedule::merge_range_left` for the four-case matrix).
+/// No-op if the effective entry doesn't bind a pattern (no
+/// default_variant to anchor "default-fill" semantics).
 pub fn merge_activation_variant_left(
     project: &mut Project,
     section_id: SectionId,
@@ -141,12 +144,18 @@ pub fn merge_activation_variant_left(
     variant_id: &VariantId,
     bar: u32,
 ) {
-    mutate_schedule_in_context(project, section_id, track_id, variant_id, |sched| {
-        variant_schedule::merge_range_left(sched, bar)
+    let Some(default_variant) =
+        effective_pattern_default_variant(project, section_id, track_id, variant_id)
+    else {
+        return;
+    };
+    mutate_schedule_in_context(project, section_id, track_id, variant_id, move |sched| {
+        variant_schedule::merge_range_left(sched, &default_variant, bar)
     });
 }
 
-/// Merge the range containing `bar` with its right neighbor.
+/// Merge the segment containing `bar` with its right neighbor segment.
+/// See [`merge_activation_variant_left`] for the segment-merge model.
 pub fn merge_activation_variant_right(
     project: &mut Project,
     section_id: SectionId,
@@ -154,8 +163,13 @@ pub fn merge_activation_variant_right(
     variant_id: &VariantId,
     bar: u32,
 ) {
-    mutate_schedule_in_context(project, section_id, track_id, variant_id, |sched| {
-        variant_schedule::merge_range_right(sched, bar)
+    let Some(default_variant) =
+        effective_pattern_default_variant(project, section_id, track_id, variant_id)
+    else {
+        return;
+    };
+    mutate_schedule_in_context(project, section_id, track_id, variant_id, move |sched| {
+        variant_schedule::merge_range_right(sched, &default_variant, bar)
     });
 }
 
@@ -177,6 +191,42 @@ pub fn clear_activation_variant_range(
 
 fn is_base_context(section: &Section, variant_id: &VariantId) -> bool {
     section.default_variant == *variant_id
+}
+
+/// Pull the pattern's `default_variant` for the entry that's effective
+/// at `(section, track, variant_id)`. Walks the override chain (variant
+/// Replace > Silent → None > base) the same way the picker does, then
+/// looks up the bound pattern. `None` when no entry exists, no pattern
+/// is bound, or the pattern id has gone stale — in any of those cases
+/// schedule mutations are no-ops anyway, so the caller is free to
+/// early-return without invoking the pure helper.
+fn effective_pattern_default_variant(
+    project: &Project,
+    section_id: SectionId,
+    track_id: TrackId,
+    variant_id: &VariantId,
+) -> Option<VariantId> {
+    let section = project.sections.get(&section_id)?;
+    let pattern_ref = effective_pattern_ref(section, track_id, variant_id)?;
+    Some(project.patterns.get(&pattern_ref)?.default_variant.clone())
+}
+
+fn effective_pattern_ref(
+    section: &Section,
+    track_id: TrackId,
+    variant_id: &VariantId,
+) -> Option<PatternId> {
+    if section.default_variant != *variant_id
+        && let Some(over) = section.variants.get(variant_id)
+    {
+        match over.activations.get(&track_id) {
+            Some(ActivationOverride::Replace(entry)) => return entry.pattern_ref,
+            // Silent override hides base — no effective pattern.
+            Some(ActivationOverride::Silent) => return None,
+            None => {}
+        }
+    }
+    section.base.activations.get(&track_id).and_then(|e| e.pattern_ref)
 }
 
 fn fresh_entry() -> ActivationEntry {
@@ -748,5 +798,125 @@ mod tests {
             .map(|v| !v.activations.contains_key(&tid))
             .unwrap_or(true);
         assert!(no_entry);
+    }
+
+    // ---------- uncovered-bar merge (P4.x residual) ---------------
+
+    #[test]
+    fn merge_left_on_default_fill_adopts_left_named_variant() {
+        // Pattern's default_variant is "main". Schedule pins 0..1 = "fill"
+        // and leaves bars 1..4 as default-fill. Right-clicking bar 2 →
+        // merge-left should fold the default-fill 1..4 into "fill".
+        let mut project = empty_project();
+        let sid = empty_section(&mut project);
+        let pid = empty_pitched_pattern(&mut project);
+        let tid = TrackId::new(1);
+        set_activation_pattern(&mut project, sid, tid, &base(), Some(pid));
+        set_activation_variant_for_bar(
+            &mut project,
+            sid,
+            tid,
+            &base(),
+            0,
+            Some(VariantId::new("fill")),
+        );
+        // Sanity: schedule shows a single entry at 0..1.
+        assert_eq!(
+            project.sections[&sid].base.activations[&tid].variant_schedule,
+            vec![(BarRange::new(0, 1), VariantId::new("fill"))],
+        );
+        merge_activation_variant_left(&mut project, sid, tid, &base(), 2);
+        // Default-fill 1..u32::MAX adopts "fill"; the entry collapses.
+        let schedule = &project.sections[&sid].base.activations[&tid].variant_schedule;
+        assert_eq!(
+            schedule,
+            &vec![(BarRange::new(0, u32::MAX), VariantId::new("fill"))],
+            "default-fill adopted left's variant",
+        );
+    }
+
+    #[test]
+    fn merge_left_on_explicit_into_default_fill_drops_entry() {
+        // Schedule: 2..4 = "fill"; bars 0..2 are default-fill.
+        // Merge-left on bar 2 should make the "fill" entry adopt the
+        // pattern's default → entry dissolves.
+        let mut project = empty_project();
+        let sid = empty_section(&mut project);
+        let pid = empty_pitched_pattern(&mut project);
+        let tid = TrackId::new(1);
+        set_activation_pattern(&mut project, sid, tid, &base(), Some(pid));
+        // Manually install the 2..4 entry (set_variant_for_bar on bar 2
+        // would only create 2..3; we want 2..4 to keep the case clean).
+        project
+            .sections
+            .get_mut(&sid)
+            .unwrap()
+            .base
+            .activations
+            .get_mut(&tid)
+            .unwrap()
+            .variant_schedule = vec![(BarRange::new(2, 4), VariantId::new("fill"))];
+        merge_activation_variant_left(&mut project, sid, tid, &base(), 2);
+        assert!(
+            project.sections[&sid].base.activations[&tid].variant_schedule.is_empty(),
+            "entry dissolved into default-fill",
+        );
+    }
+
+    #[test]
+    fn merge_right_on_default_fill_adopts_right_named_variant() {
+        // Schedule: 2..4 = "fill"; bars 0..2 are default-fill.
+        // Right-clicking bar 1 → merge-right should fold 0..2 into "fill".
+        let mut project = empty_project();
+        let sid = empty_section(&mut project);
+        let pid = empty_pitched_pattern(&mut project);
+        let tid = TrackId::new(1);
+        set_activation_pattern(&mut project, sid, tid, &base(), Some(pid));
+        project
+            .sections
+            .get_mut(&sid)
+            .unwrap()
+            .base
+            .activations
+            .get_mut(&tid)
+            .unwrap()
+            .variant_schedule = vec![(BarRange::new(2, 4), VariantId::new("fill"))];
+        merge_activation_variant_right(&mut project, sid, tid, &base(), 1);
+        let schedule = &project.sections[&sid].base.activations[&tid].variant_schedule;
+        assert_eq!(
+            schedule,
+            &vec![(BarRange::new(0, 4), VariantId::new("fill"))],
+        );
+    }
+
+    #[test]
+    fn merge_left_uncovered_at_zero_is_noop() {
+        // Bar 0 is default-fill, no entry; src_range.start == 0 →
+        // no-op.
+        let mut project = empty_project();
+        let sid = empty_section(&mut project);
+        let pid = empty_pitched_pattern(&mut project);
+        let tid = TrackId::new(1);
+        set_activation_pattern(&mut project, sid, tid, &base(), Some(pid));
+        merge_activation_variant_left(&mut project, sid, tid, &base(), 0);
+        assert!(project.sections[&sid].base.activations[&tid]
+            .variant_schedule
+            .is_empty());
+    }
+
+    #[test]
+    fn merge_left_with_no_pattern_bound_is_noop() {
+        // No pattern_ref → effective_pattern_default_variant returns
+        // None → helper early-returns before touching the schedule.
+        let mut project = empty_project();
+        let sid = empty_section(&mut project);
+        let tid = TrackId::new(1);
+        // Create an entry with no pattern_ref bound. (Reaching this
+        // state via the public API would require setting Some(pid)
+        // then None on base, which `set_pattern_none_keeps_entry`
+        // already covers — but here we drop the entry's schedule
+        // entirely too.)
+        merge_activation_variant_left(&mut project, sid, tid, &base(), 1);
+        assert!(!project.sections[&sid].base.activations.contains_key(&tid));
     }
 }
