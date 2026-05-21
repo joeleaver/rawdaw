@@ -38,10 +38,38 @@ use crate::state::AppState;
 use crate::theme;
 
 mod event_block;
-mod helpers;
+pub(crate) mod helpers;
 mod inspector;
 mod realized_strip;
 mod timeline;
+
+/// In-flight drag state for the chord-loop timeline. Set when an
+/// `EventBlock` starts a move or resize drag, mutated on each
+/// pointer-move while the drag is active, cleared on drag end (the
+/// commit is applied via `chord_loop_actions::move_chord_event` /
+/// `resize_chord_event` before the signal is cleared).
+///
+/// Both the dragged block and any sibling blocks read this through
+/// `AppState.drag_preview` to render a live preview without going
+/// through `apply_project_edit` per pointer-move (which would re-
+/// realize the project every frame).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DragPreview {
+    pub loop_id: ChordLoopId,
+    pub event_idx: usize,
+    pub kind: DragKind,
+    /// Signed delta in ticks from the event's committed time
+    /// (for `Move`) or duration (for `Resize`). The block applies
+    /// this on top of the committed value when rendering its live
+    /// position / width.
+    pub delta_ticks: i64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DragKind {
+    Move,
+    Resize,
+}
 
 pub(crate) use inspector::Inspector as ChordLoopInspector;
 pub(crate) use timeline::ChordLoopTimeline;

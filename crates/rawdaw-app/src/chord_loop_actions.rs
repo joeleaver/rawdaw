@@ -94,6 +94,59 @@ pub fn delete_chord_loop(project: &mut Project, id: ChordLoopId) -> Result<(), D
     Ok(())
 }
 
+/// Move the chord event at `(loop_id, event_idx)` by `delta_ticks`
+/// from its committed time. CL2.x drag-to-move commit path.
+///
+/// Snaps to a beat and clamps against neighbour events + loop length
+/// via [`crate::regions::chord_loop_editor::helpers::clamped_move`].
+/// No-op if the delta resolves to the same time (the helper already
+/// snaps + clamps, so this just suppresses a redundant edit).
+///
+/// Does NOT re-sort: the clamp guarantees the new time stays inside
+/// `(prev_end, next_start)` so the event keeps its slot in the
+/// time-ordered vector.
+pub fn move_chord_event(
+    project: &mut Project,
+    loop_id: ChordLoopId,
+    event_idx: usize,
+    delta_ticks: i64,
+) {
+    let Some(loop_) = project.chord_loops.get_mut(&loop_id) else { return };
+    let new_start = crate::regions::chord_loop_editor::helpers::clamped_move(
+        &loop_.events,
+        event_idx,
+        delta_ticks,
+        loop_.length.as_ticks(),
+    );
+    if let Some(ev) = loop_.events.get_mut(event_idx) {
+        ev.time = rawdaw_model::time::MusicalTime::ticks(new_start);
+    }
+}
+
+/// Resize the chord event at `(loop_id, event_idx)` so its duration
+/// changes by `delta_ticks`. CL2.x resize-handle commit path.
+///
+/// Clamps against the right neighbour (or loop length) and a
+/// one-beat minimum via
+/// [`crate::regions::chord_loop_editor::helpers::clamped_resize`].
+pub fn resize_chord_event(
+    project: &mut Project,
+    loop_id: ChordLoopId,
+    event_idx: usize,
+    delta_ticks: i64,
+) {
+    let Some(loop_) = project.chord_loops.get_mut(&loop_id) else { return };
+    let new_duration = crate::regions::chord_loop_editor::helpers::clamped_resize(
+        &loop_.events,
+        event_idx,
+        delta_ticks,
+        loop_.length.as_ticks(),
+    );
+    if let Some(ev) = loop_.events.get_mut(event_idx) {
+        ev.duration = Duration::ticks(new_duration);
+    }
+}
+
 /// Set the overlay color for a chord loop. Color strings are
 /// expected to be `#RRGGBB`; no validation here, since the picker
 /// supplies palette literals from `theme::PAL_*`. Empty string
@@ -349,5 +402,78 @@ mod tests {
         // Empty string clears the entry — row falls back to default tint.
         set_chord_loop_color(&mut overlay, id, "".into());
         assert!(!overlay.chord_loop_color.contains_key(&id));
+    }
+
+    // ---------- move_chord_event / resize_chord_event (CL2.x) ----------
+
+    use crate::regions::chord_loop_editor::helpers::default_chord_event;
+    use rawdaw_model::time::{MusicalTime, PPQ};
+
+    fn loop_with_two_events(project: &mut Project) -> ChordLoopId {
+        let id = create_chord_loop(project);
+        let loop_ = project.chord_loops.get_mut(&id).unwrap();
+        loop_.events = vec![
+            default_chord_event(MusicalTime::beats(0), Duration::beats(4)),
+            default_chord_event(MusicalTime::beats(8), Duration::beats(4)),
+        ];
+        id
+    }
+
+    #[test]
+    fn move_chord_event_within_gap_lands_on_target_beat() {
+        let mut project = empty_project();
+        let id = loop_with_two_events(&mut project);
+        // Move idx=0 by +2 beats → new start at beat 2, duration unchanged.
+        move_chord_event(&mut project, id, 0, 2 * PPQ);
+        let loop_ = project.chord_loops.get(&id).unwrap();
+        assert_eq!(loop_.events[0].time, MusicalTime::beats(2));
+        assert_eq!(loop_.events[0].duration, Duration::beats(4));
+        // Right neighbour untouched.
+        assert_eq!(loop_.events[1].time, MusicalTime::beats(8));
+    }
+
+    #[test]
+    fn move_chord_event_clamps_into_right_neighbour() {
+        let mut project = empty_project();
+        let id = loop_with_two_events(&mut project);
+        // Move idx=0 by +100 beats → clamps to right_bound = neighbour.start - duration = 4.
+        move_chord_event(&mut project, id, 0, 100 * PPQ);
+        let loop_ = project.chord_loops.get(&id).unwrap();
+        assert_eq!(loop_.events[0].time, MusicalTime::beats(4));
+    }
+
+    #[test]
+    fn move_chord_event_missing_loop_is_noop() {
+        let mut project = empty_project();
+        move_chord_event(&mut project, ChordLoopId::new(9999), 0, 100 * PPQ);
+        // No panic, no insertion.
+        assert!(project.chord_loops.is_empty());
+    }
+
+    #[test]
+    fn resize_chord_event_clamps_to_right_neighbour() {
+        let mut project = empty_project();
+        let id = loop_with_two_events(&mut project);
+        // Resize idx=0 by +100 beats → clamps so end = neighbour.start = 8.
+        // new_duration = 8 - 0 = 8 beats.
+        resize_chord_event(&mut project, id, 0, 100 * PPQ);
+        let loop_ = project.chord_loops.get(&id).unwrap();
+        assert_eq!(loop_.events[0].duration, Duration::beats(8));
+    }
+
+    #[test]
+    fn resize_chord_event_min_one_beat() {
+        let mut project = empty_project();
+        let id = loop_with_two_events(&mut project);
+        resize_chord_event(&mut project, id, 0, -100 * PPQ);
+        let loop_ = project.chord_loops.get(&id).unwrap();
+        assert_eq!(loop_.events[0].duration.as_ticks(), PPQ);
+    }
+
+    #[test]
+    fn resize_chord_event_missing_loop_is_noop() {
+        let mut project = empty_project();
+        resize_chord_event(&mut project, ChordLoopId::new(9999), 0, 100 * PPQ);
+        assert!(project.chord_loops.is_empty());
     }
 }

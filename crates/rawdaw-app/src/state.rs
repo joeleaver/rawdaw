@@ -30,6 +30,7 @@ use rawdaw_model::project::Project;
 use rawdaw_model::scale::Scale;
 
 use crate::overlay::ProjectOverlay;
+use crate::regions::chord_loop_editor::DragPreview;
 
 /// Which top-level surface the app is rendering below the top bar.
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -170,6 +171,16 @@ pub struct AppState {
     /// `Project ▾` menu reads this to decide whether `Save` is a
     /// no-prompt write or should fall through to `Save As`.
     pub current_path: Signal<Option<PathBuf>>,
+
+    /// In-flight drag state for the chord-loop editor's timeline.
+    /// `None` when no drag is active; `Some(preview)` while an
+    /// `EventBlock` is being moved or resized so the block can
+    /// render a live preview off the signal without going through
+    /// `apply_project_edit` per pointer-move. The drag handler
+    /// writes once on `on_end` to commit, then clears the signal.
+    ///
+    /// CL2.x of `docs/chord-loop-editing-plan.md`.
+    pub drag_preview: Signal<Option<DragPreview>>,
 }
 
 impl AppState {
@@ -199,6 +210,7 @@ impl AppState {
             project: Signal::new(Rc::new(Project::new(Scale::major(PitchClass::C)))),
             overlay: Signal::new(Rc::new(ProjectOverlay::empty())),
             current_path: Signal::new(None),
+            drag_preview: Signal::new(None),
         }
     }
 

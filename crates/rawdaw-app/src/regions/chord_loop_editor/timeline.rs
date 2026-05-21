@@ -113,6 +113,8 @@ fn EventStrip(id: ChordLoopId) -> NodeHandle {
                 EventBlock {
                     key: cell.idx.to_string(),
                     idx: cell.idx,
+                    loop_id: id,
+                    duration_ticks: cell.duration_ticks,
                     roman: cell.roman,
                     absolute: cell.absolute,
                     width_frac: cell.width_frac,
@@ -132,6 +134,7 @@ fn EventStrip(id: ChordLoopId) -> NodeHandle {
 #[derive(Clone, PartialEq)]
 struct EventCell {
     idx: usize,
+    duration_ticks: i64,
     roman: String,
     absolute: String,
     width_frac: f32,
@@ -181,6 +184,7 @@ fn build_event_cells(id: ChordLoopId) -> Vec<EventCell> {
             let width = ev.duration.as_ticks() as f32 / total_ticks;
             EventCell {
                 idx,
+                duration_ticks: ev.duration.as_ticks(),
                 roman,
                 absolute,
                 width_frac: width.clamp(0.0, 1.0),
