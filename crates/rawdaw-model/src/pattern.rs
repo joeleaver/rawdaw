@@ -163,8 +163,14 @@ pub struct DrumEvent {
 /// A symbolic drum voice. Hybrid vocabulary: a fixed enum for the common
 /// pieces (so step-editor lanes have stable identity and icons), plus an open
 /// `Extra` namespace for kit-specific extras.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `Default` resolves to `Kick` — the most universally-present voice in a
+/// kit. The default lets `DrumVoice` participate as a component-prop type
+/// in the rawdaw-app pattern editor (Rinch's `#[component]` macro requires
+/// every prop to be `Default`); it has no semantic significance outside that.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DrumVoice {
+    #[default]
     Kick,
     Snare,
     SnareRim,

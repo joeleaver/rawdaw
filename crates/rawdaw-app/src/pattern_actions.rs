@@ -22,19 +22,31 @@
 
 mod events;
 mod variants;
+mod voices;
 
 #[cfg(test)]
 mod test_support;
 
 pub use events::{
-    delete_pitched_event, insert_pitched_event, set_pitched_pattern_length, update_pitched_event,
+    delete_pitched_event, insert_drum_event, insert_pitched_event, set_pitched_pattern_length,
+    update_pitched_event,
 };
 pub use variants::{create_variant, delete_variant, duplicate_variant, VariantEditError};
-// `rename_variant` lands in a polish pass (no UI consumer yet) — re-export
-// is suppressed so the unused-import lint doesn't trip until the affordance
-// arrives. Mirrors the `#[allow(dead_code)]` already on the function.
+// Drum CRUD + voice CRUD re-exports land here ahead of their UI
+// consumers (P3 step 4-5 mount the inspector + voice management
+// header). Suppress unused-imports until those land.
+#[allow(unused_imports)]
+pub use events::{delete_drum_event, set_drum_pattern_length, update_drum_event};
+#[allow(unused_imports)]
+pub use voices::{add_drum_voice, remove_drum_voice, VoiceEditError};
+// `rename_variant` + `rename_drum_voice` land in polish passes (no UI
+// consumers yet) — re-exports suppressed so the unused-import lint
+// doesn't trip until the affordances arrive. Mirrors the
+// `#[allow(dead_code)]` already on the functions.
 #[allow(unused_imports)]
 pub use variants::rename_variant;
+#[allow(unused_imports)]
+pub use voices::rename_drum_voice;
 
 use std::collections::BTreeMap;
 

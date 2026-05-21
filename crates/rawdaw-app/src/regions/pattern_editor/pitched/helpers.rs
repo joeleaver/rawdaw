@@ -26,7 +26,12 @@ use rawdaw_model::pattern::{
 };
 use rawdaw_model::pitch::{Octave, U7};
 use rawdaw_model::scale::ScaleDegree;
-use rawdaw_model::time::{Duration, MusicalTime, PPQ};
+use rawdaw_model::time::{Duration, MusicalTime};
+
+// `GridSpec` + `snap_time_to_grid` live one level up so the drum
+// editor can share them (sibling-to-sibling deps would be wrong).
+// Re-exported here so existing callers don't need to change paths.
+pub use super::super::grid::{snap_time_to_grid, GridSpec};
 
 /// Default anchored octave for new pitched events. Matches P2 design
 /// decision 13: `OctaveSpec::Anchored(3)` is the simplest variant for
@@ -39,61 +44,6 @@ pub const DEFAULT_ANCHOR_OCTAVE: Octave = Octave(3);
 /// degree space for diatonic input. Configurable per pattern in a
 /// future polish pass — for v1 it's a constant.
 pub const DEFAULT_PITCH_ROWS: usize = 25;
-
-/// Grid resolution for the piano-roll's click-to-insert snap. Stored
-/// as a denominator of a whole note (1/4 = quarter note = 1 beat in
-/// 4/4) plus a triplet flag. Default is straight 1/16 (P2 design
-/// decision 6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GridSpec {
-    /// `4` = quarter, `8` = eighth, `16` = sixteenth, `32` =
-    /// thirty-second. Must be >= 1; values that don't divide PPQ
-    /// cleanly are still well-defined (we use integer division).
-    pub subdivision: u32,
-    /// When `true`, each subdivision is treated as a triplet — the
-    /// resulting step is two-thirds of the straight subdivision.
-    pub triplet: bool,
-}
-
-impl GridSpec {
-    pub const STRAIGHT_SIXTEENTH: Self = Self {
-        subdivision: 16,
-        triplet: false,
-    };
-
-    /// Tick length of one snap step. Computed as
-    /// `(PPQ * 4) / subdivision`, optionally multiplied by 2/3 for
-    /// triplet mode. Returns at least 1 tick so callers can safely
-    /// use the result as a divisor.
-    pub fn step_ticks(self) -> i64 {
-        let denom = self.subdivision.max(1) as i64;
-        let straight = (PPQ * 4) / denom;
-        let scaled = if self.triplet {
-            (straight * 2) / 3
-        } else {
-            straight
-        };
-        scaled.max(1)
-    }
-}
-
-impl Default for GridSpec {
-    fn default() -> Self {
-        Self::STRAIGHT_SIXTEENTH
-    }
-}
-
-/// Snap a `MusicalTime` down to the nearest grid step. Floors at 0 so
-/// a tiny negative offset doesn't wrap. Used by click-to-insert in
-/// the piano-roll so dropped notes land on a grid line.
-pub fn snap_time_to_grid(time: MusicalTime, grid: GridSpec) -> MusicalTime {
-    let step = grid.step_ticks();
-    let ticks = time.as_ticks();
-    if ticks <= 0 {
-        return MusicalTime::ZERO;
-    }
-    MusicalTime::ticks((ticks / step) * step)
-}
 
 /// Build a default `PitchedEvent` for click-to-insert. Matches
 /// P2 design decision 3: `PitchSpec::Scale { degree: 1, octave:
@@ -175,65 +125,6 @@ where
 mod tests {
     use super::*;
     use rawdaw_model::pitch::{Octave, PitchClass};
-
-    #[test]
-    fn step_ticks_straight_sixteenth_is_pq4_over_16() {
-        // PPQ = 960; 1/16 straight = 960*4/16 = 240 ticks.
-        assert_eq!(GridSpec::STRAIGHT_SIXTEENTH.step_ticks(), 240);
-    }
-
-    #[test]
-    fn step_ticks_quarter_is_full_ppq() {
-        let g = GridSpec {
-            subdivision: 4,
-            triplet: false,
-        };
-        assert_eq!(g.step_ticks(), PPQ);
-    }
-
-    #[test]
-    fn step_ticks_triplet_is_two_thirds_of_straight() {
-        // Quarter-note triplet: 960 * 2 / 3 = 640 ticks (three of
-        // these fit into half a bar of 4/4).
-        let g = GridSpec {
-            subdivision: 4,
-            triplet: true,
-        };
-        assert_eq!(g.step_ticks(), 640);
-        // Eighth-note triplet: 480 * 2 / 3 = 320 ticks.
-        let g = GridSpec {
-            subdivision: 8,
-            triplet: true,
-        };
-        assert_eq!(g.step_ticks(), 320);
-    }
-
-    #[test]
-    fn step_ticks_min_clamps_to_one() {
-        // Defensive: even a wildly fine subdivision shouldn't divide
-        // by zero or hand back a non-positive step.
-        let g = GridSpec {
-            subdivision: u32::MAX,
-            triplet: false,
-        };
-        assert!(g.step_ticks() >= 1);
-    }
-
-    #[test]
-    fn snap_floors_to_grid() {
-        let g = GridSpec::STRAIGHT_SIXTEENTH;
-        assert_eq!(snap_time_to_grid(MusicalTime::ticks(0), g), MusicalTime::ticks(0));
-        assert_eq!(snap_time_to_grid(MusicalTime::ticks(239), g), MusicalTime::ticks(0));
-        assert_eq!(snap_time_to_grid(MusicalTime::ticks(240), g), MusicalTime::ticks(240));
-        assert_eq!(snap_time_to_grid(MusicalTime::ticks(241), g), MusicalTime::ticks(240));
-        assert_eq!(snap_time_to_grid(MusicalTime::ticks(480), g), MusicalTime::ticks(480));
-    }
-
-    #[test]
-    fn snap_floors_negative_to_zero() {
-        let g = GridSpec::STRAIGHT_SIXTEENTH;
-        assert_eq!(snap_time_to_grid(MusicalTime::ticks(-100), g), MusicalTime::ZERO);
-    }
 
     #[test]
     fn default_event_has_scale_degree_one_at_anchored_three() {

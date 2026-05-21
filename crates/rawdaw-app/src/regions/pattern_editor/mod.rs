@@ -1,19 +1,22 @@
-//! Pattern editor — P2 of `docs/pattern-editor-plan.md`.
+//! Pattern editor.
 //!
 //! Center-stage editor that mounts inside `ArrangementSurface` when
 //! `AppState::selected_pattern` is `Some`. Dispatches on
 //! `PatternBody::Pitched` vs `Drum`:
 //!
 //! - `Pitched` → [`pitched::PitchedPatternEditor`] — piano-roll
-//!   surface + per-note inspector + realized strip.
-//! - `Drum` → P3 deferral banner; the step-grid surface lands when
-//!   `docs/pattern-editor-plan.md` § P3 lands.
+//!   surface + per-note inspector + realized strip (P2).
+//! - `Drum` → [`drum::DrumPatternEditor`] — step-grid surface +
+//!   voice-management header + per-event inspector (P3).
 //!
 //! File layout per P2 design decision 10 — split eagerly:
 //! - `mod.rs` (this file) — top-level surface + editor header.
+//! - `grid.rs` — shared GridSpec primitives.
 //! - `pitched/` — pitched-pattern editor + helpers + inspector.
-//! - `drum/` — step-grid editor (P3).
+//! - `drum/` — drum step-grid editor + helpers + inspector.
 
+pub mod drum;
+pub(crate) mod grid;
 pub mod pitched;
 
 use rinch::core::reactive::{untracked, Effect};
@@ -24,12 +27,13 @@ use rawdaw_model::pattern::{Pattern, PatternBody};
 use rawdaw_model::time::{Duration, MusicalTime};
 
 use crate::pattern_actions::{
-    create_variant, delete_variant, duplicate_variant, rename_pattern,
+    create_variant, delete_variant, duplicate_variant, rename_pattern, set_drum_pattern_length,
     set_pitched_pattern_length, VariantEditError,
 };
 use crate::state::AppState;
 use crate::theme;
 
+pub use drum::DrumPatternEditor;
 pub use pitched::PitchedPatternEditor;
 
 /// Center-stage pattern editor. Mounts inside the arrangement surface
@@ -66,7 +70,7 @@ fn BodyDispatch(pattern_id: PatternId, kind_code: u8) -> NodeHandle {
     rsx! {
         match kind_code {
             0 => PitchedPatternEditor { id: pattern_id },
-            1 => DrumDeferralBanner { },
+            1 => DrumPatternEditor { id: pattern_id },
             _ => EmptyPatternBanner { },
         }
     }
@@ -152,32 +156,6 @@ fn EditorHeader(id: PatternId) -> NodeHandle {
                 style: {close_btn_style()},
                 onclick: move || use_store::<AppState>().select_pattern(None),
                 "×"
-            }
-        }
-    }
-}
-
-#[component]
-fn DrumDeferralBanner() -> NodeHandle {
-    let style = format!(
-        "flex: 1; display: flex; flex-direction: column; \
-         align-items: center; justify-content: center; gap: 10px; \
-         padding: 24px; background: {bg0}; color: {text1};",
-        bg0 = theme::BG0,
-        text1 = theme::TEXT1,
-    );
-    rsx! {
-        div { style: {style.clone()},
-            div {
-                style: "font-size: 14px; font-weight: 600; letter-spacing: 0.2px;",
-                "Drum pattern editor"
-            }
-            div {
-                style: "font-size: 12px; color: rgba(232,234,238,0.55); max-width: 320px; \
-                        text-align: center; line-height: 1.5;",
-                "The drum step-grid editor (P3) is not yet implemented. \
-                 The pattern's events still realize through the engine \
-                 when bound to a track via an activation."
             }
         }
     }
@@ -510,12 +488,16 @@ fn set_bars(id: PatternId, bars: u32) {
     let app = use_store::<AppState>();
     if let Err(e) = app.apply_project_edit(move |p| {
         let bpb = beats_per_bar(p);
-        // Only pitched patterns mutate via the pitched-length helper;
-        // drum-length nudging is deferred to P3 — silently ignored
-        // here. UI v1 doesn't render the controls for drum patterns
-        // through the same widget (a later polish pass could
-        // disable / hide the input).
-        set_pitched_pattern_length(p, id, Duration::bars(bars as i64, bpb));
+        let length = Duration::bars(bars as i64, bpb);
+        // Dispatch on the pattern's body so the right metadata field
+        // gets written. The two helpers are inert against the wrong
+        // body kind; calling both is safe but the explicit dispatch
+        // keeps the intent legible.
+        match p.patterns.get(&id).map(|p| matches!(&p.body, PatternBody::Drum(_))) {
+            Some(true) => set_drum_pattern_length(p, id, length),
+            Some(false) => set_pitched_pattern_length(p, id, length),
+            None => {}
+        }
     }) {
         eprintln!("pattern_editor: set pattern length failed: {e}");
     }
