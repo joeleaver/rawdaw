@@ -15,7 +15,8 @@ use std::rc::Rc;
 use crate::audio::AudioResources;
 use crate::initial_project;
 use crate::regions::{
-    Arrangement, BottomStrip, ChordLoopEditor, Inspector, Library, TopBar, TracksPane,
+    Arrangement, BottomStrip, ChordLoopEditor, Inspector, Library, PatternEditor, TopBar,
+    TracksPane,
 };
 use crate::section_editor::SectionEditor;
 use crate::state::{AppState, EditorMode};
@@ -133,6 +134,22 @@ fn ArrangementSurface() -> NodeHandle {
                     use_store::<AppState>().selected_chord_loop.get()
                 {
                     ChordLoopEditor { id: _chord_loop_id }
+                } else if use_store::<AppState>().selected_pattern.get().is_some() {
+                    // P2: pattern editor takes center stage when a
+                    // pattern is selected. The keyed for-loop forces
+                    // PatternEditor (and every sub-component that
+                    // captured `id` at construction) to remount when
+                    // the user clicks a different pattern in the
+                    // Library — a bare `if let { PatternEditor { id }
+                    // }` would re-evaluate the if-let condition but
+                    // keep the same component instance with stale
+                    // props.
+                    for pid_value in pattern_editor_mount_keys() {
+                        PatternEditor {
+                            key: pid_value.to_string(),
+                            id: rawdaw_model::id::PatternId::new(pid_value),
+                        }
+                    }
                 } else {
                     StandardArrangementRow { }
                 }
@@ -177,6 +194,20 @@ fn StandardArrangementRow() -> NodeHandle {
 /// and mounts a new one with fresh content. Pulled out as a free
 /// function because the rsx `for` source must be a `Fn() -> Vec<T>`
 /// callable.
+/// Single-element key vector for the pattern editor mount. The
+/// element is the selected pattern id's raw `u64`, so a click on a
+/// different pattern row produces a different key and the for-loop
+/// remounts the editor subtree. Returns an empty vec when no
+/// pattern is selected (the if-let branch above prevents us from
+/// reaching this in that state, but the contract stays clean).
+fn pattern_editor_mount_keys() -> Vec<u64> {
+    use_store::<AppState>()
+        .selected_pattern
+        .get()
+        .map(|id| vec![id.get()])
+        .unwrap_or_default()
+}
+
 fn inspector_selection_keys() -> Vec<String> {
     let app = use_store::<AppState>();
     let key = match (app.selected_idx.get(), app.selected_track.get()) {

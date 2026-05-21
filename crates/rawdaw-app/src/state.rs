@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use rinch::prelude::*;
 
-use rawdaw_model::id::{ChordLoopId, PatternId};
+use rawdaw_model::id::{ChordLoopId, NoteId, PatternId, VariantId};
 use rawdaw_model::pitch::PitchClass;
 use rawdaw_model::project::Project;
 use rawdaw_model::scale::Scale;
@@ -108,6 +108,21 @@ pub struct AppState {
     /// (rinch's `#[component]` requires every prop's type to
     /// implement `Default`, which `Signal<Option<usize>>` does not).
     pub focused_chord_event_idx: Signal<Option<usize>>,
+    /// Currently focused pitched-pattern note inside the selected
+    /// pattern's currently-focused variant. Drives the pattern editor's
+    /// per-note inspector (P2 of `docs/pattern-editor-plan.md`).
+    ///
+    /// **Keyed by durable `NoteId`, not by index** (P2 design
+    /// decision 9): patterns are mutable and id-stable; idx-keying
+    /// would break under insert/delete. The inspector's value-fn
+    /// dispatchers look up the note by id on every read.
+    pub focused_pattern_note: Signal<Option<NoteId>>,
+    /// Currently-focused variant tab inside the selected pattern.
+    /// `None` when no pattern is selected; reset to the pattern's
+    /// `default_variant` whenever a new pattern is selected via
+    /// [`Self::select_pattern`]. Shared across pitched + drum editor
+    /// bodies so variant tab affordances behave identically.
+    pub focused_variant: Signal<Option<VariantId>>,
     /// MIDI input routing target — *sticky* version of
     /// `selected_track`. Updates whenever the user picks a track
     /// (`select_track(Some(_))`); does NOT clear when a section
@@ -166,6 +181,8 @@ impl AppState {
             selected_chord_loop: Signal::new(None),
             selected_pattern: Signal::new(None),
             focused_chord_event_idx: Signal::new(None),
+            focused_pattern_note: Signal::new(None),
+            focused_variant: Signal::new(None),
             // The MIDI target seed is filled in by an Effect at boot
             // that reads the first Pitched track's index from
             // `AudioResources`. Starting as `None` keeps the contract
@@ -295,6 +312,21 @@ impl AppState {
             self.selected_chord_loop.set(None);
             self.editor_mode.set(EditorMode::Arrangement);
         }
+        // P2: switching which pattern is open invalidates whatever
+        // note was focused — clear it so the inspector lands in its
+        // empty state. The variant focus resets to the pattern's
+        // `default_variant` (or `None` on clear) so the variant tab
+        // bar always renders a defined initial state.
+        self.focused_pattern_note.set(None);
+        self.focused_variant.set(match id {
+            Some(pid) => self
+                .project
+                .get()
+                .patterns
+                .get(&pid)
+                .map(|p| p.default_variant.clone()),
+            None => None,
+        });
         self.selected_pattern.set(id);
     }
 
@@ -546,6 +578,62 @@ mod tests {
         app.select_pattern(None);
         assert_eq!(app.selected_idx.get(), Some(3));
         assert_eq!(app.selected_pattern.get(), None);
+    }
+
+    #[test]
+    fn select_pattern_resets_focused_note_and_variant() {
+        // P2 contract: switching to a fresh pattern clears the
+        // focused-note signal (idx into a different pattern's events
+        // would be stale anyway, but the symmetric clear keeps the
+        // inspector branching deterministically) and seeds
+        // `focused_variant` from the pattern's `default_variant`.
+        use rawdaw_model::pattern::{
+            Pattern, PatternBody, PitchedPatternBody, PitchedPatternMetadata,
+        };
+        use rawdaw_model::time::Duration;
+        use std::collections::BTreeMap;
+
+        let app = AppState::new();
+        // Manually inject a pattern so `select_pattern` can read its
+        // default_variant. The empty default project AppState seeds
+        // has no patterns, so the lookup would otherwise yield None.
+        let pid = PatternId::new(42);
+        let default_variant = VariantId::new("verse-line");
+        let pattern = Pattern {
+            id: pid,
+            name: "test".into(),
+            default_variant: default_variant.clone(),
+            body: PatternBody::Pitched(PitchedPatternBody {
+                metadata: PitchedPatternMetadata {
+                    length: Duration::beats(16),
+                },
+                variants: BTreeMap::new(),
+            }),
+        };
+        let mut project = Project::new(Scale::major(PitchClass::C));
+        project.patterns.insert(pid, pattern);
+        app.project.set(Rc::new(project));
+
+        // Pre-seed a stale focused-note + a different focused-variant
+        // to prove `select_pattern` clears / replaces them.
+        app.focused_pattern_note.set(Some(NoteId::new(7)));
+        app.focused_variant.set(Some(VariantId::new("other")));
+
+        app.select_pattern(Some(pid));
+        assert_eq!(app.selected_pattern.get(), Some(pid));
+        assert_eq!(app.focused_pattern_note.get(), None);
+        assert_eq!(app.focused_variant.get(), Some(default_variant));
+    }
+
+    #[test]
+    fn select_pattern_none_clears_focused_note_and_variant() {
+        let app = AppState::new();
+        app.focused_pattern_note.set(Some(NoteId::new(3)));
+        app.focused_variant.set(Some(VariantId::new("main")));
+
+        app.select_pattern(None);
+        assert_eq!(app.focused_pattern_note.get(), None);
+        assert_eq!(app.focused_variant.get(), None);
     }
 
     #[test]
