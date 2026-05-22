@@ -39,6 +39,7 @@ mod wavetable_editor;
 use rinch::prelude::*;
 
 use rawdaw_model::chord::ChordSpec;
+use rawdaw_model::id::{SectionId, VariantId};
 use rawdaw_model::time::PPQ;
 
 use crate::chord_display::roman_label;
@@ -210,7 +211,7 @@ fn SelectedInspector(idx: usize) -> NodeHandle {
                 chord_loop_color: chord_loop_color,
             }
             InspectorFooter {
-                section_key: section.name.to_string(),
+                section_id: section_ref.section.get(),
                 variant_id: variant_id,
             }
         }
@@ -638,7 +639,7 @@ fn AddRow(label: String) -> NodeHandle {
 // ─── Footer ───────────────────────────────────────────────────────────────
 
 #[component]
-fn InspectorFooter(section_key: String, variant_id: String) -> NodeHandle {
+fn InspectorFooter(section_id: u64, variant_id: String) -> NodeHandle {
     let app = use_store::<AppState>();
     let footer_style = format!(
         "flex: 0 0 auto; padding: 10px 14px; \
@@ -647,11 +648,16 @@ fn InspectorFooter(section_key: String, variant_id: String) -> NodeHandle {
         line = theme::LINE,
     );
 
-    // Move clones into the open-editor closure so it can be `Fn`. The
-    // closure is invoked on every click — never consume the captured
-    // strings, only borrow them.
-    let open_section = section_key.clone();
-    let open_variant = variant_id.clone();
+    // Move id + variant into the open-editor closure as Copy / String
+    // clones so the closure can be `Fn` (invoked on every click,
+    // never consume the captures). `section_id` is passed as `u64`
+    // (rather than `SectionId` directly) because rinch's `#[component]`
+    // requires every prop type to impl Default — `u64` does;
+    // wrapping happens inside the closure via `SectionId::new`. The
+    // variant is also a String at the prop boundary for the same
+    // reason; `VariantId::new` re-types it inside.
+    let sid = SectionId::new(section_id);
+    let open_variant_str = variant_id.clone();
 
     rsx! {
         div { style: {footer_style.clone()},
@@ -659,7 +665,9 @@ fn InspectorFooter(section_key: String, variant_id: String) -> NodeHandle {
             FooterBtn {
                 label: "Open in editor",
                 primary: true,
-                onclick: move || app.open_section_editor(open_section.clone(), open_variant.clone()),
+                onclick: move || {
+                    app.open_section_editor(sid, VariantId::new(open_variant_str.clone()))
+                },
             }
         }
     }

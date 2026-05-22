@@ -17,6 +17,8 @@
 
 use rinch::prelude::*;
 
+use rawdaw_model::id::SectionId;
+
 use crate::state::{AppState, EditorMode};
 use crate::theme;
 
@@ -34,7 +36,7 @@ use meta_bar::SectionMetaBar;
 use variant_tabs::VariantTabs;
 
 /// Root of the section-editor surface. Reads the current
-/// `EditorMode::SectionEditor { section_key, variant }` out of the
+/// `EditorMode::SectionEditor { section_id, variant }` out of the
 /// shared `AppState` store and renders the editor for it.
 ///
 /// If the mode somehow isn't `SectionEditor` we render an inert
@@ -44,18 +46,18 @@ use variant_tabs::VariantTabs;
 #[component]
 pub fn SectionEditor() -> NodeHandle {
     let app = use_store::<AppState>();
-    // `section_key` is captured once at mount — within a section-editor
+    // `section_id` is captured once at mount — within a section-editor
     // session it doesn't change; only `variant` changes via tab clicks,
     // and that's read reactively by VariantTabs / SectionMetaBar
     // internals. Returning to the arrangement re-mounts this component.
-    let section_key = match app.editor_mode.get() {
-        EditorMode::SectionEditor { section_key, .. } => section_key,
-        EditorMode::Arrangement => String::new(),
+    let section_id = match app.editor_mode.get() {
+        EditorMode::SectionEditor { section_id, .. } => section_id,
+        EditorMode::Arrangement => SectionId::default(),
     };
 
     let project = app.project.get();
     let overlay = app.overlay.get();
-    let section = project.sections.values().find(|s| s.name == section_key);
+    let section = project.sections.get(&section_id);
     let (section_name, section_color, default_variant) = match section {
         Some(s) => (
             s.name.clone(),
@@ -63,12 +65,12 @@ pub fn SectionEditor() -> NodeHandle {
                 .section_color
                 .get(&s.id)
                 .cloned()
-                .unwrap_or_else(|| theme::TEXT2.to_string()),
+                .unwrap_or_else(|| theme::ACCENT.to_string()),
             s.default_variant.as_str().to_string(),
         ),
         None => (
             "(unknown section)".to_string(),
-            theme::TEXT2.to_string(),
+            theme::ACCENT.to_string(),
             "base".to_string(),
         ),
     };
@@ -85,16 +87,17 @@ pub fn SectionEditor() -> NodeHandle {
     rsx! {
         div { style: {surface_style.clone()},
             SectionEditorHeader {
+                section_id: section_id.get(),
                 section_color: section_color.clone(),
                 section_name: section_name,
             }
             VariantTabs {
-                section_name_key: section_key.clone(),
+                section_id: section_id.get(),
                 section_color: section_color,
                 default_variant: default_variant,
             }
             SectionMetaBar {
-                section_name_key: section_key,
+                section_id: section_id.get(),
             }
             ActivationsHeader { }
             CellList { }

@@ -271,7 +271,7 @@ fn select_pattern_resets_editor_mode_to_arrangement() {
     // the new region inside the arrangement surface even if the
     // user was in section-editor mode.
     let app = AppState::new();
-    app.open_section_editor("verse", "base");
+    app.open_section_editor(SectionId::new(7), VariantId::base());
     assert!(matches!(
         app.editor_mode.get(),
         EditorMode::SectionEditor { .. },
@@ -362,15 +362,34 @@ fn select_section_none_does_not_touch_other_axes() {
 }
 
 #[test]
-fn select_section_does_not_change_editor_mode() {
-    // Unlike select_chord_loop / select_pattern, select_section
-    // leaves editor_mode untouched. S3 wires the editor mount
-    // off `selected_section` rather than forcing a mode switch
-    // at selection time.
+fn select_section_opens_section_editor() {
+    // S3 contract: select_section(Some(_)) opens the section editor
+    // for that section template. The variant defaults to the
+    // section's `default_variant` when the section exists in the
+    // project; falls back to `VariantId::base()` for an unknown id
+    // (the SectionId::new(11) below — the empty default project has
+    // no sections, so the lookup misses and the variant lands on
+    // `base`).
     let app = AppState::new();
-    app.open_section_editor("verse", "base");
-    let before = app.editor_mode.get();
-
     app.select_section(Some(SectionId::new(11)));
-    assert_eq!(app.editor_mode.get(), before);
+    assert!(matches!(
+        app.editor_mode.get(),
+        EditorMode::SectionEditor { section_id, variant }
+            if section_id == SectionId::new(11) && variant == VariantId::base(),
+    ));
+    assert_eq!(app.selected_section.get(), Some(SectionId::new(11)));
+}
+
+#[test]
+fn select_section_none_does_not_close_editor() {
+    // Closing the selection is not the same as closing the editor.
+    // The Done button is the editor-close affordance; clearing the
+    // selection just unhighlights the Library row.
+    let app = AppState::new();
+    app.select_section(Some(SectionId::new(11)));
+    let mode_before = app.editor_mode.get();
+
+    app.select_section(None);
+    assert_eq!(app.editor_mode.get(), mode_before);
+    assert_eq!(app.selected_section.get(), None);
 }

@@ -13,7 +13,7 @@
 
 use rinch::prelude::*;
 
-use rawdaw_model::id::{PatternId, SectionId, TrackId, VariantId};
+use rawdaw_model::id::{PatternId, SectionId, TrackId};
 
 use crate::pattern_actions::set_activation_pattern;
 use crate::state::{AppState, EditorMode};
@@ -105,7 +105,7 @@ fn commit_pattern_change(section_id: SectionId, track_id: TrackId, value: String
     // any other tab routes it through `section.variants[v].activations`
     // (see `pattern_actions::set_activation_pattern`).
     let variant_id = match app.editor_mode.get() {
-        EditorMode::SectionEditor { variant, .. } => VariantId::from(variant),
+        EditorMode::SectionEditor { variant, .. } => variant,
         EditorMode::Arrangement => return,
     };
     if let Err(e) = app.apply_project_edit(move |p| {

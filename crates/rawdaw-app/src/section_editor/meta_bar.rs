@@ -4,43 +4,41 @@
 //! grid; each shows a `↳ base` inheritance pill when the current
 //! variant doesn't override that field.
 //!
-//! ## Inheritance computation (round-2 README port-time note)
-//!
-//! The mockup's `↳ base` tag fires when `current_variant !=
-//! default_variant && variant_override_for_that_field.is_none()`. Our
-//! current `Section.variant_overrides` shape only carries activation
-//! overrides — duration / scale / chord-loops are never overridden in
-//! the round-2 fixture. So the practical rule is:
-//!
-//! - Non-base variant → all three fields show `↳ base`.
-//! - Base variant → no inheritance tags.
-//!
-//! Field-level variant overrides on the section meta are a v2
-//! extension to the data model; flagged here so the rule above stays
-//! correct as the model grows.
+//! S3 (2026-05-22) wires Duration + Scale to the section_actions edit
+//! helpers. Duration: numeric nudger (− / +) writing through
+//! `set_section_duration_bars(id, current_variant, new_bars)` — base
+//! tab targets `section.base.duration_bars` directly, non-default
+//! variants auto-promote a `SectionVariantOverride` per S0 decision
+//! 3. Scale: three-way `Select` ("inherit base" / "no override" /
+//! "use scale …"). The chord-loops surface stays as today (CL4 +
+//! CL4.x cover that flow).
 
 use rinch::prelude::*;
 
+use rawdaw_model::id::SectionId;
+use rawdaw_model::pitch::PitchClass;
+use rawdaw_model::scale::{Mode, Scale};
+
 use crate::parts::Icon;
+use crate::section_actions::{
+    clear_variant_scale_override, set_section_duration_bars, set_section_scale_override,
+};
 use crate::section_editor::chord_loop_bar::ChordLoopBar;
 use crate::state::{AppState, EditorMode};
 use crate::theme;
 
 #[component]
-pub fn SectionMetaBar(section_name_key: String) -> NodeHandle {
+pub fn SectionMetaBar(section_id: u64) -> NodeHandle {
     let app = use_store::<AppState>();
     let project = app.project.get();
+    let sid = SectionId::new(section_id);
     let section = project
         .sections
-        .values()
-        .find(|s| s.name == section_name_key)
+        .get(&sid)
         .expect("section editor target must exist in the project");
 
-    // Static-for-this-section values — `default_variant` is on the
-    // section template, not on the per-variant view. The `inherited`
-    // flag at each field is computed reactively against the active
-    // variant inside FieldLabelRow.
     let default_variant = section.default_variant.as_str().to_string();
+    let section_name_key = section.name.clone();
     let duration = section.base.duration_bars;
 
     let bar_style = format!(
@@ -53,44 +51,40 @@ pub fn SectionMetaBar(section_name_key: String) -> NodeHandle {
 
     rsx! {
         div { style: {bar_style.clone()},
-            DurationField  { default_variant: default_variant.clone(), duration: duration }
-            ScaleField     { default_variant: default_variant.clone() }
+            DurationField  { section_id: section_id, default_variant: default_variant.clone() }
+            ScaleField     { section_id: section_id, default_variant: default_variant.clone() }
             ChordLoopsField { default_variant: default_variant.clone(),
-                              section_name_key: section_name_key.clone(),
+                              section_name_key: section_name_key,
                               duration_bars: duration }
         }
     }
 }
 
 // ─── Per-field components ─────────────────────────────────────────────────
-//
-// Each field component owns its own label row (with the optional `↳
-// base` pill and `+ action` button) plus the field's content. Inlining
-// the label-row logic per field avoids needing a `children`-style prop
-// on a shared shell — String captures inside rsx's `if` blocks fight
-// the macro's `move` Fn boundary, and inlining sidesteps that without
-// adding an Rc layer.
 
 #[component]
-fn DurationField(default_variant: String, duration: u32) -> NodeHandle {
+fn DurationField(section_id: u64, default_variant: String) -> NodeHandle {
     rsx! {
         div { style: "display: flex; flex-direction: column; gap: 5px;",
             FieldLabelRow { label: "Duration",
                             default_variant: default_variant,
                             action_label: "" }
-            NumStepperMini { value: duration, unit: "bars" }
+            NumStepperMini {
+                section_id: section_id,
+                unit: "bars".to_string(),
+            }
         }
     }
 }
 
 #[component]
-fn ScaleField(default_variant: String) -> NodeHandle {
+fn ScaleField(section_id: u64, default_variant: String) -> NodeHandle {
     rsx! {
         div { style: "display: flex; flex-direction: column; gap: 5px;",
             FieldLabelRow { label: "Scale override",
                             default_variant: default_variant,
                             action_label: "" }
-            PseudoSelect { value: "Inherit project key (C major)" }
+            ScalePicker { section_id: section_id }
         }
     }
 }
@@ -121,11 +115,6 @@ fn FieldLabelRow(label: String, default_variant: String, action_label: String) -
         text2 = theme::TEXT2,
     );
     let has_action = !action_label.is_empty();
-
-    // The `inherited` predicate reads the signal each render. The rsx
-    // `if` auto-tracks signal reads inside its scrutinee (Rule 14), so
-    // the pill appears/disappears as variant tabs are clicked without
-    // re-mounting the component.
     let default_for_check = default_variant.clone();
 
     rsx! {
@@ -134,11 +123,8 @@ fn FieldLabelRow(label: String, default_variant: String, action_label: String) -
             if matches!(
                 app.editor_mode.get(),
                 EditorMode::SectionEditor { ref variant, .. }
-                    if variant != &default_for_check
+                    if variant.as_str() != default_for_check.as_str()
             ) {
-                // Inline style literal — String captures inside rsx `if`
-                // blocks hit the macro's `move` Fn boundary. theme::TEXT3
-                // / LINE_SOFT are inlined here.
                 span { style: "color: rgba(232,234,238,0.28); font-size: 10px; \
                                cursor: help; padding: 0 4px; \
                                border: 1px solid #1E222A; border-radius: 2px; \
@@ -179,8 +165,17 @@ fn ActionPill(label: String) -> NodeHandle {
     }
 }
 
+/// Numeric nudger wired to `set_section_duration_bars`. Reads the
+/// effective duration each render from the store: on the base tab,
+/// `section.base.duration_bars`; on a non-default variant, the
+/// override's `duration_bars` if `Some`, else inherits the base.
+///
+/// −/+ buttons commit through `apply_project_edit` so the engine
+/// re-arms in lockstep. Clamps the floor at 1 bar.
 #[component]
-fn NumStepperMini(value: u32, unit: String) -> NodeHandle {
+fn NumStepperMini(section_id: u64, unit: String) -> NodeHandle {
+    let sid = SectionId::new(section_id);
+
     let wrap_style = format!(
         "display: inline-flex; align-items: stretch; \
          background: {bg0}; border: 1px solid {line}; border-radius: 4px; \
@@ -188,8 +183,6 @@ fn NumStepperMini(value: u32, unit: String) -> NodeHandle {
         bg0 = theme::BG0,
         line = theme::LINE,
     );
-    // Per round-1's NumStepper pattern: bind the segment-button style as
-    // a `&str` so `.to_string()` at the call sites doesn't move it.
     let seg_btn_style: &str = "width: 24px; height: 24px; padding: 0; \
          background: transparent; border: 0; color: rgba(232,234,238,0.42); \
          cursor: pointer; \
@@ -213,15 +206,24 @@ fn NumStepperMini(value: u32, unit: String) -> NodeHandle {
     let stroke = theme::TEXT1.to_string();
     let sz = 12.0_f32;
     let sw = 1.6_f32;
-    let value_str = value.to_string();
 
     rsx! {
         div { style: {wrap_style.clone()},
-            button { r#type: "button", style: {seg_btn_style.to_string()},
+            button {
+                r#type: "button",
+                style: {seg_btn_style.to_string()},
+                title: "Decrease duration",
+                onclick: move || nudge_duration(sid, -1),
                 Icon { glyph: "minus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
             }
-            div { style: {mid_style.clone()}, {value_str.clone()} }
-            button { r#type: "button", style: {seg_btn_style.to_string()},
+            div { style: {mid_style.clone()},
+                {|| effective_duration(sid).to_string()}
+            }
+            button {
+                r#type: "button",
+                style: {seg_btn_style.to_string()},
+                title: "Increase duration",
+                onclick: move || nudge_duration(sid, 1),
                 Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
             }
             div { style: {unit_style.clone()}, {unit.clone()} }
@@ -229,25 +231,265 @@ fn NumStepperMini(value: u32, unit: String) -> NodeHandle {
     }
 }
 
+/// Read the effective duration for this section under the active
+/// variant tab. Mirrors `section_actions::duration` semantics. Looks
+/// up the section's `default_variant` from the live project so the
+/// reactive closure that drives the display reads only `sid: Copy`
+/// from outer scope.
+fn effective_duration(sid: SectionId) -> u32 {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let Some(section) = project.sections.get(&sid) else {
+        return 0;
+    };
+    let active = match app.editor_mode.get() {
+        EditorMode::SectionEditor { variant, .. } => variant,
+        EditorMode::Arrangement => section.default_variant.clone(),
+    };
+    if active == section.default_variant {
+        return section.base.duration_bars;
+    }
+    section
+        .variants
+        .get(&active)
+        .and_then(|o| o.duration_bars)
+        .unwrap_or(section.base.duration_bars)
+}
+
+/// Apply a ± nudge to the section's duration under the active variant
+/// tab. Clamps the result at 1 bar.
+fn nudge_duration(sid: SectionId, delta: i32) {
+    let app = use_store::<AppState>();
+    let active = match app.editor_mode.get() {
+        EditorMode::SectionEditor { variant, .. } => variant,
+        EditorMode::Arrangement => return,
+    };
+    let current = effective_duration(sid);
+    let next = (current as i32 + delta).max(1) as u32;
+    if next == current {
+        return;
+    }
+    let active_for_edit = active.clone();
+    if let Err(e) = app.apply_project_edit(move |p| {
+        set_section_duration_bars(p, sid, &active_for_edit, next);
+    }) {
+        eprintln!("section editor: set duration failed: {e}");
+    }
+}
+
+// ─── Scale picker ──────────────────────────────────────────────────────────
+
+/// Three-way scale picker:
+/// - "Inherit base" — only available on non-default variants;
+///   writes `clear_variant_scale_override` to drop the override field
+///   to `None`.
+/// - "No scale override" — writes `Some(None)` on a non-default variant
+///   or `None` on the base tab.
+/// - "Use scale …" — concrete scale; writes `Some(Some(scale))` on
+///   non-default or `Some(scale)` on base.
 #[component]
-fn PseudoSelect(value: String) -> NodeHandle {
-    let wrap_style = format!(
-        "display: flex; align-items: center; \
-         padding: 4px 10px; border-radius: 4px; \
-         background: {bg0}; border: 1px solid {line}; \
-         font-size: 12px; color: {text0};",
-        bg0 = theme::BG0,
-        line = theme::LINE,
-        text0 = theme::TEXT0,
-    );
-    let stroke = theme::TEXT2.to_string();
-    let sz = 12.0_f32;
-    let sw = 1.6_f32;
+fn ScalePicker(section_id: u64) -> NodeHandle {
+    let sid = SectionId::new(section_id);
+    // Encode the picker's current value into the Select's `key` so a
+    // model edit elsewhere remounts the Select with the fresh choice.
+    // (Pattern from `pattern_select.rs` PatternOptions::key.) The
+    // section's `default_variant` is looked up inside the helpers so
+    // the closures only capture `sid: Copy`.
     rsx! {
-        div { style: {wrap_style.clone()},
-            span { style: "flex: 1;", {value.clone()} }
-            Icon { glyph: "chevron-d", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+        for opts in scale_picker_options(sid) {
+            Select {
+                key: opts.key.clone(),
+                size: "sm",
+                value: {opts.current_value.clone()},
+                data: opts.options.clone(),
+                onchange: move |v: String| {
+                    commit_scale_pick(sid, v);
+                },
+            }
         }
     }
 }
 
+#[derive(Clone, PartialEq, Default)]
+struct ScalePickerOptions {
+    key: String,
+    current_value: String,
+    options: Vec<SelectOption>,
+}
+
+fn scale_picker_options(sid: SectionId) -> Vec<ScalePickerOptions> {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let Some(section) = project.sections.get(&sid) else {
+        return vec![ScalePickerOptions::default()];
+    };
+    let on_default = match app.editor_mode.get() {
+        EditorMode::SectionEditor { ref variant, .. } => {
+            variant == &section.default_variant
+        }
+        EditorMode::Arrangement => true,
+    };
+
+    // Base tab: "no override" + concrete scales. Variant tab: also
+    // "inherit base" at the top.
+    let mut options: Vec<SelectOption> = Vec::new();
+    if !on_default {
+        options.push(SelectOption::new("inherit", "Inherit base"));
+    }
+    options.push(SelectOption::new("none", "No scale override"));
+    let roots: [(PitchClass, &str); 12] = [
+        (PitchClass::C, "C"),
+        (PitchClass::CSharp, "C#"),
+        (PitchClass::D, "D"),
+        (PitchClass::DSharp, "D#"),
+        (PitchClass::E, "E"),
+        (PitchClass::F, "F"),
+        (PitchClass::FSharp, "F#"),
+        (PitchClass::G, "G"),
+        (PitchClass::GSharp, "G#"),
+        (PitchClass::A, "A"),
+        (PitchClass::ASharp, "A#"),
+        (PitchClass::B, "B"),
+    ];
+    for (_, name) in roots {
+        options.push(SelectOption::new(
+            format!("{name}:major"),
+            format!("{name} major"),
+        ));
+    }
+    for (_, name) in roots {
+        options.push(SelectOption::new(
+            format!("{name}:minor"),
+            format!("{name} minor"),
+        ));
+    }
+    let current_value = scale_picker_current_value(sid);
+    let key = format!("scale-{}-{current_value}", sid.get());
+    vec![ScalePickerOptions {
+        key,
+        current_value,
+        options,
+    }]
+}
+
+fn parse_pitch_class(name: &str) -> Option<PitchClass> {
+    match name {
+        "C" => Some(PitchClass::C),
+        "C#" => Some(PitchClass::CSharp),
+        "D" => Some(PitchClass::D),
+        "D#" => Some(PitchClass::DSharp),
+        "E" => Some(PitchClass::E),
+        "F" => Some(PitchClass::F),
+        "F#" => Some(PitchClass::FSharp),
+        "G" => Some(PitchClass::G),
+        "G#" => Some(PitchClass::GSharp),
+        "A" => Some(PitchClass::A),
+        "A#" => Some(PitchClass::ASharp),
+        "B" => Some(PitchClass::B),
+        _ => None,
+    }
+}
+
+fn pitch_class_name(pc: PitchClass) -> &'static str {
+    match pc {
+        PitchClass::C => "C",
+        PitchClass::CSharp => "C#",
+        PitchClass::D => "D",
+        PitchClass::DSharp => "D#",
+        PitchClass::E => "E",
+        PitchClass::F => "F",
+        PitchClass::FSharp => "F#",
+        PitchClass::G => "G",
+        PitchClass::GSharp => "G#",
+        PitchClass::A => "A",
+        PitchClass::ASharp => "A#",
+        PitchClass::B => "B",
+    }
+}
+
+fn scale_to_value(scale: &Scale) -> String {
+    let kind = match scale.mode {
+        Mode::Ionian => "major",
+        Mode::Aeolian => "minor",
+        _ => "major", // collapse other modes to major for the v1 picker
+    };
+    format!("{}:{kind}", pitch_class_name(scale.tonic))
+}
+
+fn scale_picker_current_value(sid: SectionId) -> String {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let Some(section) = project.sections.get(&sid) else {
+        return "inherit".into();
+    };
+    let active = match app.editor_mode.get() {
+        EditorMode::SectionEditor { variant, .. } => variant,
+        EditorMode::Arrangement => section.default_variant.clone(),
+    };
+    if active == section.default_variant {
+        // Base path: Some(scale) → that scale, None → "none"
+        return match &section.base.scale_override {
+            Some(s) => scale_to_value(s),
+            None => "none".into(),
+        };
+    }
+    // Variant path: None → inherit, Some(None) → none, Some(Some(s)) → scale
+    let over = section.variants.get(&active);
+    match over.and_then(|o| o.scale_override.as_ref()) {
+        None => "inherit".into(),
+        Some(None) => "none".into(),
+        Some(Some(s)) => scale_to_value(s),
+    }
+}
+
+fn commit_scale_pick(sid: SectionId, value: String) {
+    let app = use_store::<AppState>();
+    let project = app.project.get();
+    let Some(section) = project.sections.get(&sid) else { return };
+    let active = match app.editor_mode.get() {
+        EditorMode::SectionEditor { variant, .. } => variant,
+        EditorMode::Arrangement => return,
+    };
+    let is_default = active == section.default_variant;
+    drop(project);
+    if value == "inherit" {
+        // Only meaningful on non-default; clear the override field to None.
+        if !is_default {
+            let v = active.clone();
+            if let Err(e) = app.apply_project_edit(move |p| {
+                clear_variant_scale_override(p, sid, &v);
+            }) {
+                eprintln!("section editor: clear scale override failed: {e}");
+            }
+        }
+        return;
+    }
+    if value == "none" {
+        let v = active.clone();
+        if let Err(e) = app.apply_project_edit(move |p| {
+            set_section_scale_override(p, sid, &v, None);
+        }) {
+            eprintln!("section editor: set scale override (none) failed: {e}");
+        }
+        return;
+    }
+    // "<root>:<kind>"
+    let (root_name, kind) = match value.split_once(':') {
+        Some(parts) => parts,
+        None => return,
+    };
+    let Some(root) = parse_pitch_class(root_name) else {
+        return;
+    };
+    let scale = match kind {
+        "major" => Scale::major(root),
+        "minor" => Scale::natural_minor(root),
+        _ => return,
+    };
+    let v = active.clone();
+    if let Err(e) = app.apply_project_edit(move |p| {
+        set_section_scale_override(p, sid, &v, Some(scale.clone()));
+    }) {
+        eprintln!("section editor: set scale override failed: {e}");
+    }
+}

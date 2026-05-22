@@ -62,20 +62,19 @@ use cell_inherit::CellInherit;
 #[component]
 pub fn CellList() -> NodeHandle {
     let app = use_store::<AppState>();
-    let section_key = match app.editor_mode.get() {
-        EditorMode::SectionEditor { section_key, .. } => section_key,
-        EditorMode::Arrangement => String::new(),
+    let section_id = match app.editor_mode.get() {
+        EditorMode::SectionEditor { section_id, .. } => section_id,
+        EditorMode::Arrangement => SectionId::default(),
     };
 
     let outer_style = "display: flex; flex-direction: column; gap: 10px; \
          padding: 4px 20px 20px;"
         .to_string();
     let _ = theme::BG0; // theme tokens used by leaf cells, not here
-    let section_key_for_iter = section_key.clone();
 
     rsx! {
         div { style: {outer_style.clone()},
-            for slot in resolve_cells(section_key_for_iter.clone(), variant_from_store()) {
+            for slot in resolve_cells(section_id, variant_from_store()) {
                 CellRow {
                     key: slot.track_id.get(),
                     slot: slot,
@@ -88,11 +87,11 @@ pub fn CellList() -> NodeHandle {
 /// Reactive scalar reader — grabs the current variant out of the store
 /// each time the `for` source re-runs. Pulled out of `CellList` so the
 /// rsx for-source closure stays small.
-fn variant_from_store() -> String {
+fn variant_from_store() -> VariantId {
     let app = use_store::<AppState>();
     match app.editor_mode.get() {
         EditorMode::SectionEditor { variant, .. } => variant,
-        EditorMode::Arrangement => String::new(),
+        EditorMode::Arrangement => VariantId::base(),
     }
 }
 
@@ -179,28 +178,23 @@ impl Default for ResolvedVariant {
     }
 }
 
-fn resolve_cells(section_key: String, variant: String) -> Vec<CellSlot> {
+fn resolve_cells(section_id: SectionId, variant: VariantId) -> Vec<CellSlot> {
     let app = use_store::<AppState>();
     let project = app.project.get();
     let overlay = app.overlay.get();
-    let Some(section) = project
-        .sections
-        .values()
-        .find(|s| s.name == section_key)
-        .cloned()
-    else {
+    let Some(section) = project.sections.get(&section_id).cloned() else {
         return Vec::new();
     };
 
     let total_bars = section.base.duration_bars;
     let section_id = section.id;
-    let variant_id = VariantId::from(variant.as_str());
+    let variant_str = variant.as_str().to_string();
     project
         .tracks
         .iter()
         .map(|track| {
-            let resolved = resolve_one(&project, &overlay, &section, &variant, track.id);
-            let bound_pattern_value = effective_pattern_id(&section, track.id, &variant_id)
+            let resolved = resolve_one(&project, &overlay, &section, &variant_str, track.id);
+            let bound_pattern_value = effective_pattern_id(&section, track.id, &variant)
                 .map(PatternId::get)
                 .unwrap_or(pattern_select::NO_PATTERN_SENTINEL);
             CellSlot {

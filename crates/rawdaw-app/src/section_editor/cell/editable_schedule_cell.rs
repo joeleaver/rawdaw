@@ -220,7 +220,7 @@ fn silent_variant_id() -> VariantId {
 /// `unreachable!` safely without surfacing in panic logs).
 fn active_variant_id(app: &AppState) -> Option<VariantId> {
     match app.editor_mode.get() {
-        EditorMode::SectionEditor { variant, .. } => Some(VariantId::from(variant)),
+        EditorMode::SectionEditor { variant, .. } => Some(variant),
         EditorMode::Arrangement => None,
     }
 }

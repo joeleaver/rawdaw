@@ -41,14 +41,18 @@ pub enum EditorMode {
     Arrangement,
     /// Round-2 section editor for a specific section + variant. Replaces
     /// the arrangement view's middle row; the top bar stays.
+    ///
+    /// **S3 refactor (2026-05-22):** previously used `section_key:
+    /// String` (the section's name) which became stale when the user
+    /// renamed the section while the editor was open. Now uses the
+    /// typed `SectionId` so renames don't desync the editor. The
+    /// variant tab is similarly typed.
     SectionEditor {
-        /// Section identifier — `Section.name` from the live project.
-        /// Resolved at consumer sites via
-        /// `project.sections.values().find(|s| s.name == key)`. Will
-        /// become the typed `SectionId` in a follow-up C1 slice.
-        section_key: String,
-        /// Currently active variant tab (`"base"`, `"stripped"`, …).
-        variant: String,
+        section_id: SectionId,
+        /// Currently active variant tab. `VariantId::base()` for the
+        /// section's base body; otherwise one of the keys in
+        /// `Section.variants`.
+        variant: VariantId,
     },
 }
 
@@ -234,11 +238,11 @@ impl AppState {
         }
     }
 
-    /// Switch to the section editor for `section_key` at `variant`.
-    pub fn open_section_editor(&self, section_key: impl Into<String>, variant: impl Into<String>) {
+    /// Switch to the section editor for `section_id` at `variant`.
+    pub fn open_section_editor(&self, section_id: SectionId, variant: VariantId) {
         self.editor_mode.set(EditorMode::SectionEditor {
-            section_key: section_key.into(),
-            variant: variant.into(),
+            section_id,
+            variant,
         });
     }
 
@@ -251,11 +255,11 @@ impl AppState {
     /// the app isn't currently in section-editor mode (defensive — the
     /// variant tab strip only renders inside the section editor, so this
     /// branch shouldn't fire in practice).
-    pub fn set_variant(&self, variant: impl Into<String>) {
-        if let EditorMode::SectionEditor { section_key, .. } = self.editor_mode.get() {
+    pub fn set_variant(&self, variant: VariantId) {
+        if let EditorMode::SectionEditor { section_id, .. } = self.editor_mode.get() {
             self.editor_mode.set(EditorMode::SectionEditor {
-                section_key,
-                variant: variant.into(),
+                section_id,
+                variant,
             });
         }
     }
@@ -373,18 +377,29 @@ impl AppState {
     /// (`midi_target_track`) is untouched — section selection is
     /// not a synth-target switch.
     ///
-    /// Unlike [`Self::select_chord_loop`] / [`Self::select_pattern`]
-    /// this does NOT reset `editor_mode` — the section editor mounts
-    /// off `EditorMode::SectionEditor` independently. S3 will wire
-    /// `selected_section` into the section editor's open path so the
-    /// flow becomes "click Library row → editor opens for that
-    /// section template, no arrangement step required."
+    /// **S3 (2026-05-22):** also opens the section editor for the
+    /// targeted section. Looks up the section's `default_variant`
+    /// from the current project and routes through
+    /// [`Self::open_section_editor`]. If the id doesn't resolve
+    /// (race), falls back to `VariantId::base()`. Closing the
+    /// selection (`select_section(None)`) does NOT close the editor
+    /// — closing is the Done button's job. This keeps the "Library
+    /// row click → editor mount" flow ergonomic without coupling
+    /// the close affordances.
     pub fn select_section(&self, id: Option<SectionId>) {
-        if id.is_some() {
+        if let Some(sid) = id {
             self.selected_idx.set(None);
             self.selected_track.set(None);
             self.selected_chord_loop.set(None);
             self.selected_pattern.set(None);
+            let variant = self
+                .project
+                .get()
+                .sections
+                .get(&sid)
+                .map(|s| s.default_variant.clone())
+                .unwrap_or_else(VariantId::base);
+            self.open_section_editor(sid, variant);
         }
         self.selected_section.set(id);
     }
