@@ -28,6 +28,7 @@
 //! - `app` — the `MainWindow` composition + mode switch.
 
 mod app;
+mod arrangement_actions;
 mod audio;
 mod chord_display;
 mod chord_loop_actions;
