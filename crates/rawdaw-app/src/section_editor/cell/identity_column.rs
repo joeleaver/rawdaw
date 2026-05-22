@@ -115,8 +115,6 @@ fn TrackRow(
         TrackKind::Pitched => "section".to_string(),
     };
     let icon_stroke = theme::TEXT1.to_string();
-    let icon_size = 14.0_f32;
-    let icon_w = 1.6_f32;
     let kind_label_owned = kind_label.to_string();
     let track_name_owned = track_name.clone();
     let show_role = !track_role.is_empty() && track_role != "—";
@@ -124,7 +122,7 @@ fn TrackRow(
 
     rsx! {
         div { style: {row_style.to_string()},
-            Icon { glyph: glyph, size: icon_size, stroke: {icon_stroke.clone()}, stroke_width: icon_w }
+            Icon { glyph: glyph, size: 14.0, stroke: {icon_stroke.clone()}, stroke_width: 1.6 }
             span { style: {name_style.clone()}, {track_name_owned.clone()} }
             span { style: {kind_style.clone()}, {kind_label_owned.clone()} }
             if show_role {
@@ -181,8 +179,6 @@ fn PatternCard(pattern_name: String, pattern_color: String, pattern_kind: String
         text2 = theme::TEXT2,
     );
     let chevron_stroke = theme::TEXT2.to_string();
-    let chevron_size = 13.0_f32;
-    let chevron_w = 1.6_f32;
 
     rsx! {
         div { style: {card_style.clone()},
@@ -193,8 +189,8 @@ fn PatternCard(pattern_name: String, pattern_color: String, pattern_kind: String
             button {
                 r#type: "button", style: {btn_style.clone()},
                 title: "Open in pattern editor (round 3)",
-                Icon { glyph: "chevron-r", size: chevron_size,
-                       stroke: {chevron_stroke.clone()}, stroke_width: chevron_w }
+                Icon { glyph: "chevron-r", size: 13.0,
+                       stroke: {chevron_stroke.clone()}, stroke_width: 1.6 }
             }
         }
     }
@@ -242,18 +238,15 @@ fn PinnedChip(count: u32) -> NodeHandle {
     );
     let dot_stroke = theme::ACCENT.to_string();
     let chev_stroke = theme::ACCENT.to_string();
-    let dot_size = 7.0_f32;
-    let chev_size = 11.0_f32;
-    let sw = 1.6_f32;
     let label = format!("{count} pinned");
 
     rsx! {
         button {
             r#type: "button", style: {style.clone()},
             title: "Open piano roll on pinned notes",
-            Icon { glyph: "dot", size: dot_size, stroke: {dot_stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "dot", size: 7.0, stroke: {dot_stroke.clone()}, stroke_width: 1.6 }
             span { {label.clone()} }
-            Icon { glyph: "chevron-r", size: chev_size, stroke: {chev_stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "chevron-r", size: 11.0, stroke: {chev_stroke.clone()}, stroke_width: 1.6 }
         }
     }
 }

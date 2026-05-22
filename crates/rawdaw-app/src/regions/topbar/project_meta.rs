@@ -39,8 +39,6 @@ pub(super) fn IconBtn(glyph: String, title: String) -> NodeHandle {
          color: {color}; cursor: pointer; padding: 0; \
          display: inline-flex; align-items: center; justify-content: center;",
     );
-    let sz = 14.0_f32;
-    let sw = 1.6_f32;
     let stroke = color.clone();
     rsx! {
         button {
@@ -49,9 +47,9 @@ pub(super) fn IconBtn(glyph: String, title: String) -> NodeHandle {
             style: {style.clone()},
             Icon {
                 glyph: {glyph.clone()},
-                size: sz,
+                size: 14.0,
                 stroke: {stroke.clone()},
-                stroke_width: sw,
+                stroke_width: 1.6,
             }
         }
     }

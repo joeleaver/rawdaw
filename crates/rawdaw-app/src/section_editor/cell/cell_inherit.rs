@@ -43,24 +43,16 @@ pub fn CellInherit(
         text1 = theme::TEXT1,
     );
     let dot_stroke = theme::TEXT3.to_string();
-    let dot_size = 8.0_f32;
-    let sw = 1.6_f32;
     let show_role = !track_role.is_empty() && track_role != "—";
     let role_label = format!("role: {track_role}");
     let kind_label_owned = kind_label.to_string();
     let name_owned = track_name.clone();
     let reason_owned = reason.clone();
     let reason_style = format!("color: {text3};", text3 = theme::TEXT3);
-    // Inherit rows render the picker at "(no pattern)" via the
-    // shared sentinel. The `let` binding sidesteps the rsx macro's
-    // auto-Option-wrap on bare integer literals (same trick as
-    // IdentityColumn's `pinned_count` and the various Icon `size`
-    // call sites).
-    let no_pattern_value: u64 = super::pattern_select::NO_PATTERN_SENTINEL;
 
     rsx! {
         div { style: {outer_style.clone()},
-            Icon { glyph: "dot", size: dot_size, stroke: {dot_stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "dot", size: 8.0, stroke: {dot_stroke.clone()}, stroke_width: 1.6 }
             strong { style: {name_style.clone()}, {name_owned.clone()} }
             span { style: {kind_style.clone()}, {kind_label_owned.clone()} }
             if show_role {
@@ -76,7 +68,7 @@ pub fn CellInherit(
             PatternSelect {
                 section_id: section_id,
                 track_id: track_id,
-                current_pattern_value: no_pattern_value,
+                current_pattern_value: super::pattern_select::NO_PATTERN_SENTINEL,
             }
         }
     }

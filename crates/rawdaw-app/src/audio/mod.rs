@@ -62,12 +62,10 @@
 //! - Per track `i`, the sine instrument is `NodeId(i + 1)`. Its single
 //!   stereo output port (port `0`) is wired to mixer input port `i`.
 
-mod drum_poller;
 mod edit_pump;
 mod graph;
 mod midi;
 mod synth_ops;
-mod wavetable_poller;
 
 use std::cell::{RefCell, RefMut};
 use std::collections::BTreeMap;
@@ -79,13 +77,12 @@ use std::sync::Arc;
 use rinch::core::reactive::{poll_signal, PollRate};
 use rinch::prelude::Signal;
 
-use drum_poller::DrumPoller;
 use midi::first_pitched_track_node_id;
 use graph::{
-    build_drum_handles, build_drum_pollers, build_wavetable_handles, build_wavetable_pollers,
-    configure_graph, extract_drum_publishers, extract_publishers, ConfiguredGraph,
+    attach_drum_poll_signals, attach_wavetable_poll_signals, build_drum_handles,
+    build_wavetable_handles, configure_graph, extract_drum_publishers, extract_publishers,
+    ConfiguredGraph,
 };
-use wavetable_poller::WavetablePoller;
 
 use rawdaw_engine::cpal_driver::{CpalDriver, StreamError};
 use rawdaw_engine::{
@@ -224,17 +221,11 @@ pub struct AudioResources {
     /// the values clone cheaply (Arcs + Signal).
     pub wavetable_handles: Rc<BTreeMap<usize, WavetableEditorHandle>>,
     /// Audio-thread publishers paired with each Wavetable handle.
-    /// Kept around so `build()` can spawn one [`WavetablePoller`]
-    /// per track (test path leaves the poller `Vec` empty). Private
-    /// because the publishers are an implementation detail — UI
-    /// callers go through [`WavetableEditorHandle`].
+    /// Kept around so `build()` can register the per-track
+    /// `poll_signal` mirror (test path leaves no polls attached).
+    /// Private because the publishers are an implementation detail
+    /// — UI callers go through [`WavetableEditorHandle`].
     wavetable_publishers: Rc<BTreeMap<usize, WavetablePublishers>>,
-    /// Per-pitched-track pollers — one polling thread per Wavetable
-    /// synth, each watching its node's `patch_version` atomic. Held
-    /// in an `Rc<Vec<...>>` so dropping the last `AudioResources`
-    /// clone stops every poller (each poller's `Drop` joins its
-    /// thread; see [`WavetablePoller`]).
-    _wavetable_pollers: Rc<Vec<WavetablePoller>>,
     /// Per-drum-track editor handles, keyed by `project.tracks` index.
     /// Each handle carries the synth's NodeId and a reactive
     /// `Signal<DrumPatch>` mirroring the audio-thread's drum patch.
@@ -244,14 +235,15 @@ pub struct AudioResources {
     /// alongside the handles for the same reasons as the wavetable
     /// publishers field above.
     drum_publishers: Rc<BTreeMap<usize, DrumPublishers>>,
-    /// Per-drum-track pollers. Same lifecycle contract as the
-    /// wavetable pollers.
-    _drum_pollers: Rc<Vec<DrumPoller>>,
-    // PlayheadPoller (Rc<std::thread> + AtomicBool) was removed when
-    // we adopted `rinch::core::reactive::poll_signal` (rinch issue
-    // [#28](https://github.com/joeleaver/rinch/issues/28)). The
-    // playhead Signal now drives off the runtime's per-frame poll
-    // drain; no thread, no Drop dance.
+    // The PlayheadPoller / WavetablePoller / DrumPoller fields (each
+    // an `Rc<std::thread>` + AtomicBool stop flag) were all removed
+    // when we adopted `rinch::core::reactive::poll_signal` (rinch
+    // issue [#28](https://github.com/joeleaver/rinch/issues/28)).
+    // The patch + playhead Signals now drive off the runtime's
+    // per-frame poll drain — no threads, no Drop dances. See
+    // `attach_wavetable_poll_signals` / `attach_drum_poll_signals`
+    // in `graph.rs` for the version-atomic-gated side-effect
+    // closures.
     /// MIDI input handle for the engine's dedicated MIDI input SPSC
     /// queue. `Some(_)` after `build_from_project_and_rate`; `take()`n
     /// by [`Self::build`] when it opens a midir input connection.
@@ -314,20 +306,18 @@ impl AudioResources {
         let clock = Arc::clone(&resources.sample_clock);
         resources.playhead_samples =
             poll_signal(move || clock.load(Ordering::Acquire), PLAYHEAD_POLL_RATE);
-        // One Wavetable patch poller per pitched track. Lives in
-        // `build()` rather than `build_from_project_and_rate`
-        // because `Signal::send` requires the rinch runtime's
-        // cross-thread dispatcher to be registered (which `build()`'s
-        // caller has already done, but the test-facing
-        // `build_from_project_and_rate` callers haven't).
-        resources._wavetable_pollers = Rc::new(build_wavetable_pollers(
+        // Register one `poll_signal` per pitched / drum track. Lives
+        // in `build()` rather than `build_from_project_and_rate`
+        // because `poll_signal` asserts it's called on the main
+        // thread (which `build()`'s caller has, but tests haven't).
+        attach_wavetable_poll_signals(
             &resources.wavetable_publishers,
             &resources.wavetable_handles,
-        ));
-        resources._drum_pollers = Rc::new(build_drum_pollers(
+        );
+        attach_drum_poll_signals(
             &resources.drum_publishers,
             &resources.drum_handles,
-        ));
+        );
         resources.open_default_midi_input();
         resources
     }
@@ -398,14 +388,12 @@ impl AudioResources {
             project: Rc::new(RefCell::new(Rc::new(project.clone()))),
             wavetable_handles: Rc::new(build_wavetable_handles(&wavetable_publishers)),
             wavetable_publishers: Rc::new(extract_publishers(&wavetable_publishers)),
-            // No pollers in the test path — they require the rinch
-            // runtime's cross-thread dispatcher to be registered, and
-            // unit tests run outside the runtime. `build()` overwrites
-            // these with the production pollers.
-            _wavetable_pollers: Rc::new(Vec::new()),
             drum_handles: Rc::new(build_drum_handles(&drum_publishers)),
             drum_publishers: Rc::new(extract_drum_publishers(&drum_publishers)),
-            _drum_pollers: Rc::new(Vec::new()),
+            // No `poll_signal` registrations in the test path —
+            // they assert main-thread and unit tests run outside the
+            // runtime. `build()` attaches the polls after this fn
+            // returns.
             midi_input_handle: Rc::new(RefCell::new(Some(midi_input_handle))),
             _midi_connection: Rc::new(RefCell::new(None)),
             // Seed the routing atomic with the first Pitched track's

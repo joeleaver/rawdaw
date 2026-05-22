@@ -232,13 +232,11 @@ fn NewTrackBtn() -> NodeHandle {
          color: rgba(232,234,238,0.42); cursor: pointer; \
          border-radius: 3px; font-size: 11px; font-family: inherit;";
     let stroke = "rgba(232,234,238,0.42)".to_string();
-    let sz = 12.0_f32;
-    let sw = 1.6_f32;
     rsx! {
         button {
             r#type: "button",
             style: {btn_style.to_string()},
-            Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "plus", size: 12.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             span { "new track" }
         }
     }

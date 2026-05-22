@@ -154,12 +154,10 @@ fn ActionPill(label: String) -> NodeHandle {
         text2 = theme::TEXT2,
     );
     let stroke = theme::TEXT2.to_string();
-    let sz = 10.0_f32;
-    let sw = 1.6_f32;
     rsx! {
         button { r#type: "button", style: {style.clone()},
             title: "Add another (BarRange, ChordLoopRef) to this section",
-            Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "plus", size: 10.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             span { {label.clone()} }
         }
     }
@@ -204,8 +202,6 @@ fn NumStepperMini(section_id: u64, unit: String) -> NodeHandle {
     );
 
     let stroke = theme::TEXT1.to_string();
-    let sz = 12.0_f32;
-    let sw = 1.6_f32;
 
     rsx! {
         div { style: {wrap_style.clone()},
@@ -214,7 +210,7 @@ fn NumStepperMini(section_id: u64, unit: String) -> NodeHandle {
                 style: {seg_btn_style.to_string()},
                 title: "Decrease duration",
                 onclick: move || nudge_duration(sid, -1),
-                Icon { glyph: "minus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+                Icon { glyph: "minus", size: 12.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             }
             div { style: {mid_style.clone()},
                 {|| effective_duration(sid).to_string()}
@@ -224,7 +220,7 @@ fn NumStepperMini(section_id: u64, unit: String) -> NodeHandle {
                 style: {seg_btn_style.to_string()},
                 title: "Increase duration",
                 onclick: move || nudge_duration(sid, 1),
-                Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+                Icon { glyph: "plus", size: 12.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             }
             div { style: {unit_style.clone()}, {unit.clone()} }
         }

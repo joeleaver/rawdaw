@@ -65,7 +65,6 @@ pub fn ActivationCell(
          align-items: stretch; min-height: 96px;"
         .to_string();
     let bg = theme::BG1.to_string();
-    let radius = 6.0_f32;
     let stripe_color_for_identity = pattern_color.clone();
     let pattern_color_for_schedule = pattern_color.clone();
     let realization_track_role = track_role.clone();
@@ -77,7 +76,7 @@ pub fn ActivationCell(
                 stripe_color: pattern_color,
                 background: bg,
                 padding: "0".to_string(),
-                radius: radius,
+                radius: 6.0,
                 div { style: {grid_style.clone()},
                     IdentityColumn {
                         section_id: section_id,

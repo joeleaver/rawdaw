@@ -19,15 +19,17 @@
 //! [`WavetablePublishers`] *before* constructing the synth so the
 //! host can keep a clone — [`build_wavetable_handles`] uses those
 //! clones to seed the per-track [`WavetableEditorHandle`] that
-//! drives the UI's slider state. [`build_wavetable_pollers`] (live
-//! only on the production `AudioResources::build` path, not the
-//! test-facing `build_from_project_and_rate`) spawns one
-//! [`WavetablePoller`](super::wavetable_poller::WavetablePoller)
-//! per handle.
+//! drives the UI's slider state. [`attach_wavetable_poll_signals`]
+//! (live only on the production `AudioResources::build` path, not
+//! the test-facing `build_from_project_and_rate`) registers one
+//! `poll_signal` per handle that side-loads patch snapshots into
+//! the existing `patch_signal` whenever the version atomic advances.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use rinch::core::reactive::{poll_signal, PollRate};
 use rinch::prelude::Signal;
 
 use rawdaw_engine::node::AudioNode;
@@ -42,9 +44,14 @@ use rawdaw_model::realize::realize;
 use rawdaw_synth_drum::{DrumPatch, DrumPublishers, DrumSynthNode};
 use rawdaw_synth_wavetable::{WavetablePatch, WavetablePublishers, WavetableSynthNode};
 
-use super::drum_poller::{DrumPoller, DRUM_PATCH_POLL_INTERVAL_MS};
-use super::wavetable_poller::{WavetablePoller, WAVETABLE_PATCH_POLL_INTERVAL_MS};
 use super::MASTER_GAIN;
+
+/// Poll rate for the per-track patch mirrors. 20 Hz keeps the
+/// external-source latency under one frame at 30 fps with negligible
+/// CPU — the source closure is one atomic load and (only when the
+/// version atomic advanced since last tick) a brief mutex critical
+/// section.
+const PATCH_POLL_RATE: PollRate = PollRate::Hz(20);
 
 /// Editor handle for one Pitched track — surfaces the live patch
 /// state + the NodeId needed to push `ParamEvent`s back at the
@@ -230,25 +237,49 @@ pub fn extract_publishers(
         .collect()
 }
 
-/// Spawn one [`WavetablePoller`] per (publisher, handle) pair. Each
-/// poller watches the publisher's atomic and pushes patch snapshots
-/// into the matching handle's `Signal`.
-pub fn build_wavetable_pollers(
+/// Register one `poll_signal` per (publisher, handle) pair. Each
+/// poll closure watches the publisher's version atomic on the rinch
+/// main-loop ticker; the mutex-guarded patch snapshot is only locked
+/// when the version actually advanced since the last tick, so the
+/// audio thread's RT determinism is preserved (idle ticks are an
+/// atomic load + integer compare).
+///
+/// Returns nothing — the polls live for the lifetime of the app,
+/// owned by rinch's main-thread registry. Mirror of the original
+/// `WavetablePoller`-per-handle shape but with no `std::thread`,
+/// no JoinHandle bookkeeping, no Drop dance.
+pub fn attach_wavetable_poll_signals(
     publishers: &BTreeMap<usize, WavetablePublishers>,
     handles: &BTreeMap<usize, WavetableEditorHandle>,
-) -> Vec<WavetablePoller> {
-    publishers
-        .iter()
-        .filter_map(|(idx, pubs)| {
-            let handle = handles.get(idx)?;
-            Some(WavetablePoller::spawn(
-                Arc::clone(&pubs.version),
-                Arc::clone(&pubs.snapshot),
-                handle.patch_signal,
-                WAVETABLE_PATCH_POLL_INTERVAL_MS,
-            ))
-        })
-        .collect()
+) {
+    for (idx, pubs) in publishers {
+        let Some(handle) = handles.get(idx) else {
+            continue;
+        };
+        let version = Arc::clone(&pubs.version);
+        let snapshot = Arc::clone(&pubs.snapshot);
+        let target: Signal<WavetablePatch> = handle.patch_signal;
+        // `u64::MAX` is the "never seen" sentinel so a first version
+        // of `0` (the audio thread's apply counter starts at 0) still
+        // triggers an initial snapshot read. Matches the prior
+        // WavetablePoller idiom.
+        let mut last_version: u64 = u64::MAX;
+        // Side-effect closure: poll_signal's returned `Signal<()>` is
+        // discarded; the load-bearing update is `target.set(...)`
+        // inside the closure when version advances.
+        let _: Signal<()> = poll_signal(
+            move || {
+                let now = version.load(Ordering::Acquire);
+                if now != last_version {
+                    last_version = now;
+                    if let Ok(guard) = snapshot.lock() {
+                        target.set(*guard);
+                    }
+                }
+            },
+            PATCH_POLL_RATE,
+        );
+    }
 }
 
 // ── Drum equivalents ──────────────────────────────────────────────
@@ -286,21 +317,31 @@ pub fn extract_drum_publishers(
         .collect()
 }
 
-/// Spawn one [`DrumPoller`] per (publisher, handle) pair.
-pub fn build_drum_pollers(
+/// Drum mirror of [`attach_wavetable_poll_signals`]. Identical
+/// version-atomic-gated side-effect-closure shape.
+pub fn attach_drum_poll_signals(
     publishers: &BTreeMap<usize, DrumPublishers>,
     handles: &BTreeMap<usize, DrumEditorHandle>,
-) -> Vec<DrumPoller> {
-    publishers
-        .iter()
-        .filter_map(|(idx, pubs)| {
-            let handle = handles.get(idx)?;
-            Some(DrumPoller::spawn(
-                Arc::clone(&pubs.version),
-                Arc::clone(&pubs.snapshot),
-                handle.patch_signal,
-                DRUM_PATCH_POLL_INTERVAL_MS,
-            ))
-        })
-        .collect()
+) {
+    for (idx, pubs) in publishers {
+        let Some(handle) = handles.get(idx) else {
+            continue;
+        };
+        let version = Arc::clone(&pubs.version);
+        let snapshot = Arc::clone(&pubs.snapshot);
+        let target: Signal<DrumPatch> = handle.patch_signal;
+        let mut last_version: u64 = u64::MAX;
+        let _: Signal<()> = poll_signal(
+            move || {
+                let now = version.load(Ordering::Acquire);
+                if now != last_version {
+                    last_version = now;
+                    if let Ok(guard) = snapshot.lock() {
+                        target.set(*guard);
+                    }
+                }
+            },
+            PATCH_POLL_RATE,
+        );
+    }
 }

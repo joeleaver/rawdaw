@@ -121,12 +121,10 @@ fn InspectorEmpty() -> NodeHandle {
     let copy_style = "font-size: 12.5px; color: rgba(232,234,238,0.62); \
          line-height: 1.5; max-width: 240px;";
     let stroke = "rgba(232,234,238,0.28)".to_string();
-    let sz = 28.0_f32;
-    let sw = 1.6_f32;
     rsx! {
         div { style: {wrap_style.to_string()},
             div { style: {glyph_style.to_string()},
-                Icon { glyph: "dot", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+                Icon { glyph: "dot", size: 28.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             }
             div { style: {copy_style.to_string()},
                 "Select a section, pattern, or chord to inspect."
@@ -255,7 +253,6 @@ fn InspectorHeader(
     // between header and the rest of the inspector is a parent
     // concern.
     let wrapper_style = format!("border-bottom: 1px solid {line};", line = theme::LINE);
-    let radius = 0.0_f32;
 
     rsx! {
         div { style: {wrapper_style.clone()},
@@ -263,7 +260,7 @@ fn InspectorHeader(
                 stripe_color: section_color.clone(),
                 background: bg,
                 padding: "12px 14px".to_string(),
-                radius: radius,
+                radius: 0.0,
                 div { style: "display: flex; flex-direction: column; gap: 6px;",
                     div { style: "display: flex; align-items: center; gap: 8px;",
                         div { style: {title_style.to_string()}, {section_name.clone()} }
@@ -434,13 +431,11 @@ fn NewVariantBtn() -> NodeHandle {
          cursor: pointer; display: inline-flex; align-items: center; \
          gap: 4px; font-size: 11px;";
     let stroke = "rgba(232,234,238,0.42)".to_string();
-    let sz = 11.0_f32;
-    let sw = 1.6_f32;
     rsx! {
         button {
             r#type: "button",
             style: {btn_style.to_string()},
-            Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "plus", size: 11.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             span { " variant" }
         }
     }
@@ -528,18 +523,16 @@ fn NumStepper(value: u32, unit: String) -> NodeHandle {
         line = theme::LINE,
     );
     let stroke = "rgba(232,234,238,0.62)".to_string();
-    let sz = 12.0_f32;
-    let sw = 1.6_f32;
     let value_str = value.to_string();
 
     rsx! {
         div { style: {wrap_style.clone()},
             button { r#type: "button", style: {seg_style.to_string()},
-                Icon { glyph: "minus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+                Icon { glyph: "minus", size: 12.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             }
             div { style: {mid_style.clone()}, {value_str.clone()} }
             button { r#type: "button", style: {seg_style.to_string()},
-                Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+                Icon { glyph: "plus", size: 12.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             }
             div { style: {unit_style.clone()}, {unit.clone()} }
         }
@@ -555,12 +548,10 @@ fn Select(value: String) -> NodeHandle {
         bg0 = theme::BG0, line = theme::LINE,
     );
     let stroke = "rgba(232,234,238,0.42)".to_string();
-    let sz = 12.0_f32;
-    let sw = 1.6_f32;
     rsx! {
         div { style: {wrap_style.clone()},
             span { style: "flex: 1;", {value.clone()} }
-            Icon { glyph: "chevron-d", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "chevron-d", size: 12.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
         }
     }
 }
@@ -623,13 +614,11 @@ fn AddRow(label: String) -> NodeHandle {
         line = theme::LINE,
     );
     let stroke = "rgba(232,234,238,0.42)".to_string();
-    let sz = 11.0_f32;
-    let sw = 1.6_f32;
     rsx! {
         button {
             r#type: "button",
             style: {btn_style.clone()},
-            Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "plus", size: 11.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             span { {label.clone()} }
         }
     }

@@ -87,13 +87,11 @@ fn SearchBar() -> NodeHandle {
         line = theme::LINE,
     );
     let stroke = "rgba(232,234,238,0.42)".to_string();
-    let sz = 12.0_f32;
-    let sw = 1.6_f32;
 
     rsx! {
         div { style: {wrap_style.clone()},
             div { style: {inner_style.clone()},
-                Icon { glyph: "search", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+                Icon { glyph: "search", size: 12.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
                 span {
                     style: "font-size: 12px; color: rgba(232,234,238,0.28); flex: 1;",
                     "Search library"
@@ -128,17 +126,14 @@ pub(super) fn GroupHeader(title: String, count: u32, glyph: String) -> NodeHandl
          font-feature-settings: \"tnum\" 1;";
     let chev_stroke = "rgba(232,234,238,0.42)".to_string();
     let icon_stroke = "rgba(232,234,238,0.62)".to_string();
-    let sw = 1.6_f32;
-    let chev_sz = 12.0_f32;
-    let icon_sz = 13.0_f32;
     let count_str = count.to_string();
 
     rsx! {
         button {
             r#type: "button",
             style: {header_style.to_string()},
-            Icon { glyph: "chevron-d", size: chev_sz, stroke: {chev_stroke.clone()}, stroke_width: sw }
-            Icon { glyph: {glyph.clone()}, size: icon_sz, stroke: {icon_stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "chevron-d", size: 12.0, stroke: {chev_stroke.clone()}, stroke_width: 1.6 }
+            Icon { glyph: {glyph.clone()}, size: 13.0, stroke: {icon_stroke.clone()}, stroke_width: 1.6 }
             span { style: {title_style.to_string()}, {title.clone()} }
             span { style: {count_style.to_string()}, {count_str.clone()} }
         }
@@ -153,14 +148,12 @@ pub(super) fn NewRow(label: String, onclick: Callback) -> NodeHandle {
          color: rgba(232,234,238,0.42); cursor: pointer; \
          border-radius: 3px; font-size: 11px;";
     let stroke = "rgba(232,234,238,0.42)".to_string();
-    let sz = 12.0_f32;
-    let sw = 1.6_f32;
     rsx! {
         button {
             r#type: "button",
             style: {btn_style.to_string()},
             onclick: move || onclick.invoke(),
-            Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "plus", size: 12.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             span { {label.clone()} }
         }
     }

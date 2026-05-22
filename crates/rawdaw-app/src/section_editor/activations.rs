@@ -35,8 +35,6 @@ pub fn ActivationsHeader() -> NodeHandle {
         text1 = theme::TEXT1,
     );
     let stroke = theme::TEXT1.to_string();
-    let sz = 11.0_f32;
-    let sw = 1.6_f32;
 
     let count_label = format!("· {n} project tracks");
 
@@ -47,7 +45,7 @@ pub fn ActivationsHeader() -> NodeHandle {
             span { style: "flex: 1;" }
             button { r#type: "button", style: {new_track_style.clone()},
                 title: "Adds a track to the project (visible in every section)",
-                Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+                Icon { glyph: "plus", size: 11.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
                 span { "New track to project" }
             }
         }

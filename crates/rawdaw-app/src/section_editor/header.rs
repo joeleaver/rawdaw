@@ -105,16 +105,14 @@ pub fn SectionEditorHeader(
     );
 
     let chevron_stroke = theme::TEXT1.to_string();
-    let chevron_size = 13.0_f32;
-    let chevron_w = 1.6_f32;
 
     rsx! {
         div { style: {bar_style.clone()},
             button { r#type: "button", style: {back_btn_style.clone()},
                 title: "Back to arrangement",
                 onclick: move || app.close_section_editor(),
-                Icon { glyph: "chevron-r", size: chevron_size,
-                       stroke: {chevron_stroke.clone()}, stroke_width: chevron_w }
+                Icon { glyph: "chevron-r", size: 13.0,
+                       stroke: {chevron_stroke.clone()}, stroke_width: 1.6 }
             }
             span { style: {breadcrumb_style.clone()}, "arrangement · sections ·" }
             span { style: {stripe_style.clone()} }

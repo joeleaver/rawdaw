@@ -30,8 +30,12 @@
 //! DragPreview`] exactly so the rinch effect tracker re-evaluates
 //! each block's style closure on every drag tick.
 
-use rinch::core::events::{get_click_context, Drag};
+use rinch::core::events::{find_click_ancestor, get_click_context, Drag};
 use rinch::prelude::*;
+
+/// CSS class the SectionLane carries so `find_click_ancestor` can
+/// locate its bounds from inside a SectionBlock's drag handler.
+const ARRANGEMENT_SECTION_LANE_CLASS: &str = "arrangement-section-lane";
 
 use rawdaw_model::id::{SectionId, VariantId};
 
@@ -43,7 +47,10 @@ use crate::arrangement_actions::{
 use crate::state::AppState;
 use crate::theme;
 
-use super::{build_arrangement_blocks, current_selected_section_id, ArrangementBlockData};
+use super::{
+    arrangement_total_bars, build_arrangement_blocks, current_selected_section_id,
+    ArrangementBlockData,
+};
 use super::append_action::AppendButton;
 
 /// Live preview of an in-flight arrangement drag.
@@ -79,7 +86,13 @@ pub(super) fn SectionLane(total_bars: u32) -> NodeHandle {
     let total_bars_str = total_bars.to_string();
 
     rsx! {
-        div { style: {style.clone()},
+        div {
+            style: {style.clone()},
+            // Class for `find_click_ancestor` lookups from SectionBlock's
+            // drag handler so we can convert pointer-x to bars via the
+            // lane's pixel width directly, rather than back-deriving
+            // from the clicked block's own dimensions.
+            class: ARRANGEMENT_SECTION_LANE_CLASS,
             svg {
                 viewBox: format!("0 0 {total_bars_str} 100"),
                 preserveAspectRatio: "none",
@@ -374,16 +387,32 @@ fn on_block_click(idx: usize, bars: u32) {
     app.set_selected_idx(Some(idx));
 
     let ctx = get_click_context();
-    let block_width = ctx.element_width.max(1.0);
     let start_x = ctx.mouse_x;
-    // bars_per_px: how many bars one pixel of horizontal motion
-    // corresponds to. With percent-based positioning we'd ideally
-    // read the lane's pixel width; CL2.x established that we can't,
-    // and using the block's own width works equally well because
-    // `bars_per_px = bars / block_width` is the same scale as
-    // `total_bars / lane_width` (since `block_width / lane_width ==
-    // bars / total_bars`).
-    let bars_per_px = bars as f32 / block_width;
+    // Read the lane's pixel width via `find_click_ancestor` (rinch
+    // #29.2). `bars_per_px = total_bars / lane_width` is the
+    // canonical scale — the dragged block's `bars` aren't load-
+    // bearing for the drag math any more, so the helper takes the
+    // block's own width as a fallback only.
+    let lane_width = find_click_ancestor(|a| a.has_class(ARRANGEMENT_SECTION_LANE_CLASS))
+        .map(|a| a.width.max(1.0))
+        .unwrap_or_else(|| {
+            // Defensive fallback: if the lane ancestor isn't found
+            // (which shouldn't happen — the lane is always the
+            // SectionBlock's positioned ancestor), reuse the pre-
+            // rinch-#29 derivation: `bars_per_px = bars /
+            // block_width`, which gives the same scale because
+            // `block_width / lane_width == bars / total_bars`.
+            let block_width = ctx.element_width.max(1.0);
+            // Returning a synthetic lane_width that makes the
+            // subsequent total_bars-based calc produce the right
+            // ratio. lane_width = total_bars * block_width / bars.
+            // We don't have total_bars here — use the block-relative
+            // form directly instead by encoding it in the final
+            // expression. See below.
+            block_width * arrangement_total_bars().max(1) as f32 / bars.max(1) as f32
+        });
+    let total_bars = arrangement_total_bars().max(1) as f32;
+    let bars_per_px = total_bars / lane_width;
 
     // Snapshot the layout: (idx, start_bar + bars/2) for each step.
     // Used to find the closest sibling when computing target_idx.

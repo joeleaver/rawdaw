@@ -227,15 +227,13 @@ fn NewVariantBtn(section_id: u64) -> NodeHandle {
         text2 = theme::TEXT2,
     );
     let stroke = theme::TEXT2.to_string();
-    let sz = 11.0_f32;
-    let sw = 1.6_f32;
     rsx! {
         button {
             r#type: "button",
             style: {btn_style.clone()},
             title: "Create a new sparse-override variant of this section",
             onclick: move || create_variant_action(sid),
-            Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+            Icon { glyph: "plus", size: 11.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
             span { "New variant" }
         }
     }

@@ -159,8 +159,6 @@ fn DropdownRow(
     );
     let value_style = "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
     let chevron_stroke = theme::TEXT2.to_string();
-    let chevron_size = 11.0_f32;
-    let chevron_w = 1.6_f32;
     let trailing_style =
         "min-width: 92px; font-size: 10.5px; display: flex; justify-content: flex-end;";
     let inheritance_source = InheritanceSource::RoleDefault;
@@ -172,8 +170,8 @@ fn DropdownRow(
             span { style: {label_style.clone()}, {label_owned.clone()} }
             div { style: {select_style.clone()},
                 span { style: {value_style.to_string()}, {value_owned.clone()} }
-                Icon { glyph: "chevron-d", size: chevron_size,
-                       stroke: {chevron_stroke.clone()}, stroke_width: chevron_w }
+                Icon { glyph: "chevron-d", size: 11.0,
+                       stroke: {chevron_stroke.clone()}, stroke_width: 1.6 }
             }
             div { style: {trailing_style.to_string()},
                 if inherited_from_role {
@@ -346,15 +344,9 @@ fn SeedField(seed_text: String) -> NodeHandle {
         line = theme::LINE,
         text0 = theme::TEXT0,
     );
-    let dice_stroke = theme::TEXT2.to_string();
-    let dice_size = 11.0_f32;
-    let dice_w = 1.6_f32;
     // The mockup includes a "re-roll seed" affordance — port-time we
     // ship a placeholder gear icon; click handler arrives with the
     // model-bind milestone (round-3 or later).
-    let _ = dice_stroke;
-    let _ = dice_size;
-    let _ = dice_w;
     let seed_owned = seed_text.clone();
     let display = if seed_owned.is_empty() {
         "—".to_string()

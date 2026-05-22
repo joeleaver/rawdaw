@@ -304,8 +304,6 @@ fn LegendChip(entry: LegendEntry, pattern_color: String) -> NodeHandle {
         LegendKind::Named => theme::TEXT1.to_string(),
         LegendKind::Silent => theme::TEXT3.to_string(),
     };
-    let icon_size = 9.0_f32;
-    let icon_w = 1.6_f32;
     let glyph = match entry.kind {
         LegendKind::Named => "dot".to_string(),
         LegendKind::Silent => "minus".to_string(), // closest available "eye-off" stand-in
@@ -313,8 +311,8 @@ fn LegendChip(entry: LegendEntry, pattern_color: String) -> NodeHandle {
 
     rsx! {
         div { style: {style.clone()},
-            Icon { glyph: glyph, size: icon_size,
-                   stroke: {icon_stroke.clone()}, stroke_width: icon_w }
+            Icon { glyph: glyph, size: 9.0,
+                   stroke: {icon_stroke.clone()}, stroke_width: 1.6 }
             span { {label.clone()} }
         }
     }
