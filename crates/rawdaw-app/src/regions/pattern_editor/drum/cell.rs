@@ -108,7 +108,7 @@ fn cell_outer_style(cell: &StepCellModel, note_color: &str) -> String {
             // selection.
             let alpha = 0.30 + (*velocity as f32 / 127.0) * 0.65;
             let alpha = alpha.clamp(0.30, 0.95);
-            let fill = crate::parts::rgba(note_color, alpha);
+            let fill = with_alpha(note_color, alpha);
             let outline = if focused {
                 format!("box-shadow: inset 0 0 0 1px {};", theme::TEXT1)
             } else {

@@ -43,7 +43,7 @@ use rawdaw_model::id::{SectionId, VariantId};
 use rawdaw_model::time::PPQ;
 
 use crate::chord_display::roman_label;
-use crate::parts::{rgba, Icon, StripePaper};
+use crate::parts::{Icon, StripePaper};
 use crate::state::AppState;
 use crate::theme;
 
@@ -236,7 +236,7 @@ fn InspectorHeader(
     // continues to come from the parent's container — see the
     // `border-bottom` on the inspector frame itself. Phase 4 of the
     // round-2 port introduced this primitive.
-    let bg = rgba(section_color.as_str(), 0.06);
+    let bg = with_alpha(section_color.as_str(), 0.06);
     let title_style = "font-size: 15px; font-weight: 600; \
          color: rgba(232,234,238,0.96); letter-spacing: -0.2px;";
     let meta_style = "font-size: 11px; color: rgba(232,234,238,0.42); \
@@ -296,8 +296,8 @@ fn VariantChip(variant: String, color: String) -> NodeHandle {
          font-size: 10.5px; font-weight: 500; letter-spacing: 0.2px; \
          background: {bg}; color: rgba(232,234,238,0.88); \
          border: 1px solid {border};",
-        bg = rgba(color.as_str(), 0.16),
-        border = rgba(color.as_str(), 0.30),
+        bg = with_alpha(color.as_str(), 0.16),
+        border = with_alpha(color.as_str(), 0.30),
     );
     let label = format!("variant: {}", variant);
     rsx! {

@@ -280,13 +280,15 @@ fn tempo_map_matches_project() {
 }
 
 #[test]
-fn build_from_project_and_rate_does_not_spawn_poller() {
-    // Unit tests run outside the rinch runtime — spawning the
-    // poller would mean a future Signal::send panic. Guarantee
-    // that the test entry leaves the field None.
+fn build_from_project_and_rate_does_not_register_poll_signal() {
+    // Unit tests run outside the rinch runtime — calling
+    // `poll_signal` would panic on the `is_main_thread` assert.
+    // Guarantee that the test-only entry leaves `playhead_samples`
+    // as a plain `Signal::new(0u64)` placeholder. The poll-signal
+    // bridge is wired up in `build()`, not here.
     let (project, _) = build_round1_project();
     let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
-    assert!(resources._poller.is_none());
+    assert_eq!(resources.playhead_samples.get(), 0u64);
 }
 
 #[test]

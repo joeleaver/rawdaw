@@ -1,37 +1,24 @@
 //! Shared visual primitives across regions.
 //!
-//! Two kinds of helpers live here:
-//!
-//! - Pure functions (no `rsx!`) like [`rgba`] that any module can call.
-//! - `#[component]` PascalCase functions like [`Icon`] callable from
-//!   `rsx!` as `Icon { glyph: "...", ... }`.
+//! `#[component]` PascalCase functions like [`Icon`] callable from
+//! `rsx!` as `Icon { glyph: "...", ... }`.
 //!
 //! Plain `fn foo() -> NodeHandle { rsx! { ... } }` does NOT work in
 //! Rinch — `rsx!` expects a `__scope` binding that only `#[component]`
 //! injects. Use `#[component]` for any rsx-producing helper.
+//!
+//! **History**: a `rgba(hex, alpha)` helper used to live here.
+//! Removed in favor of `rinch::theme::with_alpha` (rinch issue
+//! [#27](https://github.com/joeleaver/rinch/issues/27)), which
+//! handles `#RRGGBB`, `rgba(...)`, `rgb(...)`, and `#RGB(A)` inputs
+//! uniformly so theme tokens of any shape can flow through it
+//! without the debug-panic gotcha the old helper had.
 
 #![allow(dead_code)] // glyph set + helpers accrete; not every one is consumed yet
 
 use rinch::prelude::*;
 
 use crate::overlay::ActivationState;
-
-/// Convert a `#RRGGBB` literal to an `rgba(r,g,b,a)` CSS string.
-///
-/// Panics in debug if `hex` is not a 7-char `#RRGGBB` value. The design
-/// tokens are all 6-char hex by convention; we don't accept `#RGB` or
-/// `#RRGGBBAA`.
-pub fn rgba(hex: &str, a: f32) -> String {
-    let bytes = hex.as_bytes();
-    debug_assert!(
-        bytes.len() == 7 && bytes[0] == b'#',
-        "expected #RRGGBB, got {hex}",
-    );
-    let r = u8::from_str_radix(&hex[1..3], 16).unwrap_or(0);
-    let g = u8::from_str_radix(&hex[3..5], 16).unwrap_or(0);
-    let b = u8::from_str_radix(&hex[5..7], 16).unwrap_or(0);
-    format!("rgba({r},{g},{b},{a})")
-}
 
 /// Tabler-style line glyph set the round-1 mockup uses.
 ///
@@ -326,8 +313,8 @@ fn segment_style_css(
         ScheduleSegmentStyle::DefaultFill => format!(
             "{common} \
              background: {bg}; border: 1px solid {border};",
-            bg = rgba(pattern_color, 0.14),
-            border = rgba(pattern_color, 0.30),
+            bg = with_alpha(pattern_color, 0.14),
+            border = with_alpha(pattern_color, 0.30),
         ),
         ScheduleSegmentStyle::NonDefault => format!(
             "{common} \
@@ -336,9 +323,9 @@ fn segment_style_css(
                   {hatch_strong} 0, {hatch_strong} 3px, \
                   {hatch_weak} 3px, {hatch_weak} 6px); \
              border: 1px solid {border};",
-            hatch_strong = rgba(pattern_color, 0.40),
-            hatch_weak = rgba(pattern_color, 0.18),
-            border = rgba(pattern_color, 0.55),
+            hatch_strong = with_alpha(pattern_color, 0.40),
+            hatch_weak = with_alpha(pattern_color, 0.18),
+            border = with_alpha(pattern_color, 0.55),
         ),
         ScheduleSegmentStyle::Silent => format!(
             "{common} \

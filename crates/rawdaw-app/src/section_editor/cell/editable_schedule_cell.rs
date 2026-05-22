@@ -16,7 +16,7 @@ use rinch::prelude::*;
 use rawdaw_model::id::{PatternId, SectionId, TrackId, VariantId};
 use rawdaw_model::pattern::PatternBody;
 
-use crate::parts::rgba;
+
 use crate::pattern_actions::{
     clear_activation_variant_range, merge_activation_variant_left,
     merge_activation_variant_right, set_activation_variant_for_bar,
@@ -47,12 +47,12 @@ pub(super) fn EditableScheduleCell(
     let has_pattern = bound_pattern_value != super::pattern_select::NO_PATTERN_SENTINEL;
     let (bg, border) = match kind {
         BarCellKind::Default => (
-            rgba(pattern_color.as_str(), 0.06),
-            rgba(pattern_color.as_str(), 0.20),
+            with_alpha(pattern_color.as_str(), 0.06),
+            with_alpha(pattern_color.as_str(), 0.20),
         ),
         BarCellKind::Named => (
-            rgba(pattern_color.as_str(), 0.18),
-            rgba(pattern_color.as_str(), 0.50),
+            with_alpha(pattern_color.as_str(), 0.18),
+            with_alpha(pattern_color.as_str(), 0.50),
         ),
         BarCellKind::Silent => (
             "transparent".to_string(),
@@ -79,40 +79,34 @@ pub(super) fn EditableScheduleCell(
         BarCellKind::Silent => "silent".to_string(),
     };
 
-    // Non-Copy props (default_variant + variant_label) get wrapped in
-    // `Rc` so both the outer rsx Fn closure and the for-source's
-    // auto-Effect closure can hold cheap clones of the same backing
-    // String. The `has_pattern` gate is folded into the for-source
-    // (returns empty Vec when no pattern is bound) rather than wrapping
-    // the for-loop in an `if` block; the nested-closure structure of
-    // `if { for { ... } }` consumed the captured Rcs on first render
-    // and tripped the outer closure's `Fn` contract on subsequent
-    // renders.
-    let default_rc = std::rc::Rc::new(default_variant);
-    let label_rc = std::rc::Rc::new(variant_label);
-
+    // Per rinch issue #26 fix (1fa57c5), the rsx for-iter expression
+    // now auto-shadows captured function-param identifiers, so the
+    // earlier `Rc<String>` wrapping + has_pattern-folded-into-source
+    // workaround is no longer needed. Inline if-then-for is the
+    // idiomatic shape.
     rsx! {
         ContextMenu {
             ContextMenuTarget {
                 div { style: {cell_style.clone()},
-                    for opts in variant_options_when_bound(
-                        has_pattern,
-                        bound_pattern_value,
-                        std::rc::Rc::clone(&default_rc),
-                        kind,
-                        std::rc::Rc::clone(&label_rc),
-                    ) {
-                        Select {
-                            key: opts.key.clone(),
-                            size: "sm",
-                            value: {opts.current_value.clone()},
-                            data: opts.options.clone(),
-                            onchange: move |v: String| {
-                                commit_variant_for_bar(
-                                    section_id, track_id, bar,
-                                    bound_pattern_value, v,
-                                );
-                            },
+                    if has_pattern {
+                        for opts in variant_options(
+                            bound_pattern_value,
+                            default_variant.clone(),
+                            kind,
+                            variant_label.clone(),
+                        ) {
+                            Select {
+                                key: opts.key.clone(),
+                                size: "sm",
+                                value: {opts.current_value.clone()},
+                                data: opts.options.clone(),
+                                onchange: move |v: String| {
+                                    commit_variant_for_bar(
+                                        section_id, track_id, bar,
+                                        bound_pattern_value, v,
+                                    );
+                                },
+                            }
                         }
                     }
                     span { style: {label_style.clone()}, {display_label.clone()} }
@@ -144,24 +138,11 @@ struct VariantOptions {
     options: Vec<SelectOption>,
 }
 
-fn variant_options_when_bound(
-    has_pattern: bool,
-    bound_pattern_value: u64,
-    default_variant: std::rc::Rc<String>,
-    kind: BarCellKind,
-    current_variant_label: std::rc::Rc<String>,
-) -> Vec<VariantOptions> {
-    if !has_pattern {
-        return Vec::new();
-    }
-    variant_options(bound_pattern_value, default_variant, kind, current_variant_label)
-}
-
 fn variant_options(
     bound_pattern_value: u64,
-    default_variant: std::rc::Rc<String>,
+    default_variant: String,
     kind: BarCellKind,
-    current_variant_label: std::rc::Rc<String>,
+    current_variant_label: String,
 ) -> Vec<VariantOptions> {
     let app = use_store::<AppState>();
     let project = app.project.get();
@@ -191,7 +172,7 @@ fn variant_options(
     let current_value = match kind {
         BarCellKind::Default => DEFAULT_OPTION.to_string(),
         BarCellKind::Silent => SILENT_OPTION.to_string(),
-        BarCellKind::Named => (*current_variant_label).clone(),
+        BarCellKind::Named => current_variant_label,
     };
     let variants_key: String = variants
         .iter()

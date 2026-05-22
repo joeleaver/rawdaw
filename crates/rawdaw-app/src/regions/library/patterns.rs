@@ -21,7 +21,7 @@ use rinch::prelude::*;
 use rawdaw_model::id::PatternId;
 use rawdaw_model::pattern::{Pattern, PatternBody};
 
-use crate::parts::rgba;
+
 use crate::pattern_actions::{
     create_drum_pattern, create_pitched_pattern, delete_pattern, duplicate_pattern,
     rename_pattern, set_pattern_color, DeleteRefused,
@@ -211,7 +211,7 @@ fn PatternRow(id: PatternId, color: String, name: String, meta: String) -> NodeH
         "width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; \
          background: {color}; border: 1px solid {border};",
         color = color,
-        border = rgba(color.as_str(), 0.6),
+        border = with_alpha(color.as_str(), 0.6),
     );
     let color_for_row = color.clone();
     let color_for_menu = color.clone();
@@ -222,7 +222,7 @@ fn PatternRow(id: PatternId, color: String, name: String, meta: String) -> NodeH
                 let selected =
                     use_store::<AppState>().selected_pattern.get() == Some(id);
                 let bg = if selected {
-                    rgba(color_for_row.as_str(), 0.10)
+                    with_alpha(color_for_row.as_str(), 0.10)
                 } else {
                     "transparent".to_string()
                 };

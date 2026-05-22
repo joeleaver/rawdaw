@@ -19,7 +19,7 @@ use rinch::prelude::*;
 use rawdaw_model::id::{SectionId, TrackId};
 
 use crate::overlay::{ActivationState, TrackKindTag as TrackKind};
-use crate::parts::{rgba, Icon, StatePill};
+use crate::parts::{Icon, StatePill};
 use super::pattern_select::PatternSelect;
 use crate::theme;
 
@@ -40,7 +40,7 @@ pub fn IdentityColumn(
 ) -> NodeHandle {
     let has_pattern = !pattern_name.is_empty();
     let col_bg = if has_pattern {
-        rgba(pattern_color.as_str(), 0.04)
+        with_alpha(pattern_color.as_str(), 0.04)
     } else {
         "transparent".to_string()
     };
@@ -163,7 +163,7 @@ fn PatternCard(pattern_name: String, pattern_color: String, pattern_kind: String
         "width: 9px; height: 9px; border-radius: 2px; \
          background: {col}; border: 1px solid {border_col}; flex: 0 0 auto;",
         col = pattern_color,
-        border_col = rgba(pattern_color.as_str(), 0.60),
+        border_col = with_alpha(pattern_color.as_str(), 0.60),
     );
     let name_style = format!(
         "font-size: 12.5px; font-weight: 500; color: {text0};",
@@ -236,8 +236,8 @@ fn PinnedChip(count: u32) -> NodeHandle {
          background: {bg}; border: 1px solid {border}; \
          color: {acc}; cursor: pointer; \
          font-size: 11px; font-weight: 500; font-family: inherit;",
-        bg = rgba(theme::ACCENT, 0.10),
-        border = rgba(theme::ACCENT, 0.35),
+        bg = with_alpha(theme::ACCENT, 0.10),
+        border = with_alpha(theme::ACCENT, 0.35),
         acc = theme::ACCENT,
     );
     let dot_stroke = theme::ACCENT.to_string();

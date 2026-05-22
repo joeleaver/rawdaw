@@ -29,7 +29,7 @@ use rawdaw_model::scale::Scale;
 use rawdaw_model::time::MusicalTime;
 
 use crate::chord_display::pitch_class_name;
-use crate::parts::rgba;
+
 use crate::pattern_actions::insert_pitched_event;
 use crate::regions::pattern_editor::pitched::helpers::{
     default_pitched_event, snap_time_to_grid, GridSpec, DEFAULT_ANCHOR_OCTAVE, DEFAULT_PITCH_ROWS,
@@ -489,14 +489,14 @@ fn note_outer_style(note_id_value: u64, span: usize, color: &str) -> String {
     // rgba string) here, which silently parsed to black and made
     // notes invisible against the BG1 panel.
     let bg = if focused {
-        rgba(color, 0.90)
+        with_alpha(color, 0.90)
     } else {
-        rgba(color, 0.65)
+        with_alpha(color, 0.65)
     };
     let border = if focused {
         format!("2px solid {color}")
     } else {
-        format!("1px solid {}", rgba(color, 0.85))
+        format!("1px solid {}", with_alpha(color, 0.85))
     };
     format!(
         "flex: {span} 1 0; min-width: 0; \

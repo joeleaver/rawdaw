@@ -18,7 +18,7 @@ use rinch::prelude::*;
 
 use rawdaw_model::id::SectionId;
 
-use crate::parts::rgba;
+
 use crate::section_actions::{
     create_section, delete_section, duplicate_section, rename_section, set_section_color,
     DeleteRefused,
@@ -165,7 +165,7 @@ fn SectionRow(id: SectionId, color: String, name: String, meta: String) -> NodeH
         "width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; \
          background: {color}; border: 1px solid {border};",
         color = color,
-        border = rgba(color.as_str(), 0.6),
+        border = with_alpha(color.as_str(), 0.6),
     );
     let color_for_row = color.clone();
     let color_for_menu = color.clone();
@@ -176,7 +176,7 @@ fn SectionRow(id: SectionId, color: String, name: String, meta: String) -> NodeH
                 let selected =
                     use_store::<AppState>().selected_section.get() == Some(id);
                 let bg = if selected {
-                    rgba(color_for_row.as_str(), 0.10)
+                    with_alpha(color_for_row.as_str(), 0.10)
                 } else {
                     "transparent".to_string()
                 };

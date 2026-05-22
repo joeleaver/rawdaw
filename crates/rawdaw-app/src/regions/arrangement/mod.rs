@@ -38,7 +38,7 @@ use rawdaw_model::time::{MusicalTime, PPQ};
 
 use crate::audio::AudioResources;
 use crate::chord_display::{absolute_label, roman_label};
-use crate::parts::rgba;
+
 use crate::state::AppState;
 use crate::theme;
 
@@ -126,6 +126,15 @@ pub(super) fn musical_time_to_bars(t: MusicalTime) -> u32 {
     (t.as_ticks() / ticks_per_bar).max(0) as u32
 }
 
+/// Bar indices where the ruler draws a major (every-4-bars) label.
+/// Pulled out of the rsx for-iter expression so closure parameters
+/// inside `.filter(|b| ...)` don't get hit by the rinch-macros
+/// shadow-locals heuristic (which scans the iter expression and
+/// inserts `let id = id.clone();` for every lowercase identifier).
+fn major_bar_indices(total_bars: u32) -> Vec<u32> {
+    (0..total_bars).filter(|n| n % 4 == 0).collect()
+}
+
 pub(super) fn arrangement_total_bars() -> u32 {
     let blocks = build_arrangement_blocks();
     blocks
@@ -210,7 +219,7 @@ fn Ruler(total_bars: u32) -> NodeHandle {
                 path { d: {tick_d.clone()} }
             }
             // Bar number labels rendered as positioned spans (one per 4 bars).
-            for bar in (0..total_bars).filter(|b| b % 4 == 0).collect::<Vec<u32>>() {
+            for bar in major_bar_indices(total_bars) {
                 BarLabel { bar: bar, total_bars: total_bars }
             }
             // Playhead head — 1px vertical line. The style closure reads
@@ -392,7 +401,7 @@ fn RibbonCell(
             style: {
                 let emphasized = current_selected_section_id() == Some(section_id);
                 let bg = if emphasized {
-                    rgba(color_for_bg.as_str(), 0.10)
+                    with_alpha(color_for_bg.as_str(), 0.10)
                 } else {
                     "transparent".to_string()
                 };

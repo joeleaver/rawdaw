@@ -66,17 +66,17 @@ mod drum_poller;
 mod edit_pump;
 mod graph;
 mod midi;
-mod poller;
 mod synth_ops;
 mod wavetable_poller;
 
 use std::cell::{RefCell, RefMut};
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
+use rinch::core::reactive::{poll_signal, PollRate};
 use rinch::prelude::Signal;
 
 use drum_poller::DrumPoller;
@@ -85,7 +85,6 @@ use graph::{
     build_drum_handles, build_drum_pollers, build_wavetable_handles, build_wavetable_pollers,
     configure_graph, extract_drum_publishers, extract_publishers, ConfiguredGraph,
 };
-use poller::PlayheadPoller;
 use wavetable_poller::WavetablePoller;
 
 use rawdaw_engine::cpal_driver::{CpalDriver, StreamError};
@@ -122,13 +121,12 @@ pub const MAX_BLOCK: usize = 256;
 /// soft-clipper once `rawdaw-fx` grows more nodes.
 const MASTER_GAIN: f32 = 0.25;
 
-/// Playhead poller sleep interval. ~60 Hz target — the smallest delay
-/// that still produces visually-smooth scrubbing without burning a
-/// core to update a single u64. Tuned in pairs with the engine's
-/// per-block publication: at 48 kHz / 256 frames per block the audio
-/// thread publishes the clock every ~5 ms, so 16 ms polling skips
-/// roughly three publications per visible update.
-const PLAYHEAD_POLL_INTERVAL_MS: u64 = 16;
+/// Playhead poll rate. ~60 Hz target — visually smooth without
+/// burning a core to mirror a single `u64`. Tuned in pairs with the
+/// engine's per-block publication: at 48 kHz / 256 frames per block
+/// the audio thread publishes the clock every ~5 ms, so 16 ms
+/// polling skips roughly three publications per visible update.
+const PLAYHEAD_POLL_RATE: PollRate = PollRate::Hz(60);
 
 /// Shared host-side handle on the audio engine and its topology.
 ///
@@ -249,10 +247,11 @@ pub struct AudioResources {
     /// Per-drum-track pollers. Same lifecycle contract as the
     /// wavetable pollers.
     _drum_pollers: Rc<Vec<DrumPoller>>,
-    /// Optional background poller. `Some` when [`Self::build`] was
-    /// called inside a rinch runtime; `None` for unit tests. Dropping
-    /// the last `Rc` clone stops the thread.
-    _poller: Option<Rc<PlayheadPoller>>,
+    // PlayheadPoller (Rc<std::thread> + AtomicBool) was removed when
+    // we adopted `rinch::core::reactive::poll_signal` (rinch issue
+    // [#28](https://github.com/joeleaver/rinch/issues/28)). The
+    // playhead Signal now drives off the runtime's per-frame poll
+    // drain; no thread, no Drop dance.
     /// MIDI input handle for the engine's dedicated MIDI input SPSC
     /// queue. `Some(_)` after `build_from_project_and_rate`; `take()`n
     /// by [`Self::build`] when it opens a midir input connection.
@@ -307,11 +306,14 @@ impl AudioResources {
         // `app::main_window`.
         let (project, _overlay) = initial_project::build_initial();
         let mut resources = Self::build_from_project_and_rate(&project, sample_rate);
-        resources._poller = Some(Rc::new(PlayheadPoller::spawn(
-            Arc::clone(&resources.sample_clock),
-            resources.playhead_samples,
-            PLAYHEAD_POLL_INTERVAL_MS,
-        )));
+        // Replace the placeholder Signal::new(0) from
+        // build_from_project_and_rate with a poll_signal-backed one
+        // that the rinch runtime drives once per frame. UI bindings
+        // happen on the AudioResources returned from `build()`, so
+        // the swap lands before anything subscribes.
+        let clock = Arc::clone(&resources.sample_clock);
+        resources.playhead_samples =
+            poll_signal(move || clock.load(Ordering::Acquire), PLAYHEAD_POLL_RATE);
         // One Wavetable patch poller per pitched track. Lives in
         // `build()` rather than `build_from_project_and_rate`
         // because `Signal::send` requires the rinch runtime's
@@ -404,7 +406,6 @@ impl AudioResources {
             drum_handles: Rc::new(build_drum_handles(&drum_publishers)),
             drum_publishers: Rc::new(extract_drum_publishers(&drum_publishers)),
             _drum_pollers: Rc::new(Vec::new()),
-            _poller: None,
             midi_input_handle: Rc::new(RefCell::new(Some(midi_input_handle))),
             _midi_connection: Rc::new(RefCell::new(None)),
             // Seed the routing atomic with the first Pitched track's

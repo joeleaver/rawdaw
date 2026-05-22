@@ -28,7 +28,7 @@ use rinch::prelude::*;
 use rawdaw_model::id::ChordLoopId;
 
 use crate::chord_loop_actions::{move_chord_event, resize_chord_event};
-use crate::parts::rgba;
+
 use crate::regions::chord_loop_editor::{DragKind, DragPreview};
 use crate::state::AppState;
 use crate::theme;
@@ -65,11 +65,11 @@ pub(super) fn EventBlock(
                     preview, loop_id, idx, duration_ticks, width_frac,
                 );
                 let pct = (width_frac * 100.0 + extra_pct).max(0.5);
-                let border_color = rgba(color_for_style.as_str(), 0.45);
+                let border_color = with_alpha(color_for_style.as_str(), 0.45);
                 let bg = if focused {
-                    rgba(color_for_style.as_str(), 0.20)
+                    with_alpha(color_for_style.as_str(), 0.20)
                 } else {
-                    rgba(color_for_style.as_str(), 0.08)
+                    with_alpha(color_for_style.as_str(), 0.08)
                 };
                 let stripe = if focused {
                     format!("3px solid {}", color_for_style)

@@ -22,7 +22,7 @@ use rawdaw_model::patch::SynthAssignment;
 use rawdaw_model::track::{Role, TrackKind};
 
 use crate::audio::AudioResources;
-use crate::parts::{rgba, Icon};
+use crate::parts::{Icon};
 use crate::state::AppState;
 use crate::theme;
 
@@ -192,7 +192,7 @@ fn TrackRow(
             style: {
                 let selected = app.selected_track.get() == Some(idx);
                 let bg = if selected {
-                    rgba(stripe_color.as_str(), 0.16)
+                    with_alpha(stripe_color.as_str(), 0.16)
                 } else {
                     "transparent".to_string()
                 };

@@ -11,15 +11,15 @@
 //!    each render to apply `transform: translateX(...)` for live
 //!    visual feedback. `on_end` commits via
 //!    [`arrangement_actions::move_step`] and clears the preview.
-//! 2. **`⋯` button menu** with Duplicate / Insert before… /
-//!    Insert after… / Delete. The plan called for a right-click
-//!    `ContextMenu`, but the rinch v0.3 `ContextMenu` wrapper uses
-//!    `display: contents` on both itself and its target — and
-//!    rinch's layout engine treats `display: contents` boxes as
-//!    `0 × 0`, breaking percent-anchored absolute children inside.
-//!    Swapped for a discoverable top-left `⋯` button (mirrors the
-//!    Library row pattern) that opens a `DropdownMenu` (which is
-//!    `display: inline-block`, so it doesn't collapse the block).
+//! 2. **Right-click `ContextMenu` AND a redundant top-left `⋯`
+//!    button** — both fire the same Duplicate / Insert before… /
+//!    Insert after… / Delete items. S5 originally shipped only the
+//!    `⋯` button because rinch v0.3 `ContextMenu`'s `display:
+//!    contents` wrapper collapsed percent-positioned children to
+//!    `0 × 0` (rinch issue
+//!    [#25](https://github.com/joeleaver/rinch/issues/25)). Fixed
+//!    upstream in 817aa1c so right-click works now; `⋯` stays
+//!    alongside for first-time discoverability.
 //! 3. **Variant chip → `DropdownMenu` button** listing the section's
 //!    variants (default-decorated). Selecting a variant routes
 //!    through `arrangement_actions::set_step_variant`.
@@ -39,7 +39,7 @@ use crate::arrangement_actions::{
     duplicate_step, insert_step_after, insert_step_at, move_step, remove_step,
     set_step_variant,
 };
-use crate::parts::rgba;
+
 use crate::state::AppState;
 use crate::theme;
 
@@ -138,7 +138,7 @@ fn SectionBlock(block: ArrangementBlockData, total_bars: u32) -> NodeHandle {
     for i in 1..=internal_bars {
         inner_d.push_str(&format!("M {x} 6 L {x} 94 ", x = i));
     }
-    let inner_stroke = rgba(color.as_str(), 0.22);
+    let inner_stroke = with_alpha(color.as_str(), 0.22);
     let bars_str = bars.to_string();
 
     let length_text = format!("{} {}", bars, if bars == 1 { "bar" } else { "bars" });
@@ -148,126 +148,150 @@ fn SectionBlock(block: ArrangementBlockData, total_bars: u32) -> NodeHandle {
     let default_variant_for_chip = default_variant.clone();
 
     rsx! {
-        div {
-            style: {
-                let sel = app.selected_idx.get();
-                let is_selected = sel == Some(idx);
-                // is_linked: highlight every block that references the
-                // same section as the selected block. Reads model
-                // signals through `current_selected_section_id`.
-                let is_linked = !is_selected
-                    && current_selected_section_id() == Some(section_id);
-                // Drag preview offset: translate the block by
-                // (delta_bars / bars) * 100% of its own width when
-                // it's the active drag target. Other blocks render
-                // statically — sibling shift is round-2 polish.
-                let preview = app.arrangement_drag_preview.get();
-                let is_dragging = preview
-                    .as_ref()
-                    .map(|p| p.from_idx == idx)
-                    .unwrap_or(false);
-                let translate_pct = preview
-                    .as_ref()
-                    .filter(|p| p.from_idx == idx)
-                    .map(|p| p.delta_bars as f32 / bars.max(1) as f32 * 100.0)
-                    .unwrap_or(0.0);
+        ContextMenu {
+            ContextMenuTarget {
+                div {
+                    style: {
+                        let sel = app.selected_idx.get();
+                        let is_selected = sel == Some(idx);
+                        // is_linked: highlight every block that references the
+                        // same section as the selected block. Reads model
+                        // signals through `current_selected_section_id`.
+                        let is_linked = !is_selected
+                            && current_selected_section_id() == Some(section_id);
+                        // Drag preview offset: translate the block by
+                        // (delta_bars / bars) * 100% of its own width when
+                        // it's the active drag target. Other blocks render
+                        // statically — sibling shift is round-2 polish.
+                        let preview = app.arrangement_drag_preview.get();
+                        let is_dragging = preview
+                            .as_ref()
+                            .map(|p| p.from_idx == idx)
+                            .unwrap_or(false);
+                        let translate_pct = preview
+                            .as_ref()
+                            .filter(|p| p.from_idx == idx)
+                            .map(|p| p.delta_bars as f32 / bars.max(1) as f32 * 100.0)
+                            .unwrap_or(0.0);
 
-                let bg = rgba(
-                    color_for_style.as_str(),
-                    if is_selected {
-                        0.20
-                    } else if is_linked {
-                        0.14
-                    } else {
-                        0.10
+                        let bg = with_alpha(
+                            color_for_style.as_str(),
+                            if is_selected {
+                                0.20
+                            } else if is_linked {
+                                0.14
+                            } else {
+                                0.10
+                            },
+                        );
+                        let border = if is_selected {
+                            format!("1px solid {}", color_for_style)
+                        } else if is_linked {
+                            format!("1px solid {}", with_alpha(color_for_style.as_str(), 0.55))
+                        } else {
+                            format!("1px solid {}", with_alpha(color_for_style.as_str(), 0.28))
+                        };
+                        let box_shadow = if is_dragging {
+                            format!(
+                                "0 4px 14px {}, 0 0 0 1px {}",
+                                with_alpha(color_for_style.as_str(), 0.45),
+                                with_alpha(color_for_style.as_str(), 0.55),
+                            )
+                        } else if is_selected {
+                            format!("0 0 0 1px {}", with_alpha(color_for_style.as_str(), 0.30))
+                        } else {
+                            "none".to_string()
+                        };
+                        let opacity = if is_dragging { "0.92" } else { "1" };
+                        let z_index = if is_dragging { "3" } else { "1" };
+                        // ContextMenu's `display: contents` wrapper now
+                        // honors per-spec layout transparency (rinch
+                        // #25 fix 817aa1c), so the block's percent-
+                        // anchored absolute positioning resolves
+                        // against the lane like a non-wrapped block.
+                        format!(
+                            "position: absolute; left: {l}%; top: 6px; \
+                             width: {w}%; bottom: 6px; \
+                             box-sizing: border-box; \
+                             border-left: 3px solid {col}; border-radius: 3px; \
+                             background: {bg}; border: {border}; \
+                             box-shadow: {box_shadow}; \
+                             transform: translateX({translate_pct:.2}%); \
+                             opacity: {opacity}; z-index: {z_index}; \
+                             cursor: pointer; overflow: visible;",
+                            l = left_pct, w = width_pct, col = color_for_style,
+                        )
                     },
-                );
-                let border = if is_selected {
-                    format!("1px solid {}", color_for_style)
-                } else if is_linked {
-                    format!("1px solid {}", rgba(color_for_style.as_str(), 0.55))
-                } else {
-                    format!("1px solid {}", rgba(color_for_style.as_str(), 0.28))
-                };
-                let box_shadow = if is_dragging {
-                    format!(
-                        "0 4px 14px {}, 0 0 0 1px {}",
-                        rgba(color_for_style.as_str(), 0.45),
-                        rgba(color_for_style.as_str(), 0.55),
-                    )
-                } else if is_selected {
-                    format!("0 0 0 1px {}", rgba(color_for_style.as_str(), 0.30))
-                } else {
-                    "none".to_string()
-                };
-                let opacity = if is_dragging { "0.92" } else { "1" };
-                let z_index = if is_dragging { "3" } else { "1" };
-                // Single-div block — no ContextMenu wrapper, so the
-                // `position: absolute; left:%; width:%` resolves
-                // directly against the lane (which has `position:
-                // relative`). The block is its own positioning context
-                // for absolute children (name, ⋯ button, variant chip,
-                // length).
-                format!(
-                    "position: absolute; left: {l}%; top: 6px; \
-                     width: {w}%; bottom: 6px; \
-                     box-sizing: border-box; \
-                     border-left: 3px solid {col}; border-radius: 3px; \
-                     background: {bg}; border: {border}; \
-                     box-shadow: {box_shadow}; \
-                     transform: translateX({translate_pct:.2}%); \
-                     opacity: {opacity}; z-index: {z_index}; \
-                     cursor: pointer; overflow: visible;",
-                    l = left_pct, w = width_pct, col = color_for_style,
-                )
-            },
-            onclick: move || on_block_click(idx, bars),
-            svg {
-                viewBox: format!("0 0 {bars_str} 100"),
-                preserveAspectRatio: "none",
-                fill: "none",
-                stroke: {inner_stroke.clone()},
-                stroke-width: "0.5",
-                style: "width: 100%; height: 100%; display: block; \
-                        position: absolute; inset: 0; pointer-events: none;",
-                path { d: {inner_d.clone()} }
+                    onclick: move || on_block_click(idx, bars),
+                    svg {
+                        viewBox: format!("0 0 {bars_str} 100"),
+                        preserveAspectRatio: "none",
+                        fill: "none",
+                        stroke: {inner_stroke.clone()},
+                        stroke-width: "0.5",
+                        style: "width: 100%; height: 100%; display: block; \
+                                position: absolute; inset: 0; pointer-events: none;",
+                        path { d: {inner_d.clone()} }
+                    }
+                    // Actions menu (top-left, sits in front of the name).
+                    BlockActionsMenu { step_idx: idx }
+                    // Name (top-left, after the menu button).
+                    div {
+                        style: "position: absolute; left: 28px; top: 6px; \
+                                font-size: 12.5px; font-weight: 600; \
+                                color: rgba(232,234,238,0.96); letter-spacing: -0.1px; \
+                                pointer-events: none;",
+                        {section_name.clone()}
+                    }
+                    // Variant chip — DropdownMenu button. Top-right.
+                    VariantChipSelect {
+                        step_idx: idx,
+                        section_id_u64: section_id.get(),
+                        current_variant: variant_for_chip,
+                        default_variant: default_variant_for_chip,
+                        color: color_for_chip,
+                    }
+                    // Length readout (bottom-right).
+                    div {
+                        style: "position: absolute; right: 6px; bottom: 4px; \
+                                font-size: 10px; color: rgba(232,234,238,0.62); \
+                                font-feature-settings: \"tnum\" 1; \
+                                font-variant-numeric: tabular-nums; \
+                                letter-spacing: 0.2px; pointer-events: none;",
+                        {length_text.clone()}
+                    }
+                }
             }
-            // Actions menu (top-left, sits in front of the name).
-            BlockActionsMenu { step_idx: idx }
-            // Name (top-left, after the menu button).
-            div {
-                style: "position: absolute; left: 28px; top: 6px; \
-                        font-size: 12.5px; font-weight: 600; \
-                        color: rgba(232,234,238,0.96); letter-spacing: -0.1px; \
-                        pointer-events: none;",
-                {section_name.clone()}
-            }
-            // Variant chip — DropdownMenu button. Top-right.
-            VariantChipSelect {
-                step_idx: idx,
-                section_id_u64: section_id.get(),
-                current_variant: variant_for_chip,
-                default_variant: default_variant_for_chip,
-                color: color_for_chip,
-            }
-            // Length readout (bottom-right).
-            div {
-                style: "position: absolute; right: 6px; bottom: 4px; \
-                        font-size: 10px; color: rgba(232,234,238,0.62); \
-                        font-feature-settings: \"tnum\" 1; \
-                        font-variant-numeric: tabular-nums; \
-                        letter-spacing: 0.2px; pointer-events: none;",
-                {length_text.clone()}
+            ContextMenuDropdown {
+                DropdownMenuItem {
+                    onclick: move || duplicate_action(idx),
+                    "Duplicate"
+                }
+                DropdownMenuDivider {}
+                DropdownMenuItem {
+                    onclick: move || insert_before_action(idx),
+                    "Insert section before…"
+                }
+                DropdownMenuItem {
+                    onclick: move || insert_after_action(idx),
+                    "Insert section after…"
+                }
+                DropdownMenuDivider {}
+                DropdownMenuItem {
+                    onclick: move || delete_action(idx),
+                    "Delete"
+                }
             }
         }
     }
 }
 
 /// Per-block `⋯` button at the top-left of the section block. Opens
-/// a [`DropdownMenu`] with Duplicate / Insert before / Insert after /
-/// Delete. Replaces the plan's right-click `ContextMenu` because the
-/// rinch v0.3 `ContextMenu` collapses to a 0×0 box in this layout
-/// engine, breaking percent-positioned children.
+/// a [`DropdownMenu`] with the same Duplicate / Insert before /
+/// Insert after / Delete items the wrapping right-click
+/// [`ContextMenu`] fires. Keeping both: the button is the
+/// discoverable affordance for first-time users; right-click is the
+/// power-user shortcut.
 #[component]
 fn BlockActionsMenu(step_idx: usize) -> NodeHandle {
     let menu_open = Signal::new(false);
@@ -549,8 +573,8 @@ fn VariantChipSelect(
     let menu_open = Signal::new(false);
     let is_default = current_variant == default_variant;
 
-    let chip_bg = rgba(color.as_str(), if is_default { 0.20 } else { 0.32 });
-    let chip_border = rgba(color.as_str(), if is_default { 0.36 } else { 0.55 });
+    let chip_bg = with_alpha(color.as_str(), if is_default { 0.20 } else { 0.32 });
+    let chip_border = with_alpha(color.as_str(), if is_default { 0.36 } else { 0.55 });
     let chip_label = format!("{current_variant} ▾");
     let chip_style = format!(
         "position: absolute; right: 6px; top: 5px; \

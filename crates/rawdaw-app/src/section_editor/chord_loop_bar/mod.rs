@@ -43,7 +43,7 @@ use rawdaw_model::scale::Scale;
 use rawdaw_model::time::PPQ;
 
 use crate::chord_display::{absolute_label, pitch_class_name, quality_suffix, roman_label};
-use crate::parts::rgba;
+
 use crate::state::AppState;
 use crate::theme;
 
@@ -232,8 +232,8 @@ fn EditableChordCell(
     is_first_of_loop: bool,
     loop_id_present: bool,
 ) -> NodeHandle {
-    let bg_fill = rgba(color.as_str(), 0.10);
-    let border_soft = rgba(color.as_str(), 0.30);
+    let bg_fill = with_alpha(color.as_str(), 0.10);
+    let border_soft = with_alpha(color.as_str(), 0.30);
     let left_border = if is_first_of_loop {
         format!("2px solid {col}", col = color)
     } else {

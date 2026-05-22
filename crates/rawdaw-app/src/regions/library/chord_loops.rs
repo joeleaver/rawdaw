@@ -24,7 +24,7 @@ use crate::chord_loop_actions::{
     create_chord_loop, delete_chord_loop, duplicate_chord_loop, rename_chord_loop,
     set_chord_loop_color, DeleteRefused,
 };
-use crate::parts::rgba;
+
 use crate::state::AppState;
 use crate::theme;
 
@@ -183,7 +183,7 @@ fn ChordLoopRow(id: ChordLoopId, color: String, name: String, meta: String) -> N
         "width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; \
          background: {color}; border: 1px solid {border};",
         color = color,
-        border = rgba(color.as_str(), 0.6),
+        border = with_alpha(color.as_str(), 0.6),
     );
     // Color needs to outlive the rsx! reactive closures below; each
     // `{|| ... color ...}` captures by move, so clone one copy per
@@ -197,7 +197,7 @@ fn ChordLoopRow(id: ChordLoopId, color: String, name: String, meta: String) -> N
                 let selected =
                     use_store::<AppState>().selected_chord_loop.get() == Some(id);
                 let bg = if selected {
-                    rgba(color_for_row.as_str(), 0.10)
+                    with_alpha(color_for_row.as_str(), 0.10)
                 } else {
                     "transparent".to_string()
                 };

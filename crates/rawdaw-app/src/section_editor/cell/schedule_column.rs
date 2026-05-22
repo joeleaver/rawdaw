@@ -23,7 +23,7 @@ use rinch::prelude::*;
 use rawdaw_model::id::{SectionId, TrackId};
 
 use crate::overlay::ScheduleEntry;
-use crate::parts::{rgba, Icon, ScheduleSegment, ScheduleSegmentStyle};
+use crate::parts::{Icon, ScheduleSegment, ScheduleSegmentStyle};
 use crate::theme;
 
 use super::editable_schedule_cell::EditableScheduleCell;
@@ -286,8 +286,8 @@ fn LegendChip(entry: LegendEntry, pattern_color: String) -> NodeHandle {
              padding: 2px 8px; border-radius: 3px; \
              background: {bg}; border: 1px solid {border}; \
              color: {text1}; font-size: 11px;",
-            bg = rgba(pattern_color.as_str(), 0.14),
-            border = rgba(pattern_color.as_str(), 0.40),
+            bg = with_alpha(pattern_color.as_str(), 0.14),
+            border = with_alpha(pattern_color.as_str(), 0.40),
             text1 = theme::TEXT1,
         ),
         LegendKind::Silent => format!(

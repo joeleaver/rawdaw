@@ -23,8 +23,6 @@ use crate::theme;
 #[component]
 pub(super) fn AppendButton() -> NodeHandle {
     let menu_open = Signal::new(false);
-    let sz = 12.0_f32;
-    let sw = 1.6_f32;
     let stroke = theme::TEXT2.to_string();
 
     rsx! {
@@ -45,7 +43,7 @@ pub(super) fn AppendButton() -> NodeHandle {
                                 );
                             }
                         },
-                        Icon { glyph: "plus", size: sz, stroke: {stroke.clone()}, stroke_width: sw }
+                        Icon { glyph: "plus", size: 12.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
                         span { style: "margin-left: 4px;", "append" }
                     }
                 }
