@@ -30,6 +30,7 @@ use rawdaw_model::project::Project;
 use rawdaw_model::scale::Scale;
 
 use crate::overlay::ProjectOverlay;
+use crate::regions::arrangement::ArrangementDragPreview;
 use crate::regions::chord_loop_editor::DragPreview;
 
 /// Which top-level surface the app is rendering below the top bar.
@@ -204,6 +205,17 @@ pub struct AppState {
     ///
     /// CL2.x of `docs/chord-loop-editing-plan.md`.
     pub drag_preview: Signal<Option<DragPreview>>,
+
+    /// In-flight drag state for the arrangement view's section lane.
+    /// Same shape + lifecycle as [`Self::drag_preview`], but tracks
+    /// a `SectionBlock` move instead of a chord-event timeline edit.
+    /// Lives on its own signal so chord-loop and arrangement drags
+    /// stay independent (the user can't drag both at once, but the
+    /// types are different and a single signal would have to enum
+    /// them — not worth the indirection).
+    ///
+    /// S5 of `docs/section-arrangement-editing-plan.md`.
+    pub arrangement_drag_preview: Signal<Option<ArrangementDragPreview>>,
 }
 
 impl AppState {
@@ -235,6 +247,7 @@ impl AppState {
             overlay: Signal::new(Rc::new(ProjectOverlay::empty())),
             current_path: Signal::new(None),
             drag_preview: Signal::new(None),
+            arrangement_drag_preview: Signal::new(None),
         }
     }
 
