@@ -169,6 +169,69 @@ the type definitions:
   helper doesn't take `total_bars`, so it can't tell whether the
   trailing range has anywhere to merge into.
 
+## UI semantics shipped with the section + arrangement editor (S5)
+
+The S1–S5 milestone (close-out `2026-05-22`,
+`docs/section-arrangement-editing-plan.md`) made section
+variants editable end-to-end. A few interpretive decisions on
+top of the model that aren't directly visible from the type
+definitions:
+
+- **Variant tab strip is the section-editor primary axis.**
+  Each `SectionVariantOverride` key gets a tab; the section's
+  `default_variant` tab is decorated with a marker and
+  protected against delete. Tab strip lives at
+  `section_editor/variant_tabs.rs`. The active tab drives
+  every meta-bar edit through `set_section_duration_bars(id,
+  variant, bars)` etc. — non-default-variant edits auto-
+  promote a sparse override (the activation-auto-promote
+  pattern P4.x established applies symmetrically here).
+- **Variant chip on arrangement blocks is a clickable
+  `DropdownMenu` button**, not a separate inspector pane.
+  Each `SectionBlock` in `regions/arrangement/section_lane.rs`
+  renders its `SectionRef.variant` as a chip in the top-right
+  corner; clicking the chip opens a dropdown listing the
+  section's variants. Picking a variant commits via
+  `arrangement_actions::set_step_variant(index, variant)` —
+  no popup, no separate inspector. The "↳ default" picker
+  semantics from the plan's §4 hold: picking the
+  default-variant entry writes the section's *current*
+  `default_variant` rather than a sentinel; later
+  `default_variant` changes do NOT retarget existing
+  `SectionRef.variant` values.
+- **Block-level actions surface in two places.** Each
+  `SectionBlock` exposes both a top-left `⋯` button that
+  opens a `DropdownMenu`, AND a right-click `ContextMenu`
+  on the block body. Both fire the same items: Duplicate /
+  Insert section before… / Insert section after… / Delete.
+  The `⋯` button is the more discoverable affordance; the
+  right-click ContextMenu is the power-user shortcut. (The
+  ⋯ alone shipped with S5 because rinch v0.3's
+  `display: contents` ContextMenu wrappers collapsed
+  percent-positioned children to 0×0; the ContextMenu came
+  back with the rinch issue #25 fix in commit `0bf4680`.)
+- **"Insert section before/after" reads from
+  `AppState.selected_section`.** Picking the menu item
+  inserts the currently-selected Library section at the
+  chosen position; if no section is selected, the action
+  `eprintln!`s a hint. An inline section picker popover is a
+  future paper-cut bite.
+- **`+ append` is the only "add to arrangement" affordance in
+  v1.** Lives at the right end of the section lane in the
+  arrangement toolbar (post-F4 pixel-positioning refactor:
+  `regions/arrangement/toolbar.rs`). Opens a section picker
+  `DropdownMenu`; commits via
+  `arrangement_actions::append_step(section_id, section.
+  default_variant)`. Disabled when `project.sections` is
+  empty. Drag-from-library is a later UX polish.
+- **Variant tab CRUD lives entirely in the section editor.**
+  `+ new variant` tab → inline rename (a fresh, empty
+  `SectionVariantOverride` is created on commit); per-tab
+  context menu → Rename / Delete / Set as default.
+  Default-tab delete is rejected (must change the default
+  first); arrangement-referenced variant delete is rejected
+  with a referenced-by list.
+
 ## Open questions
 
 - **Variant rename / delete propagation.** If a variant is deleted, what happens to `SectionRef`s pointing at it in the arrangement? Probably fall back to `default_variant` with a warning. Same for rename — by ID, not name, so renames are safe.

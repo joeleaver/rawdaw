@@ -1,5 +1,35 @@
 ## Section + Arrangement editing plan (v1)
 
+> **Status (close-out, 2026-05-22):** All S0–S6 phases ✅ landed
+> across commits `c876a93` (S0 plan + UI-complete roadmap) →
+> `f9bc636` (S1 `section_actions` module) → `8b6086b` (S2 Library
+> section CRUD + `regions/library/sections.rs` carve-out) →
+> `6c648d0` (S3 meta-bar editing + variant CRUD) → `53f273f`
+> (S4 `arrangement_actions` module + `recompute_starts`) →
+> `db6746b` (S5 arrangement view interactive editor —
+> `regions/arrangement/{mod,section_lane,append_action}.rs`
+> split). 708 workspace tests; clippy clean across default /
+> `--no-default-features` / `--features cpal-driver`. Three
+> post-S5 commits in the same milestone window adopted upstream
+> rinch fixes that bear directly on what shipped:
+> `0bf4680` (rinch #25–#30 adoption — restored right-click
+> ContextMenu on `SectionBlock` alongside the ⋯ button),
+> `92478ac` (F1–F3 rinch-fix follow-ons), `6331a83` (F4 timeline
+> primitive — pixel-based positioning + zoom in
+> `regions/arrangement/toolbar.rs`). The full section +
+> arrangement surface is live: users can create / rename /
+> duplicate / delete / recolor sections from the Library; edit
+> section meta + variant strip in the section editor;
+> append / duplicate / delete / reorder (drag) / revariant steps
+> in the arrangement view; and edits round-trip through the C2
+> drain-without-rewind pump so the playhead never snaps to bar 1
+> on edit. **Recommended next Tier-1 bite:** master-fx-chain X1
+> (model surgery — `MasterFxData` enum, `MasterChainData`,
+> `Project.master_chain`); its plan already exists at
+> `docs/master-fx-chain-plan.md` and the soft-clipper replaces
+> the audible `-12 dB` master-gain workaround. Out-of-scope
+> items still apply — see "Out of scope" below.
+
 The third Tier-1 plan after composition-writability Tier 0 closed and
 the chord-loop editing (CL) + pattern editor (P) milestones landed.
 Builds the **section editor + arrangement editor UI surfaces** on top
@@ -60,8 +90,12 @@ master-fx-chain — its plan already exists).
 
 ## Status
 
-- **S0** — this document.
-- **S1** — Section actions module (pure helpers + edit-pump wrappers).
+- **S0** ✅ — this document. Landed `c876a93` (2026-05-21,
+  bundled with the UI-complete roadmap memory + the pattern-
+  editor follow-ons plan G0).
+- **S1** ✅ — Section actions module (pure helpers + edit-pump wrappers).
+  Landed `f9bc636` (2026-05-22). Phase scope below; no
+  deviations from S0.
   - New module `crate::section_actions` mirroring the
     `chord_loop_actions` / `pattern_actions` shape: pure helpers
     that mutate a `&mut Project`, plus `apply_project_edit`
@@ -90,7 +124,10 @@ master-fx-chain — its plan already exists).
     create / rename / duplicate / delete-refusal / variant CRUD /
     default-variant-protection / auto-promote-on-variant-override);
     primitives compile in `rawdaw-app` without UI consumers.
-- **S2** — Library wiring for section CRUD.
+- **S2** ✅ — Library wiring for section CRUD. Landed `8b6086b`
+  (2026-05-22). `regions/library/sections.rs` carved out of
+  `mod.rs`; `+ new section` + per-row `⋯` action menu live;
+  delete-refusal lists arrangement refs. No deviations from S0.
   - Carve a new `regions/library/sections.rs` out of
     `regions/library/mod.rs` matching the pattern set by
     `chord_loops.rs` (CL1) and `patterns.rs` (P1). The Sections
@@ -109,7 +146,16 @@ master-fx-chain — its plan already exists).
     reference list when arrangement references exist;
     `regions/library/mod.rs` stays under the 700-line cap; rinch
     MCP confirms the new-section workflow visually.
-- **S3** — Section-editor meta-bar editing + variant tab strip CRUD.
+- **S3** ✅ — Section-editor meta-bar editing + variant tab strip CRUD.
+  Landed `6c648d0` (2026-05-22).
+  - **Deviation from S0 §8 (file layout):** `section_editor/
+    meta_bar.rs` did NOT split into a `meta_bar/` directory.
+    The file landed at 491 lines — well under the ~700-line
+    cap — so the pre-emptive split was deferred per CLAUDE.md
+    §3 ("split by concern, not by line count alone"). If a
+    future bite (e.g. a richer scale picker) pushes meta_bar
+    past cap, the `name_duration.rs` / `variants.rs` /
+    `scale.rs` split sketched in S0 is the right shape.
   - `section_editor/meta_bar.rs` gains inline-editable name (same
     `NameControl` shape) and a `duration_bars` numeric nudger
     (− / + buttons + click-to-type). Duration writes route through
@@ -130,7 +176,17 @@ master-fx-chain — its plan already exists).
     `chord_loop_bar` row stays untouched (CL4 + CL4.x covers it);
     `section_editor/meta_bar.rs` stays under the cap (split into
     `meta_bar/mod.rs` + `variants.rs` if needed).
-- **S4** — Arrangement actions module (pure helpers + wrappers).
+- **S4** ✅ — Arrangement actions module (pure helpers + wrappers).
+  Landed `53f273f` (2026-05-22). `arrangement_actions/{mod,
+  tests}.rs` (the planned `recompute_starts.rs` carve-out
+  collapsed into `mod.rs` since `recompute_starts` is a one-
+  function helper that's tightly coupled to the step CRUD
+  helpers — a single-function file would have been wrong-shape
+  per CLAUDE.md §3). Tests carved into `tests.rs` (514 lines)
+  so `mod.rs` stays at 220 lines. Added an `insert_step_at`
+  primitive (alongside the planned `insert_step_after`) for
+  the S5 "Insert before…" menu item, which needs the variant
+  "insert at the same index, pushing current step rightward."
   - New module `crate::arrangement_actions` covering: `append_step
     (section_id, variant)`, `insert_step_after(index, section_id,
     variant)`, `remove_step(index)`, `move_step(from, to)`,
@@ -154,7 +210,48 @@ master-fx-chain — its plan already exists).
     covering ordering invariants, start recomputation, no-gap
     contract, move-to-same-index no-op, remove-last-step empties
     `Arrangement.sections`); primitives compile without UI consumers.
-- **S5** — Arrangement view interactive editor.
+- **S5** ✅ — Arrangement view interactive editor.
+  Landed `db6746b` (2026-05-22). File split shipped:
+  `regions/arrangement/mod.rs` (494 — top-level + Ruler +
+  ChordRibbon + LaneFiller + shared helpers as `pub(super)`),
+  `section_lane.rs` (649 — SectionLane + SectionBlock + drag
+  wiring + BlockActionsMenu + VariantChipSelect +
+  `ArrangementDragPreview`), `append_action.rs` (133 —
+  AppendButton + section picker). New AppState signal
+  `arrangement_drag_preview: Signal<Option<ArrangementDrag
+  Preview>>` mirrors the chord_loop_editor's `drag_preview`.
+  - **Deviation from S0 §6 (block-level action menu):**
+    Original spec called for right-click `ContextMenu` only.
+    At S5 time, rinch v0.3's layout engine collapsed
+    `display: contents` ContextMenu wrappers to 0×0, breaking
+    percent-anchored children — so S5 shipped a discoverable
+    top-left `⋯` button using `DropdownMenu`
+    (`display: inline-block`) instead. **Post-S5 (commit
+    `0bf4680`, rinch issue #25 fix landed same-day):** the
+    right-click `ContextMenu` was restored alongside the
+    `⋯` button. Both menus fire the same Duplicate / Insert
+    before… / Insert after… / Delete items. The `⋯` is the
+    more discoverable affordance; right-click is the power-
+    user shortcut. The spec is now fully met.
+  - **Deviation from S0 §5 ("Insert before/after" UX):**
+    Original spec opened an inline section picker popover.
+    Shipped UX is "click a Library section row to select it,
+    then ⋯ → Insert before/after"  — uses `AppState.
+    selected_section` (S2's Library row selection axis) as
+    the section to insert. If no section is selected,
+    `eprintln!`s a hint. Inline picker popover is a follow-on
+    bite (deferred — not blocking song creation).
+  - **Pixel-positioning follow-on (commit `6331a83`, F4):**
+    Shipped under the same milestone window. Replaced the
+    round-1 percent-based arrangement layout with pixel-based
+    positioning + zoom (`pixels_per_bar: Signal<f32>` on
+    AppState, `regions/arrangement/toolbar.rs` carrying zoom
+    in / out / fit-to-width controls, native `overflow-x:
+    auto` scroll). All S5 affordances continue to work at any
+    zoom. The plan didn't anticipate this — F4 landed because
+    rinch issue #30 (`bounds_signal`) shipped same-day, and
+    the percent layout broke for arrangements longer than a
+    screen.
   - `regions/arrangement.rs` gains: a `+ append` button anchored to
     the right of the section lane (opens a section picker + variant
     picker, commits via `append_step`); a right-click ContextMenu on
@@ -188,19 +285,24 @@ master-fx-chain — its plan already exists).
     the block moving live; commit lands on `on_end`; rinch MCP
     confirms each affordance visually; the playhead does not snap
     to bar 1 on any edit (C2 drain-without-rewind invariant).
-- **S6** — Close-out.
-  - Update this plan doc's Status section with commit hashes,
-    record deviations from S0 decisions if any, finalize the
-    next-Tier-1-bite recommendation (X1 master-fx-chain model
-    surgery).
-  - Update `docs/design/section-variants.md` and `docs/design/
-    composition-model.md` with a "UI semantics shipped with the
-    section + arrangement editor (S5)" section if any UI-level
-    semantics deviate from the model spec.
-  - Update [[project-status]] + [[project-next-session-pickup]]
-    memories.
-  - **Done when:** plan doc + design-docs reflect what shipped;
-    memory pointers updated.
+- **S6** ✅ — Close-out (2026-05-22, this commit).
+  - Plan-doc Status section filled with per-phase commit
+    hashes + S3 / S4 / S5 deviation notes; close-out banner
+    at top mirrors `pattern-editor-plan.md` post-P5.
+  - `docs/design/section-variants.md` got a "UI semantics
+    shipped with the section + arrangement editor (S5)"
+    subsection covering variant-chip + variant-tab strip
+    UX + the dual ⋯ / right-click menu shape.
+  - `docs/design/composition-model.md` got a matching
+    "UI semantics" subsection covering the no-gap /
+    no-overlap arrangement contract enforced UI-side by
+    `arrangement_actions::recompute_starts`, the step-
+    duration-follows-section-variant invariant, and the
+    selection-axis narrow-ness.
+  - Memory pointers refreshed: [[project-status]],
+    [[project-next-session-pickup]], and
+    [[project-ui-complete-roadmap]] all point at **X1
+    master-fx-chain model surgery** as the next bite.
 
 ---
 

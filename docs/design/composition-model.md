@@ -218,6 +218,64 @@ The mixer is its own view, opened on demand.
 - **Editing realized notes?** Default to per-note overrides; explicit "fork" available.
 - **MIDI version?** Internal event model targets MIDI 2.0 (per-note controllers, high-resolution velocity) even if I/O surface is MIDI 1.0 initially.
 
+## UI semantics shipped with the section + arrangement editor (S5)
+
+The S1–S5 milestone (close-out `2026-05-22`,
+`docs/section-arrangement-editing-plan.md`) made the
+arrangement editable. A few interpretive decisions on top of
+the model that aren't directly visible from the type
+definitions:
+
+- **No-gap, no-overlap arrangement contract.** `SectionRef.
+  start: MusicalTime` is absolute, so the model technically
+  permits gaps or overlaps. The v1 editor refuses both —
+  `arrangement_actions::recompute_starts(&mut Project)` runs
+  after every step mutation (append / insert / remove / move /
+  duplicate / set-section / set-variant) and walks
+  `project.arrangement.sections` packing each step's `start`
+  flush against the previous step's end. Each step's
+  effective duration is the active variant override's
+  `duration_bars` if `Some`, else the base body's
+  `duration_bars`. Steps cannot have explicit gaps in v1.
+  Future support for silence / count-off would be a model-
+  level change deferred to a later round.
+- **Step duration follows section variant.** There is no
+  per-step duration override on `SectionRef` — and
+  intentionally so per `section-variants.md` (the section
+  variant is the canonical knob for duration). To change a
+  step's length, the user edits the section's variant
+  duration in the section editor; `recompute_starts` then
+  shifts every later step's `start` on the next mutation.
+  Arrangement-view blocks therefore have no resize handle
+  (vs. chord-loop bars and pattern notes, which do).
+- **Selection axis stays narrow.** The arrangement editor does
+  NOT add a new "selected arrangement step" axis to
+  `AppState`. Block click does
+  `app.set_selected_idx(Some(arrangement_step_idx))` —
+  selecting the underlying section for editing in the
+  section editor. Block actions (drag, ⋯ menu, right-click
+  ContextMenu, variant chip) operate on click-time index
+  via transient `arrangement_drag_preview` /
+  per-component `menu_open` signals.
+- **Drag commits go through the C2 drain-without-rewind
+  pump.** Drag-to-move is registered via
+  `Drag::absolute().on_move(...).on_end(...).start()` from
+  inside the block's onclick (rinch fires onclick on
+  mousedown). The `on_end` handler routes through
+  `apply_project_edit(move_step(from, target))`, so the
+  engine drains pending events and re-arms without resetting
+  `sample_clock` to 0 — the playhead stays continuous during
+  a move even with playback running.
+- **F4 pixel-positioning is layout-only.** Post-S5, commit
+  `6331a83` replaced the round-1 percent-based arrangement
+  layout with pixel-based positioning + zoom (`pixels_per_bar:
+  Signal<f32>` on AppState; native `overflow-x: auto` scroll;
+  zoom toolbar at `regions/arrangement/toolbar.rs`). No model
+  change — the underlying invariants above are unchanged. The
+  Ruler / ChordRibbon / SectionLane / LaneFiller rows share
+  a single pixel-width content wrapper inside the outer
+  scrolling area so they always pan together.
+
 ## Open questions
 
 See `open-questions.md` — keeping the running list there.
