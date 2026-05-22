@@ -20,17 +20,13 @@
 //!   rename / set_default) with default-variant + arrangement-ref
 //!   protection.
 //!
-//! **S1 state:** every primitive in this module is `pub` but has no
-//! UI consumer yet — S2 (Library), S3 (section-editor meta-bar), and
-//! S5 (Arrangement view) wire them in. The module-level
-//! `#![allow(dead_code)]` + `#![allow(unused_imports)]` suppress the
-//! "never used" warnings until those phases land; the per-function
-//! attribute can come off as each consumer arrives. The same pattern
-//! was tolerated transiently in `pattern_actions` (P1) before the
-//! pattern-editor UI consumed its primitives.
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
+//! **Phase state.** S1 shipped every primitive without UI consumers.
+//! S2 wires the section-CRUD half (create / rename / duplicate /
+//! delete / color) to the Library; the duration + scale + variant
+//! CRUD primitives remain unconsumed until S3's meta-bar work.
+//! Per-fn / per-use `#[allow(dead_code)]` / `#[allow(unused_imports)]`
+//! attributes (rather than a module-level blanket) keep the warning
+//! surface honest as each phase arrives.
 
 mod duration;
 mod variants;
@@ -38,10 +34,14 @@ mod variants;
 #[cfg(test)]
 mod test_support;
 
+// Re-exports for S3 consumers. `#[allow(unused_imports)]` holds until
+// the meta-bar lands; matches the `pattern_actions` precedent.
+#[allow(unused_imports)]
 pub use duration::{
     clear_variant_duration_override, clear_variant_scale_override, set_section_duration_bars,
     set_section_scale_override,
 };
+#[allow(unused_imports)]
 pub use variants::{
     add_section_variant, remove_section_variant, set_default_variant, RemoveVariantError,
     VariantConflict,

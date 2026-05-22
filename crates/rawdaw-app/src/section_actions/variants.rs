@@ -1,5 +1,12 @@
 //! Variant CRUD on a section.
 //!
+//! **Phase state.** Add / remove / rename / set-default all ship in
+//! S1 but have no UI consumer until S3's variant tab strip work.
+//! The `#![allow(dead_code)]` comes off when S3 wires the tab
+//! affordances.
+#![allow(dead_code)]
+
+//!
 //! Variants are sparse overrides on top of the base body (see
 //! `rawdaw_model::section::SectionVariantOverride`). Each section has
 //! a `BTreeMap<VariantId, SectionVariantOverride>` and a

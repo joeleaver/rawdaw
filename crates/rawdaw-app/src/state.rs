@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use rinch::prelude::*;
 
-use rawdaw_model::id::{ChordLoopId, NoteId, PatternId, VariantId};
+use rawdaw_model::id::{ChordLoopId, NoteId, PatternId, SectionId, VariantId};
 use rawdaw_model::pitch::PitchClass;
 use rawdaw_model::project::Project;
 use rawdaw_model::scale::Scale;
@@ -65,14 +65,26 @@ pub enum EditorMode {
 /// ## Selection axes
 ///
 /// `selected_idx` (arrangement-block), `selected_track` (project-
-/// track), `selected_chord_loop` (library chord-loop), and
-/// `selected_pattern` (library pattern) are four distinct selection
-/// axes that the inspector / editor surfaces branch on. They're
-/// mutually exclusive at the UI level — choosing one clears the
-/// others — so the inspector always has a single thing to render.
-/// `set_selected_idx`, `select_track`, `select_chord_loop`, and
-/// `select_pattern` enforce this so callers don't have to
-/// coordinate clears at each click-handler site.
+/// track), `selected_chord_loop` (library chord-loop),
+/// `selected_pattern` (library pattern), and `selected_section`
+/// (library section template) are five distinct selection axes that
+/// the inspector / editor surfaces branch on. They're mutually
+/// exclusive at the UI level — choosing one clears the others — so
+/// the inspector always has a single thing to render.
+/// `set_selected_idx`, `select_track`, `select_chord_loop`,
+/// `select_pattern`, and `select_section` enforce this so callers
+/// don't have to coordinate clears at each click-handler site.
+///
+/// `selected_section` is the S2 addition (one deviation from the
+/// section-arrangement-editing plan's S0 decision 10, which said
+/// "no new top-level axis"). Library section-row clicks need
+/// somewhere to write — the existing `selected_idx` axis is an
+/// arrangement-step index, not a section id, and the section editor
+/// today is opened via an `EditorMode::SectionEditor { section_key,
+/// ... }` *name string* set by `open_section_editor`. Adding the axis
+/// at S2 keeps the four-other-axis precedent intact; S3's meta-bar
+/// work will re-wire the section editor to be section-id-aware off
+/// this signal.
 #[derive(Clone, Copy)]
 pub struct AppState {
     pub editor_mode: Signal<EditorMode>,
@@ -100,6 +112,13 @@ pub struct AppState {
     /// `docs/pattern-editor-plan.md`. P1 only uses this for the
     /// library row's visual selection highlight.
     pub selected_pattern: Signal<Option<PatternId>>,
+    /// Currently selected section template in the library, by id.
+    /// `None` by default; clicking a section row in the Library panel
+    /// sets it (and clears the four other selection axes per the
+    /// mutex). S2 only uses this for the library row's visual
+    /// selection highlight; S3 reads it to open the section editor
+    /// for a section that isn't yet placed in the arrangement.
+    pub selected_section: Signal<Option<SectionId>>,
     /// Index into the focused chord loop's event vec of the
     /// currently-focused chord event. Drives the chord-loop editor's
     /// inspector pane (CL2). Lives on AppState rather than as a
@@ -191,6 +210,7 @@ impl AppState {
             selected_track: Signal::new(None),
             selected_chord_loop: Signal::new(None),
             selected_pattern: Signal::new(None),
+            selected_section: Signal::new(None),
             focused_chord_event_idx: Signal::new(None),
             focused_pattern_note: Signal::new(None),
             focused_variant: Signal::new(None),
@@ -249,6 +269,7 @@ impl AppState {
             self.selected_track.set(None);
             self.selected_chord_loop.set(None);
             self.selected_pattern.set(None);
+            self.selected_section.set(None);
         }
         self.selected_idx.set(idx);
     }
@@ -270,6 +291,7 @@ impl AppState {
             self.selected_idx.set(None);
             self.selected_chord_loop.set(None);
             self.selected_pattern.set(None);
+            self.selected_section.set(None);
         }
         self.selected_track.set(idx);
         if let Some(track_idx) = idx {
@@ -295,6 +317,7 @@ impl AppState {
             self.selected_idx.set(None);
             self.selected_track.set(None);
             self.selected_pattern.set(None);
+            self.selected_section.set(None);
             self.editor_mode.set(EditorMode::Arrangement);
         }
         // Switching which loop is open invalidates whatever event
@@ -322,6 +345,7 @@ impl AppState {
             self.selected_idx.set(None);
             self.selected_track.set(None);
             self.selected_chord_loop.set(None);
+            self.selected_section.set(None);
             self.editor_mode.set(EditorMode::Arrangement);
         }
         // P2: switching which pattern is open invalidates whatever
@@ -340,6 +364,29 @@ impl AppState {
             None => None,
         });
         self.selected_pattern.set(id);
+    }
+
+    /// Set the currently-selected library section template. `None`
+    /// clears the selection. Selecting a section clears the four
+    /// other selection axes (mirrors [`Self::select_chord_loop`] and
+    /// [`Self::select_pattern`]). MIDI routing
+    /// (`midi_target_track`) is untouched — section selection is
+    /// not a synth-target switch.
+    ///
+    /// Unlike [`Self::select_chord_loop`] / [`Self::select_pattern`]
+    /// this does NOT reset `editor_mode` — the section editor mounts
+    /// off `EditorMode::SectionEditor` independently. S3 will wire
+    /// `selected_section` into the section editor's open path so the
+    /// flow becomes "click Library row → editor opens for that
+    /// section template, no arrangement step required."
+    pub fn select_section(&self, id: Option<SectionId>) {
+        if id.is_some() {
+            self.selected_idx.set(None);
+            self.selected_track.set(None);
+            self.selected_chord_loop.set(None);
+            self.selected_pattern.set(None);
+        }
+        self.selected_section.set(id);
     }
 
     /// Apply a structural edit to the live project and mirror the
@@ -379,288 +426,10 @@ impl AppState {
     }
 }
 
+// State tests live in a sibling file so `state.rs` stays under the
+// 700-line cap once S2's five-way selection-mutex tests landed. The
+// `#[path]` attribute lets us keep a flat module layout (no
+// `state/mod.rs` rename); cargo test picks them up identically.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn select_track_clears_section_selection() {
-        let app = AppState::new();
-        app.selected_idx.set(Some(2));
-        assert_eq!(app.selected_idx.get(), Some(2));
-
-        app.select_track(Some(0));
-        assert_eq!(app.selected_track.get(), Some(0));
-        assert_eq!(app.selected_idx.get(), None);
-    }
-
-    #[test]
-    fn set_selected_idx_clears_track_selection() {
-        let app = AppState::new();
-        app.select_track(Some(1));
-        assert_eq!(app.selected_track.get(), Some(1));
-
-        app.set_selected_idx(Some(3));
-        assert_eq!(app.selected_idx.get(), Some(3));
-        assert_eq!(app.selected_track.get(), None);
-    }
-
-    #[test]
-    fn clearing_selection_does_not_touch_other_axis() {
-        // Setting either axis to `None` is a pure clear — it must
-        // never disturb the other axis. The mutex only fires on
-        // `Some(_)` selections.
-        let app = AppState::new();
-        app.select_track(Some(2));
-
-        app.set_selected_idx(None);
-        assert_eq!(app.selected_track.get(), Some(2));
-
-        app.select_track(None);
-        assert_eq!(app.selected_idx.get(), None);
-    }
-
-    #[test]
-    fn select_track_sets_midi_target_track() {
-        // K3: selecting a track also updates the MIDI routing
-        // target so live MIDI plays through that synth.
-        let app = AppState::new();
-        app.select_track(Some(2));
-        assert_eq!(app.midi_target_track.get(), Some(2));
-
-        app.select_track(Some(3));
-        assert_eq!(app.midi_target_track.get(), Some(3));
-    }
-
-    #[test]
-    fn midi_target_track_is_sticky_across_section_selection() {
-        // K3 sticky-routing contract: clicking a section block
-        // clears `selected_track` but PRESERVES `midi_target_track`.
-        // The user can audition a synth, click away to inspect a
-        // section, and still play the audited synth.
-        let app = AppState::new();
-        app.select_track(Some(2));
-        assert_eq!(app.midi_target_track.get(), Some(2));
-
-        app.set_selected_idx(Some(5));
-        assert_eq!(
-            app.midi_target_track.get(),
-            Some(2),
-            "midi target must survive section-block selection",
-        );
-        assert_eq!(app.selected_track.get(), None);
-    }
-
-    #[test]
-    fn midi_target_track_is_sticky_across_clear() {
-        // Calling select_track(None) explicitly also preserves
-        // midi_target_track — the K3 contract.
-        let app = AppState::new();
-        app.select_track(Some(1));
-        app.select_track(None);
-        assert_eq!(
-            app.midi_target_track.get(),
-            Some(1),
-            "midi target must survive an explicit track clear",
-        );
-        assert_eq!(app.selected_track.get(), None);
-    }
-
-    #[test]
-    fn select_chord_loop_clears_section_and_track_selection() {
-        // CL1 selection mutex: picking a chord loop clears both
-        // other axes so the inspector branches deterministically.
-        let app = AppState::new();
-        app.selected_idx.set(Some(2));
-        app.selected_track.set(Some(1));
-
-        let id = ChordLoopId::new(7);
-        app.select_chord_loop(Some(id));
-
-        assert_eq!(app.selected_chord_loop.get(), Some(id));
-        assert_eq!(app.selected_idx.get(), None);
-        assert_eq!(app.selected_track.get(), None);
-    }
-
-    #[test]
-    fn other_axes_clear_chord_loop_selection() {
-        // Symmetric: setting section or track to Some(_) clears the
-        // chord-loop selection, completing the three-way mutex.
-        let app = AppState::new();
-        app.select_chord_loop(Some(ChordLoopId::new(3)));
-
-        app.set_selected_idx(Some(0));
-        assert_eq!(app.selected_chord_loop.get(), None);
-
-        app.select_chord_loop(Some(ChordLoopId::new(3)));
-        app.select_track(Some(2));
-        assert_eq!(app.selected_chord_loop.get(), None);
-    }
-
-    #[test]
-    fn select_chord_loop_does_not_touch_midi_target() {
-        // Chord-loop selection isn't a synth-target switch, so the
-        // K3 sticky MIDI target is untouched.
-        let app = AppState::new();
-        app.select_track(Some(2));
-        assert_eq!(app.midi_target_track.get(), Some(2));
-
-        app.select_chord_loop(Some(ChordLoopId::new(1)));
-        assert_eq!(
-            app.midi_target_track.get(),
-            Some(2),
-            "chord-loop selection must not redirect MIDI input",
-        );
-    }
-
-    #[test]
-    fn select_chord_loop_none_does_not_touch_other_axes() {
-        // Clearing chord-loop selection is a pure clear; it must not
-        // disturb the section or track selection.
-        let app = AppState::new();
-        app.set_selected_idx(Some(4));
-
-        app.select_chord_loop(None);
-        assert_eq!(app.selected_idx.get(), Some(4));
-        assert_eq!(app.selected_chord_loop.get(), None);
-    }
-
-    #[test]
-    fn select_pattern_clears_other_three_axes() {
-        // P1 selection mutex: picking a pattern clears section,
-        // track, and chord-loop selection so the inspector branches
-        // deterministically on a single axis.
-        let app = AppState::new();
-        app.selected_idx.set(Some(2));
-        app.selected_track.set(Some(1));
-        app.selected_chord_loop.set(Some(ChordLoopId::new(5)));
-
-        let id = PatternId::new(11);
-        app.select_pattern(Some(id));
-
-        assert_eq!(app.selected_pattern.get(), Some(id));
-        assert_eq!(app.selected_idx.get(), None);
-        assert_eq!(app.selected_track.get(), None);
-        assert_eq!(app.selected_chord_loop.get(), None);
-    }
-
-    #[test]
-    fn other_axes_clear_pattern_selection() {
-        // Symmetric: setting any other axis to Some(_) clears the
-        // pattern selection, completing the four-way mutex.
-        let app = AppState::new();
-        let pid = PatternId::new(7);
-
-        app.select_pattern(Some(pid));
-        app.set_selected_idx(Some(0));
-        assert_eq!(app.selected_pattern.get(), None);
-
-        app.select_pattern(Some(pid));
-        app.select_track(Some(1));
-        assert_eq!(app.selected_pattern.get(), None);
-
-        app.select_pattern(Some(pid));
-        app.select_chord_loop(Some(ChordLoopId::new(3)));
-        assert_eq!(app.selected_pattern.get(), None);
-    }
-
-    #[test]
-    fn select_pattern_does_not_touch_midi_target() {
-        // Pattern selection isn't a synth-target switch, so the K3
-        // sticky MIDI target is untouched (mirrors chord-loop's
-        // behavior).
-        let app = AppState::new();
-        app.select_track(Some(2));
-        assert_eq!(app.midi_target_track.get(), Some(2));
-
-        app.select_pattern(Some(PatternId::new(4)));
-        assert_eq!(
-            app.midi_target_track.get(),
-            Some(2),
-            "pattern selection must not redirect MIDI input",
-        );
-    }
-
-    #[test]
-    fn select_pattern_none_does_not_touch_other_axes() {
-        // Clearing pattern selection is a pure clear.
-        let app = AppState::new();
-        app.set_selected_idx(Some(3));
-
-        app.select_pattern(None);
-        assert_eq!(app.selected_idx.get(), Some(3));
-        assert_eq!(app.selected_pattern.get(), None);
-    }
-
-    #[test]
-    fn select_pattern_resets_focused_note_and_variant() {
-        // P2 contract: switching to a fresh pattern clears the
-        // focused-note signal (idx into a different pattern's events
-        // would be stale anyway, but the symmetric clear keeps the
-        // inspector branching deterministically) and seeds
-        // `focused_variant` from the pattern's `default_variant`.
-        use rawdaw_model::pattern::{
-            Pattern, PatternBody, PitchedPatternBody, PitchedPatternMetadata,
-        };
-        use rawdaw_model::time::Duration;
-        use std::collections::BTreeMap;
-
-        let app = AppState::new();
-        // Manually inject a pattern so `select_pattern` can read its
-        // default_variant. The empty default project AppState seeds
-        // has no patterns, so the lookup would otherwise yield None.
-        let pid = PatternId::new(42);
-        let default_variant = VariantId::new("verse-line");
-        let pattern = Pattern {
-            id: pid,
-            name: "test".into(),
-            default_variant: default_variant.clone(),
-            body: PatternBody::Pitched(PitchedPatternBody {
-                metadata: PitchedPatternMetadata {
-                    length: Duration::beats(16),
-                },
-                variants: BTreeMap::new(),
-            }),
-        };
-        let mut project = Project::new(Scale::major(PitchClass::C));
-        project.patterns.insert(pid, pattern);
-        app.project.set(Rc::new(project));
-
-        // Pre-seed a stale focused-note + a different focused-variant
-        // to prove `select_pattern` clears / replaces them.
-        app.focused_pattern_note.set(Some(NoteId::new(7)));
-        app.focused_variant.set(Some(VariantId::new("other")));
-
-        app.select_pattern(Some(pid));
-        assert_eq!(app.selected_pattern.get(), Some(pid));
-        assert_eq!(app.focused_pattern_note.get(), None);
-        assert_eq!(app.focused_variant.get(), Some(default_variant));
-    }
-
-    #[test]
-    fn select_pattern_none_clears_focused_note_and_variant() {
-        let app = AppState::new();
-        app.focused_pattern_note.set(Some(NoteId::new(3)));
-        app.focused_variant.set(Some(VariantId::new("main")));
-
-        app.select_pattern(None);
-        assert_eq!(app.focused_pattern_note.get(), None);
-        assert_eq!(app.focused_variant.get(), None);
-    }
-
-    #[test]
-    fn select_pattern_resets_editor_mode_to_arrangement() {
-        // Mirrors select_chord_loop: opening a pattern editor mounts
-        // the new region inside the arrangement surface even if the
-        // user was in section-editor mode.
-        let app = AppState::new();
-        app.open_section_editor("verse", "base");
-        assert!(matches!(
-            app.editor_mode.get(),
-            EditorMode::SectionEditor { .. },
-        ));
-
-        app.select_pattern(Some(PatternId::new(9)));
-        assert_eq!(app.editor_mode.get(), EditorMode::Arrangement);
-    }
-}
+#[path = "state_tests.rs"]
+mod tests;

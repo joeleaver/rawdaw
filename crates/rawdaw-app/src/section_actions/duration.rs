@@ -1,5 +1,12 @@
 //! Duration + scale-override mutations for a section.
 //!
+//! **Phase state.** All four public helpers ship in S1 but have no
+//! UI consumer until S3's section-editor meta-bar work. The
+//! `#![allow(dead_code)]` comes off when S3 wires the duration
+//! nudger / scale picker.
+#![allow(dead_code)]
+
+//!
 //! The base body owns the canonical values; each variant override
 //! either inherits (field is `None`) or replaces (`Some(_)`). The
 //! mutators in this module dispatch on `variant == default_variant`:
