@@ -41,6 +41,7 @@ mod presets;
 mod project_display;
 mod project_io;
 mod regions;
+mod section_actions;
 mod section_editor;
 mod state;
 mod theme;
