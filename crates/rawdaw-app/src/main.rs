@@ -46,6 +46,7 @@ mod section_actions;
 mod section_editor;
 mod state;
 mod theme;
+mod timeline;
 
 fn main() {
     rinch::run("rawdaw", 1600, 900, app::main_window);

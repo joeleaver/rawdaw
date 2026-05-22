@@ -216,7 +216,46 @@ pub struct AppState {
     ///
     /// S5 of `docs/section-arrangement-editing-plan.md`.
     pub arrangement_drag_preview: Signal<Option<ArrangementDragPreview>>,
+
+    /// Arrangement view zoom level: pixels per bar.
+    ///
+    /// Drives the bar→pixel projection in the timeline primitive
+    /// (see [`crate::timeline::projection`]). Bounded by `MIN_PX_PER_BAR`
+    /// / `MAX_PX_PER_BAR`. Default `DEFAULT_PX_PER_BAR` matches the
+    /// pre-zoom percent-based scale that fits ~24 bars in an
+    /// 820px-wide lane at boot.
+    ///
+    /// Rinch #30 step-1 follow-on — the arrangement view used to
+    /// be percent-based (one fixed scale, no zoom). Pixel-based
+    /// positioning lets the user zoom into a tight section or
+    /// zoom out to see the whole song.
+    pub pixels_per_bar: Signal<f32>,
+
+    /// Arrangement view horizontal scroll position, measured in
+    /// bars (fractional allowed for smooth scroll). The leftmost
+    /// visible bar in the lane viewport.
+    ///
+    /// Mutated by the wheel-scroll handler on the section lane and
+    /// by the zoom controls (zooming around a cursor position
+    /// adjusts scroll so the bar under the cursor stays put).
+    pub scroll_bars: Signal<f32>,
 }
+
+/// Default zoom level: ~34 pixels per bar. Matches the implicit
+/// scale the percent-based v1 arrangement view used (820px / 24
+/// bars = 34.17 px/bar at 1600×900 with the standard left+right
+/// pane widths).
+pub const DEFAULT_PX_PER_BAR: f32 = 34.0;
+
+/// Minimum zoom — 8 px/bar lets a ~200-bar arrangement fit in a
+/// 1600px window. Smaller than this collapses bar labels into
+/// each other and is hard to use.
+pub const MIN_PX_PER_BAR: f32 = 8.0;
+
+/// Maximum zoom — 200 px/bar shows ~4 bars per 800px viewport,
+/// enough resolution to drop section blocks precisely without
+/// turning the lane into a single block.
+pub const MAX_PX_PER_BAR: f32 = 200.0;
 
 impl AppState {
     pub fn new() -> Self {
@@ -248,6 +287,8 @@ impl AppState {
             current_path: Signal::new(None),
             drag_preview: Signal::new(None),
             arrangement_drag_preview: Signal::new(None),
+            pixels_per_bar: Signal::new(DEFAULT_PX_PER_BAR),
+            scroll_bars: Signal::new(0.0),
         }
     }
 

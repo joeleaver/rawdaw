@@ -48,10 +48,9 @@ use crate::state::AppState;
 use crate::theme;
 
 use super::{
-    arrangement_total_bars, build_arrangement_blocks, current_selected_section_id,
-    ArrangementBlockData,
+    arrangement_total_bars, build_arrangement_blocks, current_selected_section_id, playhead_bars,
+    row_style, ArrangementBlockData,
 };
-use super::append_action::AppendButton;
 
 /// Live preview of an in-flight arrangement drag.
 ///
@@ -72,11 +71,7 @@ pub struct ArrangementDragPreview {
 
 #[component]
 pub(super) fn SectionLane(total_bars: u32) -> NodeHandle {
-    let style = format!(
-        "height: {h}px; flex: 0 0 {h}px; position: relative; \
-         background: {bg}; border-bottom: 1px solid {line};",
-        h = theme::H_LANE, bg = theme::BG0, line = theme::LINE,
-    );
+    let row = row_style(Some(theme::H_LANE), theme::BG0, true);
 
     // Per-bar guide path (single SVG path, like the ruler).
     let mut guide_d = String::new();
@@ -87,11 +82,10 @@ pub(super) fn SectionLane(total_bars: u32) -> NodeHandle {
 
     rsx! {
         div {
-            style: {style.clone()},
+            style: {row.clone()},
             // Class for `find_click_ancestor` lookups from SectionBlock's
-            // drag handler so we can convert pointer-x to bars via the
-            // lane's pixel width directly, rather than back-deriving
-            // from the clicked block's own dimensions.
+            // drag handler. The handler reads the lane row's pixel
+            // width to convert pointer-x → bars.
             class: ARRANGEMENT_SECTION_LANE_CLASS,
             svg {
                 viewBox: format!("0 0 {total_bars_str} 100"),
@@ -110,27 +104,28 @@ pub(super) fn SectionLane(total_bars: u32) -> NodeHandle {
                 SectionBlock {
                     key: block.idx,
                     block: block,
-                    total_bars: total_bars,
                 }
             }
-            // Playhead vertical line. Reactive via `playhead_percent()`
-            // — see Ruler's playhead for the closure-tracking rationale.
+            // Playhead vertical line. Reactive on transport tick +
+            // zoom change.
             div {
-                style: format!(
-                    "position: absolute; left: {p}%; top: 0; bottom: 0; \
-                     width: 1px; background: {acc}; opacity: 0.85; \
-                     transform: translateX(-0.5px); pointer-events: none;",
-                    p = super::playhead_percent(total_bars), acc = theme::ACCENT,
-                ),
+                style: {|| {
+                    let app = use_store::<AppState>();
+                    let left_px = playhead_bars() * app.pixels_per_bar.get();
+                    format!(
+                        "position: absolute; left: {left_px}px; top: 0; bottom: 0; \
+                         width: 1px; background: {acc}; opacity: 0.85; \
+                         transform: translateX(-0.5px); pointer-events: none;",
+                        acc = theme::ACCENT,
+                    )
+                }},
             }
-            // `+ append` at the right edge, layered above the lane chrome.
-            AppendButton {}
         }
     }
 }
 
 #[component]
-fn SectionBlock(block: ArrangementBlockData, total_bars: u32) -> NodeHandle {
+fn SectionBlock(block: ArrangementBlockData) -> NodeHandle {
     let app = use_store::<AppState>();
     let ArrangementBlockData {
         idx,
@@ -142,9 +137,6 @@ fn SectionBlock(block: ArrangementBlockData, total_bars: u32) -> NodeHandle {
         start_bar,
         bars,
     } = block;
-
-    let left_pct = start_bar as f32 / total_bars as f32 * 100.0;
-    let width_pct = bars as f32 / total_bars as f32 * 100.0;
 
     let internal_bars = bars.saturating_sub(1);
     let mut inner_d = String::new();
@@ -181,10 +173,15 @@ fn SectionBlock(block: ArrangementBlockData, total_bars: u32) -> NodeHandle {
                             .as_ref()
                             .map(|p| p.from_idx == idx)
                             .unwrap_or(false);
-                        let translate_pct = preview
+                        let px_per_bar = app.pixels_per_bar.get();
+                        let left_px = start_bar as f32 * px_per_bar;
+                        let width_px = bars as f32 * px_per_bar;
+                        // Drag preview offset is in bars too — multiply by
+                        // px_per_bar to get the live transform offset.
+                        let translate_px = preview
                             .as_ref()
                             .filter(|p| p.from_idx == idx)
-                            .map(|p| p.delta_bars as f32 / bars.max(1) as f32 * 100.0)
+                            .map(|p| p.delta_bars as f32 * px_per_bar)
                             .unwrap_or(0.0);
 
                         let bg = with_alpha(
@@ -217,22 +214,24 @@ fn SectionBlock(block: ArrangementBlockData, total_bars: u32) -> NodeHandle {
                         };
                         let opacity = if is_dragging { "0.92" } else { "1" };
                         let z_index = if is_dragging { "3" } else { "1" };
-                        // ContextMenu's `display: contents` wrapper now
-                        // honors per-spec layout transparency (rinch
-                        // #25 fix 817aa1c), so the block's percent-
-                        // anchored absolute positioning resolves
-                        // against the lane like a non-wrapped block.
+                        // Pixel-based positioning — `left` and `width`
+                        // are derived from start_bar / bars times the
+                        // current `pixels_per_bar`. The lane's
+                        // scrolled-content wrapper applies the
+                        // horizontal scroll translate to the entire
+                        // group, so blocks don't need to know about
+                        // scroll themselves.
                         format!(
-                            "position: absolute; left: {l}%; top: 6px; \
-                             width: {w}%; bottom: 6px; \
+                            "position: absolute; left: {left_px}px; top: 6px; \
+                             width: {width_px}px; bottom: 6px; \
                              box-sizing: border-box; \
                              border-left: 3px solid {col}; border-radius: 3px; \
                              background: {bg}; border: {border}; \
                              box-shadow: {box_shadow}; \
-                             transform: translateX({translate_pct:.2}%); \
+                             transform: translateX({translate_px:.2}px); \
                              opacity: {opacity}; z-index: {z_index}; \
                              cursor: pointer; overflow: visible;",
-                            l = left_pct, w = width_pct, col = color_for_style,
+                            col = color_for_style,
                         )
                     },
                     onclick: move || on_block_click(idx, bars),

@@ -44,9 +44,11 @@ use crate::theme;
 
 mod append_action;
 mod section_lane;
+mod toolbar;
 
 pub use section_lane::ArrangementDragPreview;
 use section_lane::SectionLane;
+use toolbar::ArrangementToolbar;
 
 /// Beats per bar baked into the round-1 fixture. Switches to the model
 /// `tempo_map.beats_per_bar_at(...)` lookup when the arrangement starts
@@ -149,31 +151,95 @@ pub fn Arrangement() -> NodeHandle {
     let total_bars = arrangement_total_bars();
     let section_style = format!(
         "flex: 1; min-width: 0; display: flex; flex-direction: column; \
-         background: {bg};",
+         background: {bg}; overflow: hidden;",
         bg = theme::BG0,
     );
 
     rsx! {
         section { style: {section_style.clone()},
-            Ruler { total_bars: total_bars }
-            ChordRibbon { total_bars: total_bars }
-            SectionLane { total_bars: total_bars }
-            LaneFiller { total_bars: total_bars }
+            // Toolbar sits OUTSIDE the scrolling area so its
+            // affordances (zoom, + append) stay anchored as the
+            // user scrolls horizontally through the arrangement.
+            ArrangementToolbar { total_bars: total_bars }
+            // The scrolling area: a single horizontal-scroll
+            // container that holds all the timeline rows
+            // (Ruler, ChordRibbon, SectionLane, LaneFiller). All
+            // rows share one scroll so they move in lockstep —
+            // rinch's wheel dispatch handles native scrolling on
+            // any overflow container.
+            div { style: {scrolling_area_style()},
+                // Content wrapper: fixed pixel width equal to
+                // total_bars * pixels_per_bar. Rows inside use
+                // `width: 100%` to inherit it, then place children
+                // at `left: bar * pixels_per_bar px`.
+                div { style: {|| content_wrapper_style(total_bars)},
+                    Ruler { total_bars: total_bars }
+                    ChordRibbon { total_bars: total_bars }
+                    SectionLane { total_bars: total_bars }
+                    LaneFiller { total_bars: total_bars }
+                }
+            }
         }
     }
 }
 
-/// Engine-driven playhead position as a percent of `total_bars`.
+/// Inline style for the scrolling area — the container that owns
+/// horizontal scroll for the whole arrangement. `overflow-x: auto`
+/// triggers rinch's native wheel-to-scroll path; `overflow-y:
+/// hidden` keeps vertical pinned (LaneFiller flexes to fill).
+fn scrolling_area_style() -> String {
+    "flex: 1; min-height: 0; \
+     overflow-x: auto; overflow-y: hidden; \
+     position: relative;".to_string()
+}
+
+/// Inline style for the content wrapper: fixed pixel width set by
+/// the current zoom level + arrangement length. Children stack
+/// vertically (flex column) and inherit this wrapper's width.
+fn content_wrapper_style(total_bars: u32) -> String {
+    let app = use_store::<AppState>();
+    let width_px = total_bars as f32 * app.pixels_per_bar.get();
+    format!(
+        "width: {width_px}px; height: 100%; \
+         display: flex; flex-direction: column; \
+         position: relative;",
+    )
+}
+
+/// Engine-driven playhead position in bars (fractional).
 ///
 /// Reads `AudioResources::playhead_samples` (a `Signal<u64>`) via the
 /// shared `AudioResources::playhead_position` helper; the `.get()`
 /// inside subscribes any rsx attribute closure that calls this
-/// function. With the cpal stream paused (default until phase E6) the
-/// signal stays at 0 and the playhead sits at bar 1.
-pub(super) fn playhead_percent(total_bars: u32) -> f32 {
+/// function. With the cpal stream paused the signal stays at 0 and
+/// the playhead sits at bar 1.
+pub(super) fn playhead_bars() -> f32 {
     let audio = use_store::<AudioResources>();
-    let total = total_bars.max(1) as f64;
-    (audio.playhead_position().bars_f64 / total * 100.0) as f32
+    audio.playhead_position().bars_f64 as f32
+}
+
+/// Inline style for one timeline row. Each row stretches to the
+/// content wrapper's pixel width (`width: 100%` of wrapper =
+/// `total_bars * pixels_per_bar`); children inside use absolute
+/// positioning with `left: {bar * pixels_per_bar}px` to place
+/// themselves at bar coordinates.
+///
+/// Fixed-height rows pass a height; the LaneFiller passes `None`
+/// and gets `flex: 1` to fill remaining vertical space.
+pub(super) fn row_style(height_px: Option<u32>, bg: &str, border: bool) -> String {
+    let border_line = if border {
+        format!(" border-bottom: 1px solid {};", theme::LINE)
+    } else {
+        String::new()
+    };
+    let sizing = match height_px {
+        Some(h) => format!("height: {h}px; flex: 0 0 {h}px;"),
+        None => "flex: 1; min-height: 0;".to_string(),
+    };
+    format!(
+        "{sizing} position: relative; width: 100%; \
+         background: {bg};{border_line}",
+    )
 }
 
 // ─── Timeline ruler ───────────────────────────────────────────────────────
@@ -181,15 +247,12 @@ pub(super) fn playhead_percent(total_bars: u32) -> f32 {
 #[component]
 fn Ruler(total_bars: u32) -> NodeHandle {
     let height = theme::H_RULER;
-    let style = format!(
-        "height: {h}px; flex: 0 0 {h}px; position: relative; \
-         background: {bg}; border-bottom: 1px solid {line};",
-        h = height, bg = theme::BG1, line = theme::LINE,
-    );
+    let row = row_style(Some(height), theme::BG1, true);
 
-    // Single SVG path with all major + minor tick lines (port-time note).
-    // Coordinate system: x in [0, total_bars*4] (so 4 minor ticks per bar);
-    // y in [0, height]. The SVG itself spans 100% width via preserveAspectRatio.
+    // Single SVG path with all major + minor tick lines. SVG width
+    // is 100% of the row (which equals total_bars * pixels_per_bar
+    // — the content wrapper's pixel width), so ticks land at the
+    // right place at any zoom.
     let mut tick_d = String::new();
     let minor_y = (height as f32 - 2.0).to_string();
     let major_y = (height as f32 - 8.0).to_string();
@@ -199,16 +262,11 @@ fn Ruler(total_bars: u32) -> NodeHandle {
         let x = i;
         let is_bar_boundary = i % 4 == 0;
         let y_top = if is_bar_boundary { major_y.as_str() } else { minor_y.as_str() };
-        // For minor ticks at non-bar-boundaries draw a shorter line; here we
-        // simplify by drawing every tick to the same major depth visually,
-        // which the screenshot test will validate. (Minor ticks at the
-        // mockup's 0.5 alpha + shorter length is round-2 polish.)
         tick_d.push_str(&format!("M {x} {y_top} L {x} {bottom_y} "));
     }
 
-    // Bar number labels every 4 bars.
     rsx! {
-        div { style: {style.clone()},
+        div { style: {row.clone()},
             svg {
                 viewBox: format!("0 0 {beats} {height}"),
                 preserveAspectRatio: "none",
@@ -220,35 +278,43 @@ fn Ruler(total_bars: u32) -> NodeHandle {
             }
             // Bar number labels rendered as positioned spans (one per 4 bars).
             for bar in major_bar_indices(total_bars) {
-                BarLabel { bar: bar, total_bars: total_bars }
+                BarLabel { bar: bar }
             }
-            // Playhead head — 1px vertical line. The style closure reads
-            // `playhead_percent()`, which calls `Signal::get` on the
-            // engine-driven playhead; the rsx attribute is a Fn effect
-            // closure, so it re-evaluates whenever the signal updates.
+            // Playhead head — 1px vertical line. The style closure
+            // reads `playhead_bars()` + `pixels_per_bar` so it
+            // re-evaluates on transport tick OR zoom change.
             div {
-                style: format!(
-                    "position: absolute; left: {p}%; top: 0; bottom: 0; \
-                     width: 1px; background: {acc}; transform: translateX(-0.5px);",
-                    p = playhead_percent(total_bars), acc = theme::ACCENT,
-                ),
+                style: {|| {
+                    let app = use_store::<AppState>();
+                    let left_px = playhead_bars() * app.pixels_per_bar.get();
+                    format!(
+                        "position: absolute; left: {left_px}px; top: 0; bottom: 0; \
+                         width: 1px; background: {acc}; transform: translateX(-0.5px);",
+                        acc = theme::ACCENT,
+                    )
+                }},
             }
         }
     }
 }
 
 #[component]
-fn BarLabel(bar: u32, total_bars: u32) -> NodeHandle {
-    let left_pct = bar as f32 / total_bars as f32 * 100.0;
+fn BarLabel(bar: u32) -> NodeHandle {
     let label = (bar + 1).to_string();
-    let style = format!(
-        "position: absolute; left: calc({left_pct}% + 4px); top: 2px; \
-         font-size: 10px; color: {fg}; \
-         font-feature-settings: \"tnum\" 1; pointer-events: none;",
-        fg = theme::TEXT2,
-    );
     rsx! {
-        span { style: {style.clone()}, {label.clone()} }
+        span {
+            style: {|| {
+                let app = use_store::<AppState>();
+                let left_px = bar as f32 * app.pixels_per_bar.get() + 4.0;
+                format!(
+                    "position: absolute; left: {left_px}px; top: 2px; \
+                     font-size: 10px; color: {fg}; \
+                     font-feature-settings: \"tnum\" 1; pointer-events: none;",
+                    fg = theme::TEXT2,
+                )
+            }},
+            {label.clone()}
+        }
     }
 }
 
@@ -256,18 +322,14 @@ fn BarLabel(bar: u32, total_bars: u32) -> NodeHandle {
 
 #[component]
 fn ChordRibbon(total_bars: u32) -> NodeHandle {
-    let style = format!(
-        "height: {h}px; flex: 0 0 {h}px; position: relative; \
-         background: {bg}; border-bottom: 1px solid {line};",
-        h = theme::H_RIBBON, bg = theme::BG1, line = theme::LINE,
-    );
+    let _ = total_bars; // kept on signature for symmetry; cells carry bar coords
+    let row = row_style(Some(theme::H_RIBBON), theme::BG1, true);
     rsx! {
-        div { style: {style.clone()},
+        div { style: {row.clone()},
             for cell in build_ribbon_cells() {
                 RibbonCell {
                     key: format!("{}-{}", cell.section_id.get(), cell.bar),
                     bar: cell.bar,
-                    total_bars: total_bars,
                     roman: cell.roman.to_string(),
                     absolute: cell.absolute.to_string(),
                     color: cell.color.to_string(),
@@ -371,24 +433,12 @@ fn build_ribbon_cells() -> Vec<RibbonCellData> {
 #[component]
 fn RibbonCell(
     bar: u32,
-    total_bars: u32,
     roman: String,
     absolute: String,
     color: String,
     is_first_of_loop: bool,
     section_id: SectionId,
 ) -> NodeHandle {
-    let left_pct = bar as f32 / total_bars as f32 * 100.0;
-    let width_pct = 1.0 / total_bars as f32 * 100.0;
-    let bar_style_base = format!(
-        "position: absolute; left: {l}%; top: 0; width: {w}%; height: 100%; \
-         border-right: 1px solid {line_soft}; \
-         display: flex; flex-direction: column; \
-         justify-content: center; align-items: center; \
-         padding-top: 3px; gap: 1px;",
-        l = left_pct, w = width_pct, line_soft = theme::LINE_SOFT,
-    );
-
     // Each style: expression below becomes a separate `Fn` effect
     // closure that captures the same `section_id` `Copy`. Selection
     // highlight: emphasize when the currently-selected arrangement
@@ -398,15 +448,27 @@ fn RibbonCell(
 
     rsx! {
         div {
-            style: {
+            style: {|| {
+                let app = use_store::<AppState>();
+                let px_per_bar = app.pixels_per_bar.get();
+                let left_px = bar as f32 * px_per_bar;
+                let width_px = px_per_bar;
                 let emphasized = current_selected_section_id() == Some(section_id);
                 let bg = if emphasized {
                     with_alpha(color_for_bg.as_str(), 0.10)
                 } else {
                     "transparent".to_string()
                 };
-                format!("{} background: {};", bar_style_base, bg)
-            },
+                format!(
+                    "position: absolute; left: {left_px}px; top: 0; \
+                     width: {width_px}px; height: 100%; \
+                     border-right: 1px solid {line_soft}; \
+                     display: flex; flex-direction: column; \
+                     justify-content: center; align-items: center; \
+                     padding-top: 3px; gap: 1px; background: {bg};",
+                    line_soft = theme::LINE_SOFT,
+                )
+            }},
             span {
                 style: {
                     if !is_first_of_loop {
@@ -459,10 +521,10 @@ fn RibbonCell(
 
 #[component]
 fn LaneFiller(total_bars: u32) -> NodeHandle {
-    let style = format!(
-        "flex: 1; min-height: 0; position: relative; \
-         background: {bg}; border-top: 1px solid {line};",
-        bg = theme::BG0, line = theme::LINE,
+    let row = format!(
+        "{base} border-top: 1px solid {line};",
+        base = row_style(None, theme::BG0, false),
+        line = theme::LINE,
     );
 
     let mut guide_d = String::new();
@@ -471,7 +533,7 @@ fn LaneFiller(total_bars: u32) -> NodeHandle {
     }
 
     rsx! {
-        div { style: {style.clone()},
+        div { style: {row.clone()},
             svg {
                 viewBox: format!("0 0 {total_bars} 100"),
                 preserveAspectRatio: "none",
@@ -482,20 +544,24 @@ fn LaneFiller(total_bars: u32) -> NodeHandle {
                         position: absolute; inset: 0; pointer-events: none;",
                 path { d: {guide_d.clone()} }
             }
-            // Playhead vertical line. Reactive via `playhead_percent()`
-            // — see Ruler's playhead for the closure-tracking rationale.
+            // Playhead vertical line. Reactive on transport + zoom.
             div {
-                style: format!(
-                    "position: absolute; left: {p}%; top: 0; bottom: 0; \
-                     width: 1px; background: {acc}; opacity: 0.7; \
-                     transform: translateX(-0.5px); pointer-events: none;",
-                    p = playhead_percent(total_bars), acc = theme::ACCENT,
-                ),
+                style: {|| {
+                    let app = use_store::<AppState>();
+                    let left_px = playhead_bars() * app.pixels_per_bar.get();
+                    format!(
+                        "position: absolute; left: {left_px}px; top: 0; bottom: 0; \
+                         width: 1px; background: {acc}; opacity: 0.7; \
+                         transform: translateX(-0.5px); pointer-events: none;",
+                        acc = theme::ACCENT,
+                    )
+                }},
             }
             div {
                 style: "position: absolute; left: 14px; bottom: 10px; \
                         font-size: 10.5px; color: rgba(232,234,238,0.28); \
-                        letter-spacing: 0.4px; font-style: italic;",
+                        letter-spacing: 0.4px; font-style: italic; \
+                        pointer-events: none;",
                 "additional lanes (sub-tracks) — round 2"
             }
         }
