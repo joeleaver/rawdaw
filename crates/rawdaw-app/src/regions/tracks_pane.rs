@@ -52,6 +52,7 @@ pub fn TracksPane() -> NodeHandle {
                     }
                 }
                 NewTrackBtn { }
+                MasterRow { }
             }
         }
     }
@@ -219,6 +220,63 @@ fn TrackRow(
                     if use_store::<AppState>().midi_target_track.get() == Some(idx) { "inline" } else { "none" },
                 )},
                 "\u{266A}"
+            }
+        }
+    }
+}
+
+/// "Master" row fixed at the bottom of the tracks pane. Click
+/// selects master-chain slot 0 (round-1 + most projects use the
+/// single safety-net soft-clipper slot). X5 of
+/// `docs/master-fx-chain-plan.md`. The row sits below the
+/// `NewTrackBtn` with a horizontal separator above it so the
+/// "Master" identity reads visually distinct from project tracks
+/// — it isn't a project track, it's the master strip.
+#[component]
+fn MasterRow() -> NodeHandle {
+    let app = use_store::<AppState>();
+    let separator_style = format!(
+        "height: 1px; background: {line}; margin: 4px 10px 4px;",
+        line = theme::LINE,
+    );
+    let row_static = "display: flex; align-items: center; gap: 8px; \
+         padding: 6px 10px; cursor: pointer; min-height: 30px; \
+         border-left: 2px solid transparent;";
+    // Use the same accent palette as a Pitched track but slightly
+    // dimmer so the row reads as chrome, not content. The redesign
+    // pass can revisit — for now the goal is legibility, not
+    // distinctive styling.
+    let accent = "rgba(232,234,238,0.62)".to_string();
+    let name_style = "font-size: 12.5px; color: rgba(232,234,238,0.96); \
+         font-weight: 500; flex: 1;";
+    let caption_style = "font-size: 10px; color: rgba(232,234,238,0.42); \
+         letter-spacing: 0.4px;";
+    let accent_for_closure = accent.clone();
+    rsx! {
+        div {
+            div { style: {separator_style.clone()} }
+            div {
+                style: {
+                    let selected = app.selected_master_fx.get().is_some();
+                    let bg = if selected {
+                        with_alpha(accent_for_closure.as_str(), 0.16)
+                    } else {
+                        "transparent".to_string()
+                    };
+                    let border_left = if selected {
+                        format!("2px solid {}", accent_for_closure)
+                    } else {
+                        "2px solid transparent".to_string()
+                    };
+                    format!(
+                        "{row_static} background: {bg}; border-left: {border_left};",
+                    )
+                },
+                onclick: move || app.select_master_fx(Some(0)),
+                div { style: "display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px;",
+                    span { style: {name_style.to_string()}, "Master" }
+                    span { style: {caption_style.to_string()}, "FX CHAIN" }
+                }
             }
         }
     }

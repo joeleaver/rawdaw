@@ -210,10 +210,15 @@ fn pattern_editor_mount_keys() -> Vec<u64> {
 
 fn inspector_selection_keys() -> Vec<String> {
     let app = use_store::<AppState>();
-    let key = match (app.selected_idx.get(), app.selected_track.get()) {
-        (Some(idx), _) => format!("s{idx}"),
-        (None, Some(t)) => format!("t{t}"),
-        (None, None) => "none".to_string(),
+    let key = match (
+        app.selected_idx.get(),
+        app.selected_track.get(),
+        app.selected_master_fx.get(),
+    ) {
+        (Some(idx), _, _) => format!("s{idx}"),
+        (None, Some(t), _) => format!("t{t}"),
+        (None, None, Some(slot)) => format!("m{slot}"),
+        (None, None, None) => "none".to_string(),
     };
     vec![key]
 }

@@ -393,3 +393,98 @@ fn select_section_none_does_not_close_editor() {
     assert_eq!(app.editor_mode.get(), mode_before);
     assert_eq!(app.selected_section.get(), None);
 }
+
+// ---------- selected_master_fx (X5 selection axis) ----------
+
+#[test]
+fn select_master_fx_clears_other_five_axes() {
+    // X5: selecting a master-chain slot clears every other axis,
+    // completing the six-way mutex. Symmetric counterpart to the
+    // S2 five-way mutex test above.
+    let app = AppState::new();
+    let slot = 0usize;
+
+    app.set_selected_idx(Some(0));
+    app.select_master_fx(Some(slot));
+    assert_eq!(app.selected_master_fx.get(), Some(slot));
+    assert_eq!(app.selected_idx.get(), None);
+
+    app.select_track(Some(2));
+    app.select_master_fx(Some(slot));
+    assert_eq!(app.selected_master_fx.get(), Some(slot));
+    assert_eq!(app.selected_track.get(), None);
+
+    app.select_chord_loop(Some(ChordLoopId::new(3)));
+    app.select_master_fx(Some(slot));
+    assert_eq!(app.selected_master_fx.get(), Some(slot));
+    assert_eq!(app.selected_chord_loop.get(), None);
+
+    app.select_pattern(Some(PatternId::new(4)));
+    app.select_master_fx(Some(slot));
+    assert_eq!(app.selected_master_fx.get(), Some(slot));
+    assert_eq!(app.selected_pattern.get(), None);
+
+    app.select_section(Some(SectionId::new(11)));
+    app.select_master_fx(Some(slot));
+    assert_eq!(app.selected_master_fx.get(), Some(slot));
+    assert_eq!(app.selected_section.get(), None);
+}
+
+#[test]
+fn other_five_axes_clear_selected_master_fx() {
+    // Symmetric inverse: setting any other axis to Some(_) clears
+    // selected_master_fx. Pins the contract that the mutex is
+    // bidirectional — the master-FX selection isn't sticky like
+    // midi_target_track is.
+    let app = AppState::new();
+
+    app.select_master_fx(Some(0));
+    app.set_selected_idx(Some(0));
+    assert_eq!(app.selected_master_fx.get(), None);
+
+    app.select_master_fx(Some(0));
+    app.select_track(Some(2));
+    assert_eq!(app.selected_master_fx.get(), None);
+
+    app.select_master_fx(Some(0));
+    app.select_chord_loop(Some(ChordLoopId::new(3)));
+    assert_eq!(app.selected_master_fx.get(), None);
+
+    app.select_master_fx(Some(0));
+    app.select_pattern(Some(PatternId::new(4)));
+    assert_eq!(app.selected_master_fx.get(), None);
+
+    app.select_master_fx(Some(0));
+    app.select_section(Some(SectionId::new(11)));
+    assert_eq!(app.selected_master_fx.get(), None);
+}
+
+#[test]
+fn select_master_fx_does_not_touch_midi_target() {
+    // X5 mirrors section / chord-loop / pattern in this respect —
+    // master-FX selection is not a synth-target switch, so live
+    // MIDI keeps playing through whatever the last-selected
+    // Pitched track was.
+    let app = AppState::new();
+    app.select_track(Some(2));
+    assert_eq!(app.midi_target_track.get(), Some(2));
+
+    app.select_master_fx(Some(0));
+    assert_eq!(
+        app.midi_target_track.get(),
+        Some(2),
+        "master-FX selection must not redirect MIDI input",
+    );
+}
+
+#[test]
+fn select_master_fx_none_does_not_touch_other_axes() {
+    // Clearing master-FX selection is a pure clear — doesn't
+    // disturb whatever other axis happens to be set.
+    let app = AppState::new();
+    app.set_selected_idx(Some(3));
+
+    app.select_master_fx(None);
+    assert_eq!(app.selected_idx.get(), Some(3));
+    assert_eq!(app.selected_master_fx.get(), None);
+}

@@ -90,8 +90,30 @@ itself starts shaping signal at X3+.
   Test count: 736 → 739 (+3 — push helper ok/err for in/out
   of range slot + publisher-contract observability through the
   cloned publishers).
-- X5 — not started.
-- X5 — not started.
+- X5 ✅ landed 2026-05-25. `AppState` gained
+  `selected_master_fx: Signal<Option<usize>>` field + `select_
+  master_fx(slot)` method (clears all 5 other axes when `Some`,
+  also resets `EditorMode` to `Arrangement` so the editor mounts
+  inside the standard arrangement row). All 5 existing
+  `select_*` methods extended to ALSO clear `selected_master_fx`
+  for symmetric six-way mutex. `inspector_selection_keys` in
+  `app.rs` includes the new axis with `"m{slot}"` so Inspector
+  remounts on master-FX selection. `regions/tracks_pane.rs`
+  gained a `MasterRow` component fixed at the bottom of the
+  pane (after `NewTrackBtn`) with separator above; click
+  routes to `select_master_fx(Some(0))`. `regions/inspector/
+  mod.rs` added a fourth dispatch branch routing to a new
+  `MasterFxEditor` placeholder (in `regions/inspector/
+  master_fx_editor.rs`) — X5 ships the chain breadcrumb
+  ("Master · slot N · {Kind}") + a "coming in X6" body; X6
+  replaces the body with the real per-kind editor. `synth_
+  mode_active()` extended to also widen the pane to 600px in
+  master-FX mode (more knobs incoming). Test count:
+  739 → 743 (+4 in `state_tests.rs` covering the six-way
+  mutex: select_master_fx clears the other 5; other 5 clear
+  selected_master_fx; midi_target untouched; clear-none is a
+  pure clear). MCP-verified: clicking "Master" highlights the
+  row, widens the inspector, and renders the placeholder body.
 - X6 — not started.
 - X7 — not started.
 - X8 — not started.

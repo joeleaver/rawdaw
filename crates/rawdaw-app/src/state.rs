@@ -71,14 +71,16 @@ pub enum EditorMode {
 ///
 /// `selected_idx` (arrangement-block), `selected_track` (project-
 /// track), `selected_chord_loop` (library chord-loop),
-/// `selected_pattern` (library pattern), and `selected_section`
-/// (library section template) are five distinct selection axes that
-/// the inspector / editor surfaces branch on. They're mutually
-/// exclusive at the UI level — choosing one clears the others — so
-/// the inspector always has a single thing to render.
+/// `selected_pattern` (library pattern), `selected_section`
+/// (library section template), and `selected_master_fx` (master
+/// chain slot) are six distinct selection axes that the inspector
+/// / editor surfaces branch on. They're mutually exclusive at the
+/// UI level — choosing one clears the others — so the inspector
+/// always has a single thing to render.
 /// `set_selected_idx`, `select_track`, `select_chord_loop`,
-/// `select_pattern`, and `select_section` enforce this so callers
-/// don't have to coordinate clears at each click-handler site.
+/// `select_pattern`, `select_section`, and `select_master_fx`
+/// enforce this so callers don't have to coordinate clears at
+/// each click-handler site.
 ///
 /// `selected_section` is the S2 addition (one deviation from the
 /// section-arrangement-editing plan's S0 decision 10, which said
@@ -124,6 +126,16 @@ pub struct AppState {
     /// selection highlight; S3 reads it to open the section editor
     /// for a section that isn't yet placed in the arrangement.
     pub selected_section: Signal<Option<SectionId>>,
+    /// Currently selected master-chain slot, by index into
+    /// `project.master_chain.fx`. `None` by default; clicking the
+    /// "Master" row in the TracksPane sets it to `Some(0)` (the
+    /// chain's first slot — round-1 + most projects use the
+    /// single safety-net soft-clipper slot). Drives the
+    /// `MasterFxEditor` branch of the Inspector (X6 of
+    /// `docs/master-fx-chain-plan.md`). X5 only wires the
+    /// selection axis + Inspector placeholder branch; X6 ships
+    /// the actual editor body.
+    pub selected_master_fx: Signal<Option<usize>>,
     /// Index into the focused chord loop's event vec of the
     /// currently-focused chord event. Drives the chord-loop editor's
     /// inspector pane (CL2). Lives on AppState rather than as a
@@ -266,6 +278,7 @@ impl AppState {
             selected_chord_loop: Signal::new(None),
             selected_pattern: Signal::new(None),
             selected_section: Signal::new(None),
+            selected_master_fx: Signal::new(None),
             focused_chord_event_idx: Signal::new(None),
             focused_pattern_note: Signal::new(None),
             focused_variant: Signal::new(None),
@@ -328,6 +341,7 @@ impl AppState {
             self.selected_chord_loop.set(None);
             self.selected_pattern.set(None);
             self.selected_section.set(None);
+            self.selected_master_fx.set(None);
         }
         self.selected_idx.set(idx);
     }
@@ -350,6 +364,7 @@ impl AppState {
             self.selected_chord_loop.set(None);
             self.selected_pattern.set(None);
             self.selected_section.set(None);
+            self.selected_master_fx.set(None);
         }
         self.selected_track.set(idx);
         if let Some(track_idx) = idx {
@@ -376,6 +391,7 @@ impl AppState {
             self.selected_track.set(None);
             self.selected_pattern.set(None);
             self.selected_section.set(None);
+            self.selected_master_fx.set(None);
             self.editor_mode.set(EditorMode::Arrangement);
         }
         // Switching which loop is open invalidates whatever event
@@ -404,6 +420,7 @@ impl AppState {
             self.selected_track.set(None);
             self.selected_chord_loop.set(None);
             self.selected_section.set(None);
+            self.selected_master_fx.set(None);
             self.editor_mode.set(EditorMode::Arrangement);
         }
         // P2: switching which pattern is open invalidates whatever
@@ -446,6 +463,7 @@ impl AppState {
             self.selected_track.set(None);
             self.selected_chord_loop.set(None);
             self.selected_pattern.set(None);
+            self.selected_master_fx.set(None);
             let variant = self
                 .project
                 .get()
@@ -456,6 +474,31 @@ impl AppState {
             self.open_section_editor(sid, variant);
         }
         self.selected_section.set(id);
+    }
+
+    /// Set the currently-selected master-chain slot. `None` clears
+    /// the selection. Selecting a slot clears the five other
+    /// selection axes (mirrors the other selection setters) so the
+    /// inspector branches deterministically on a single axis.
+    /// MIDI routing (`midi_target_track`) is untouched — master-FX
+    /// selection is not a synth-target switch. Editor mode is also
+    /// reset to `Arrangement` so the master-FX editor mounts
+    /// inside the standard arrangement row regardless of whether
+    /// the user was previously in the section editor.
+    ///
+    /// X5 of `docs/master-fx-chain-plan.md`. X6 wires the actual
+    /// editor body; X5 only provides the selection axis + the
+    /// inspector placeholder branch.
+    pub fn select_master_fx(&self, slot: Option<usize>) {
+        if slot.is_some() {
+            self.selected_idx.set(None);
+            self.selected_track.set(None);
+            self.selected_chord_loop.set(None);
+            self.selected_pattern.set(None);
+            self.selected_section.set(None);
+            self.editor_mode.set(EditorMode::Arrangement);
+        }
+        self.selected_master_fx.set(slot);
     }
 
     /// Apply a structural edit to the live project and mirror the

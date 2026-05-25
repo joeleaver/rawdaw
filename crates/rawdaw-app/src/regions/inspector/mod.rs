@@ -31,6 +31,7 @@
 
 mod activation_table;
 mod drum_editor;
+mod master_fx_editor;
 mod matrix_editor;
 mod preset_dropdown;
 mod synth_editor;
@@ -48,6 +49,7 @@ use crate::state::AppState;
 use crate::theme;
 
 use activation_table::ActivationTable;
+use master_fx_editor::MasterFxEditor;
 use synth_editor::SynthEditor;
 
 /// Beats per bar baked into the round-1 fixture — mirrors the
@@ -76,11 +78,14 @@ pub fn Inspector() -> NodeHandle {
     let app = use_store::<AppState>();
     let section_sel = app.selected_idx.get();
     let track_sel = app.selected_track.get();
+    let master_fx_sel = app.selected_master_fx.get();
 
     let is_section = section_sel.is_some();
     let is_track = !is_section && track_sel.is_some();
+    let is_master_fx = !is_section && !is_track && master_fx_sel.is_some();
     let section_idx = section_sel.unwrap_or(usize::MAX);
     let track_idx = track_sel.unwrap_or(usize::MAX);
+    let master_fx_slot = master_fx_sel.unwrap_or(usize::MAX);
 
     rsx! {
         aside {
@@ -89,6 +94,8 @@ pub fn Inspector() -> NodeHandle {
                 SelectedInspector { idx: section_idx }
             } else if is_track {
                 SynthEditor { track_idx: track_idx }
+            } else if is_master_fx {
+                MasterFxEditor { slot: master_fx_slot }
             } else {
                 InspectorEmpty { }
             }
@@ -97,8 +104,14 @@ pub fn Inspector() -> NodeHandle {
 }
 
 fn synth_mode_active() -> bool {
+    // The synth editor and the master-FX editor both want the wider
+    // 600px pane (more knobs, more screen real estate); the section
+    // / empty states use the narrower default. Mirrors U4's
+    // pane-widening contract.
     let app = use_store::<AppState>();
-    app.selected_idx.get().is_none() && app.selected_track.get().is_some()
+    let no_section = app.selected_idx.get().is_none();
+    no_section
+        && (app.selected_track.get().is_some() || app.selected_master_fx.get().is_some())
 }
 
 fn pane_style(wide: bool) -> String {
