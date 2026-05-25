@@ -71,6 +71,39 @@ impl AudioResources {
             .map_err(|e| format!("event queue overflow on push_drum_param: {e:?}"))
     }
 
+    /// Push a soft-clipper `ParamEvent` into the host live-event
+    /// queue, addressed at master-chain `slot`. The X3
+    /// `master_fx_handles` table is dense by chain position;
+    /// out-of-range slot returns an Err rather than silently
+    /// dropping the event so a host-side bug surfaces fast.
+    ///
+    /// `param` is the kind-specific param enum from `rawdaw-fx`
+    /// (v1: only `SoftClipParam`). The encoded `[u8; 8]` path
+    /// carries the FX-kind discriminant in byte 0 — the receiving
+    /// node rejects misrouted paths via its own decode check, so
+    /// a future EQ slot wouldn't act on a SoftClip-encoded path
+    /// even if the routing slipped.
+    ///
+    /// Same `SampleTime::samples(0)` scheduling convention as the
+    /// per-track param pushes — works in every transport state.
+    #[allow(dead_code)] // X6 SoftClipEditor will drive it
+    pub fn push_master_fx_param(
+        &self,
+        slot: usize,
+        param: rawdaw_fx::SoftClipParam,
+        value: f32,
+    ) -> Result<(), String> {
+        let handle = self
+            .master_fx_handles
+            .get(slot)
+            .ok_or_else(|| format!("no master-FX handle for slot {slot}"))?;
+        let path = param.encode();
+        let time = rawdaw_model::SampleTime::samples(0);
+        self.handle()
+            .push_param(time, handle.node_id, path, value)
+            .map_err(|e| format!("event queue overflow on push_master_fx_param: {e:?}"))
+    }
+
     /// Apply a wavetable preset to a Pitched track. Flattens the
     /// patch into one `BlockMessage::Param` per field (~72 events)
     /// and pushes them all at the same `SampleTime::samples(0)`

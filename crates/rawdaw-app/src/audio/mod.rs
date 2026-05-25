@@ -101,7 +101,8 @@ use midir::MidiInputConnection;
 
 pub use graph::{DrumEditorHandle, WavetableEditorHandle};
 pub use master_fx::{
-    build_master_fx_handles, MasterFxEditorHandle, MasterFxKind, MasterFxPublishers,
+    attach_master_fx_poll_signals, build_master_fx_handles, MasterFxEditorHandle, MasterFxKind,
+    MasterFxPublishers,
 };
 // `MasterFxPatch` is re-exported only via the master_fx module for
 // now — X6 will surface it through AudioResources for the editor
@@ -340,6 +341,10 @@ impl AudioResources {
         attach_drum_poll_signals(
             &resources.drum_publishers,
             &resources.drum_handles,
+        );
+        attach_master_fx_poll_signals(
+            &resources.master_fx_publishers,
+            &resources.master_fx_handles,
         );
         resources.open_default_midi_input();
         resources

@@ -11,13 +11,21 @@
 //! match arm and the X6 UI dispatch grow one arm per kind.
 
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
+use rinch::core::reactive::{poll_signal, PollRate};
 use rinch::prelude::Signal;
 
 use rawdaw_engine::node::AudioNode;
 use rawdaw_engine::NodeId;
 use rawdaw_fx::{SoftClipNode, SoftClipPatch, SoftClipPublishers};
 use rawdaw_model::master_fx::MasterFxData;
+
+/// Poll rate for master-FX patch mirrors. Matches the per-track
+/// PATCH_POLL_RATE in `graph.rs` — 20 Hz, version-atomic-gated so
+/// idle ticks are an atomic load + integer compare.
+const MASTER_FX_POLL_RATE: PollRate = PollRate::Hz(20);
 
 /// The runtime tag for a master-chain slot. Mirrors the v1
 /// [`MasterFxData`] variants without the payload — the variant
@@ -155,6 +163,57 @@ pub fn build_master_fx_handles(
         })
         .collect::<Vec<_>>();
     Rc::new(handles)
+}
+
+/// Register one `poll_signal` per master-FX slot that mirrors the
+/// audio-thread patch into the slot's [`MasterFxEditorHandle::patch_signal`].
+/// Dispatch is enum-arm-based: each slot's
+/// [`MasterFxPublishers`] variant carries the kind-specific
+/// publisher type, and the closure wraps the resulting snapshot
+/// back into the matching [`MasterFxPatch`] variant.
+///
+/// Returns nothing — the polls live for the lifetime of the app,
+/// owned by rinch's main-thread registry. Same shape as
+/// [`super::graph::attach_wavetable_poll_signals`].
+///
+/// `u64::MAX` is the "never seen" sentinel so a first version of
+/// `0` (the audio thread's apply counter starts at 0) still
+/// triggers an initial snapshot read. Matches the wavetable /
+/// drum idiom exactly.
+pub fn attach_master_fx_poll_signals(
+    publishers: &[(NodeId, MasterFxKind, MasterFxPublishers)],
+    handles: &[MasterFxEditorHandle],
+) {
+    debug_assert_eq!(
+        publishers.len(),
+        handles.len(),
+        "attach_master_fx_poll_signals: publishers and handles must align by slot",
+    );
+    for (slot, (_node_id, _kind, pubs)) in publishers.iter().enumerate() {
+        let Some(handle) = handles.get(slot) else {
+            continue;
+        };
+        let target = handle.patch_signal;
+        match pubs {
+            MasterFxPublishers::SoftClip(soft_clip_pubs) => {
+                let version = Arc::clone(&soft_clip_pubs.version);
+                let snapshot = Arc::clone(&soft_clip_pubs.snapshot);
+                let mut last_version: u64 = u64::MAX;
+                let _: Signal<()> = poll_signal(
+                    move || {
+                        let now = version.load(Ordering::Acquire);
+                        if now != last_version {
+                            last_version = now;
+                            if let Ok(guard) = snapshot.lock() {
+                                target.set(MasterFxPatch::SoftClip(*guard));
+                            }
+                        }
+                    },
+                    MASTER_FX_POLL_RATE,
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

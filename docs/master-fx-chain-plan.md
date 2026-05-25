@@ -77,7 +77,20 @@ itself starts shaping signal at X3+.
   resolves back to the master gain). MCP-verified: round-1 app
   boots cleanly with the default `[SoftClip]` chain wired
   end-to-end.
-- X4 — not started.
+- X4 ✅ landed 2026-05-25. New `attach_master_fx_poll_signals` in
+  `audio/master_fx.rs` mirrors the wavetable/drum poll-attach
+  pattern but dispatches on the `MasterFxPublishers` enum to
+  pull each slot's kind-specific publishers and wrap the
+  snapshot back into the matching `MasterFxPatch` variant.
+  Wired into `AudioResources::build()` alongside the existing
+  wavetable/drum attaches. New `push_master_fx_param(slot,
+  param, value)` on AudioResources (in `audio/synth_ops.rs`)
+  routes Param events via `master_fx_handles[slot].node_id`;
+  out-of-range slot returns Err with a slot-named message.
+  Test count: 736 → 739 (+3 — push helper ok/err for in/out
+  of range slot + publisher-contract observability through the
+  cloned publishers).
+- X5 — not started.
 - X5 — not started.
 - X6 — not started.
 - X7 — not started.

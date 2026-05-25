@@ -412,6 +412,75 @@ fn multi_entry_master_chain_routes_through_last_node() {
 }
 
 #[test]
+fn push_master_fx_param_succeeds_for_in_range_slot() {
+    // X4: the push helper resolves slot → NodeId via the
+    // master_fx_handles table and routes the Param event there.
+    // Round-1's default chain has one slot, so slot 0 must
+    // succeed.
+    let (project, _) = build_round1_project();
+    let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+    use rawdaw_fx::SoftClipParam;
+    let ok = resources.push_master_fx_param(0, SoftClipParam::Threshold, 0.4);
+    assert!(ok.is_ok(), "slot 0 push must succeed: {ok:?}");
+}
+
+#[test]
+fn push_master_fx_param_errors_for_out_of_range_slot() {
+    // X4: an out-of-range slot returns Err rather than silently
+    // dropping the event. Surfaces host-side bugs (e.g., stale
+    // slot index after a chain reconfigure) fast.
+    let (project, _) = build_round1_project();
+    let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+    use rawdaw_fx::SoftClipParam;
+    let err = resources.push_master_fx_param(99, SoftClipParam::Threshold, 0.4);
+    assert!(err.is_err(), "out-of-range slot must error");
+    let msg = err.unwrap_err();
+    assert!(msg.contains("slot 99"), "error message must name the slot: {msg}");
+}
+
+#[test]
+fn master_fx_publisher_contract_is_observable_via_cloned_handle() {
+    // X4: the publishers under the audio thread's
+    // `with_patch_publishers` constructor are also held by
+    // AudioResources via the `master_fx_publishers` field, so the
+    // host side can lock the snapshot + read the version
+    // independently of the audio thread. This pins the contract
+    // that powers the X4 poll: a parameter change written by the
+    // audio thread is observable through the publishers without
+    // needing to reach into the node.
+    //
+    // The test simulates the audio thread by directly mutating
+    // the publisher's snapshot + bumping the version, then asserts
+    // the host can observe both transitions through its kept-clone
+    // publisher.
+    use rawdaw_fx::{SoftClipPatch, MIN_THRESHOLD};
+    use std::sync::atomic::Ordering;
+    let (project, _) = build_round1_project();
+    let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+    let (_node_id, _kind, pubs) = &resources.master_fx_publishers[0];
+
+    // Initial state: version 0, snapshot at default threshold.
+    match pubs {
+        super::MasterFxPublishers::SoftClip(p) => {
+            let initial_version = p.version.load(Ordering::Acquire);
+            let initial_threshold = p.snapshot.lock().unwrap().threshold;
+            // Audio thread simulates a Param apply: write snapshot,
+            // bump version. Mirrors `SoftClipNode::publish_patch`.
+            {
+                let mut guard = p.snapshot.lock().unwrap();
+                *guard = SoftClipPatch::new(MIN_THRESHOLD);
+            }
+            p.version.fetch_add(1, Ordering::Release);
+            // Host observes both transitions through its cloned
+            // publisher (the same `Arc`s).
+            assert_eq!(p.version.load(Ordering::Acquire), initial_version + 1);
+            assert_eq!(p.snapshot.lock().unwrap().threshold, MIN_THRESHOLD);
+            assert_ne!(p.snapshot.lock().unwrap().threshold, initial_threshold);
+        }
+    }
+}
+
+#[test]
 fn master_fx_handle_count_always_matches_project_chain_length() {
     // Pinning the debug_assert contract in `build_from_project_and_rate`:
     // handle count must equal `project.master_chain.fx.len()`. Tested
