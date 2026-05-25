@@ -19,8 +19,19 @@ itself starts shaping signal at X3+.
 
 ## Status
 
-- X0 ◀ this document.
-- X1 — not started.
+- X0 ✅ this document.
+- X1 ✅ landed 2026-05-25. New `rawdaw-model::master_fx` module
+  (`MasterFxData::SoftClip(SoftClipData)`, `SoftClipData
+  { format_version, threshold }` with `Default` returning 0.7,
+  `MasterChainData { format_version, fx: Vec<MasterFxData> }`
+  with `Default` returning the single-entry safety-net
+  soft-clipper chain). `Project.master_chain` field added with
+  `#[serde(default)]`. `SCHEMA_VERSION` bumped 2 → 3;
+  `check_loadable` extended to accept `1..=3`;
+  `migrate_to_current` got a `v2 → v3` hop (bump only — serde
+  default fills the new field during deserialize).
+  Workspace tests: 708 → 715 (+5 master_fx unit tests + 2
+  project migration tests in `tests/roundtrip.rs`).
 - X2 — not started.
 - X3 — not started.
 - X4 — not started.

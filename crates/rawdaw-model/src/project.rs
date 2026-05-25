@@ -13,6 +13,7 @@ use crate::chord::ChordLoop;
 use crate::id::{
     ChordLoopId, DrumKitId, NoteId, NoteOverrideId, PatternId, SectionId, SectionRefId, TrackId,
 };
+use crate::master_fx::MasterChainData;
 use crate::pattern::Pattern;
 use crate::scale::Scale;
 use crate::section::{Arrangement, Section};
@@ -35,7 +36,12 @@ use crate::track::Track;
 ///   migrate via the `serde(default = "default_project_name")` attribute
 ///   on `Project.name` (defaults missing field to `"Untitled"`) and
 ///   [`Project::migrate_to_current`] bumps the in-memory version.
-pub const SCHEMA_VERSION: u32 = 2;
+/// - **v3** (master-fx-chain X1): adds `master_chain: MasterChainData`. v1/v2
+///   files migrate via the `#[serde(default)]` attribute on
+///   `Project.master_chain` (defaults missing field to a single-entry
+///   safety-net soft-clipper chain via [`MasterChainData::default`]) and
+///   [`Project::migrate_to_current`] bumps the in-memory version.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Top-level project state.
 ///
@@ -71,6 +77,13 @@ pub struct Project {
     pub tracks: Vec<Track>,
 
     pub arrangement: Arrangement,
+
+    /// Ordered master-FX chain — sits between the engine's master gain and
+    /// cpal. Added in schema v3; v1/v2 files load with this defaulted to a
+    /// single-entry safety-net soft-clipper via
+    /// [`MasterChainData::default`]. See `docs/master-fx-chain-plan.md` X1.
+    #[serde(default)]
+    pub master_chain: MasterChainData,
 
     /// ID allocators. NoteId and NoteOverrideId are durable (never reused).
     /// Other IDs are also monotonic but the durability requirement is less
@@ -160,6 +173,7 @@ impl Project {
             drum_kits: BTreeMap::new(),
             tracks: Vec::new(),
             arrangement: Arrangement::default(),
+            master_chain: MasterChainData::default(),
             id_allocators: IdAllocators::default(),
         }
     }
@@ -202,7 +216,7 @@ impl Project {
     /// without duplicating the dispatch logic.
     pub fn check_loadable(version: u32) -> Result<(), LoadError> {
         match version {
-            1 | 2 => Ok(()),
+            1..=3 => Ok(()),
             v => Err(LoadError::UnsupportedSchemaVersion {
                 found: v,
                 expected: SCHEMA_VERSION,
@@ -216,6 +230,13 @@ impl Project {
     ///
     /// Migration entries (newest first):
     ///
+    /// - **v2 → v3** (master-fx-chain X1): `Project.master_chain` was
+    ///   added. v2 RON files don't carry the field; serde's
+    ///   `#[serde(default)]` attribute on `Project.master_chain`
+    ///   populates it with the safety-net soft-clipper chain
+    ///   ([`MasterChainData::default`]) during deserialize. The
+    ///   migration step here only needs to bump the in-memory
+    ///   `schema_version`.
     /// - **v1 → v2** (composition-writability C4): `Project.name` was
     ///   added. v1 RON files don't carry the field; serde's
     ///   `default = "default_project_name"` attribute on `Project.name`
@@ -225,6 +246,9 @@ impl Project {
     pub fn migrate_to_current(mut project: Project) -> Project {
         if project.schema_version == 1 {
             project.schema_version = 2;
+        }
+        if project.schema_version == 2 {
+            project.schema_version = 3;
         }
         debug_assert_eq!(
             project.schema_version, SCHEMA_VERSION,

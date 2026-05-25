@@ -44,45 +44,174 @@ fn v2_project_round_trip_preserves_name() {
     assert_eq!(original, deserialized);
 }
 
+/// Strip a top-level pretty-printed RON field by name. Handles both
+/// single-line `name: "Untitled",` and multi-line nested
+/// `master_chain: (...),` blocks by counting paren/bracket depth from
+/// the opening line until it balances. Used by the migration tests
+/// below to derive an older-schema RON from the current pretty-printer
+/// output rather than hand-crafting it, so the fixtures track the
+/// model's evolution.
+fn strip_field(ron: &str, field_name: &str) -> String {
+    let prefix_pat = format!("{field_name}:");
+    let mut out: Vec<&str> = Vec::new();
+    let mut skipping = false;
+    let mut depth: i32 = 0;
+    for line in ron.lines() {
+        if !skipping && line.trim_start().starts_with(&prefix_pat) {
+            // Begin skipping. Count delimiters on the opening line.
+            skipping = true;
+            depth = delim_balance(line);
+            if depth == 0 {
+                // Single-line value (e.g. `name: "Untitled",`).
+                skipping = false;
+            }
+            continue;
+        }
+        if skipping {
+            depth += delim_balance(line);
+            if depth <= 0 {
+                skipping = false;
+            }
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
+/// Net opening-vs-closing of `( [ { ` over `) ] }` on a single line.
+/// Ignores chars inside string literals (RON uses `"..."` only).
+fn delim_balance(line: &str) -> i32 {
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut escape = false;
+    for ch in line.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_str {
+            match ch {
+                '\\' => escape = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_str = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
+
 #[test]
-fn v1_project_migrates_to_v2_with_default_name() {
-    // composition-writability C4 migration contract: a v1 project
-    // (no `name` field, schema_version: 1) loads into a v2 build by
-    // defaulting `name` to "Untitled" via the `serde(default = ...)`
-    // attribute and bumping the in-memory schema_version.
+fn v1_project_migrates_to_current_with_default_name_and_master_chain() {
+    // composition-writability C4 + master-fx-chain X1 migration
+    // contract: a v1 project (no `name`, no `master_chain` field,
+    // schema_version: 1) loads into the current build by defaulting
+    // both missing fields via `serde(default = ...)` attributes and
+    // bumping the in-memory schema_version through each migration
+    // step in turn.
     //
     // The fixture is derived from a current empty project rather than
     // hand-crafted RON so it tracks the model's evolution — when a
     // future schema version adds another field, the same strip-and-
     // version-rewrite trick covers it.
     let current = Project::new(Scale::major(PitchClass::C));
-    let v2_ron = current.save().unwrap();
+    let current_ron = current.save().unwrap();
 
-    // Build a v1 RON by lowering the version line and stripping the
-    // `name: "..."` line (v1 RON didn't carry that field). Filtering
-    // by `starts_with("name:")` on the trimmed line is robust to
-    // pretty-printer indentation; the project's nested types don't
-    // currently carry a field literally named `name:` at the top
-    // level of a struct (track names sit under `name:` too, but
-    // there's only one top-level `Project.name` so trimming + line
-    // filtering catches it cleanly given the empty-project fixture
-    // has zero tracks).
-    let v1_ron = v2_ron
-        .replacen("schema_version: 2", "schema_version: 1", 1)
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("name:"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // Build a v1 RON by lowering the version line and stripping every
+    // field that didn't exist in v1: `name` (added v2) and
+    // `master_chain` (added v3). `strip_field` handles both the
+    // single-line `name: "Untitled",` and the multi-line nested
+    // `master_chain: (...),` block correctly.
+    let v1_ron = strip_field(
+        &strip_field(&current_ron, "master_chain"),
+        "name",
+    )
+    .replacen(
+        &format!("schema_version: {SCHEMA_VERSION}"),
+        "schema_version: 1",
+        1,
+    );
     assert!(v1_ron.contains("schema_version: 1"));
     assert!(!v1_ron.contains("name:"));
+    assert!(!v1_ron.contains("master_chain:"));
 
-    let migrated = Project::load(&v1_ron).expect("v1 → v2 migration succeeds");
+    let migrated = Project::load(&v1_ron).expect("v1 → current migration succeeds");
     assert_eq!(migrated.schema_version, SCHEMA_VERSION);
     assert_eq!(migrated.name, "Untitled");
-    // The rest of the project should round-trip identically (the
-    // only change between v1 and v2 is the name field).
+    assert_eq!(migrated.master_chain, MasterChainData::default());
+    // The rest of the project should round-trip identically.
     assert_eq!(migrated.default_key, current.default_key);
     assert_eq!(migrated.tempo_map, current.tempo_map);
+}
+
+#[test]
+fn v2_project_migrates_to_v3_with_default_master_chain() {
+    // master-fx-chain X1 migration contract: a v2 project (carries
+    // `name`, no `master_chain` field, schema_version: 2) loads into
+    // the current build by defaulting `master_chain` to the safety-
+    // net single-entry soft-clipper chain via
+    // [`MasterChainData::default`] and bumping the in-memory
+    // schema_version.
+    //
+    // Pinning v2 → v3 specifically (rather than only via the v1 →
+    // current test above) protects the v3 migration's individual
+    // hop: if a future schema bump replaced the v1 → v2 step
+    // entirely, the v1 → current test would still pass while this
+    // test would catch a broken v2 → v3 hop.
+    let current = Project::new(Scale::major(PitchClass::C));
+    let current_ron = current.save().unwrap();
+
+    let v2_ron = strip_field(&current_ron, "master_chain").replacen(
+        &format!("schema_version: {SCHEMA_VERSION}"),
+        "schema_version: 2",
+        1,
+    );
+    assert!(v2_ron.contains("schema_version: 2"));
+    assert!(!v2_ron.contains("master_chain:"));
+    // v2 carried `name`, so it should survive the strip.
+    assert!(v2_ron.contains("name:"));
+
+    let migrated = Project::load(&v2_ron).expect("v2 → v3 migration succeeds");
+    assert_eq!(migrated.schema_version, SCHEMA_VERSION);
+    assert_eq!(migrated.master_chain, MasterChainData::default());
+    assert_eq!(migrated.name, current.name);
+}
+
+#[test]
+fn project_round_trip_preserves_custom_master_chain() {
+    // master-fx-chain X1 round-trip contract: a non-default
+    // master_chain (here: a two-entry chain with a softer threshold)
+    // must survive save → load. Pins both the serialize and
+    // deserialize sides of the new field.
+    let mut original = common::build_tiny_project();
+    original.master_chain = MasterChainData {
+        format_version: MASTER_CHAIN_FORMAT_VERSION,
+        fx: vec![
+            MasterFxData::SoftClip(SoftClipData {
+                format_version: SOFT_CLIP_FORMAT_VERSION,
+                threshold: 0.5,
+            }),
+            MasterFxData::SoftClip(SoftClipData {
+                format_version: SOFT_CLIP_FORMAT_VERSION,
+                threshold: 0.95,
+            }),
+        ],
+    };
+
+    let serialized = original.save().unwrap();
+    assert!(serialized.contains("master_chain:"));
+    assert!(serialized.contains("SoftClip("));
+
+    let deserialized = Project::load(&serialized).unwrap();
+    assert_eq!(deserialized.master_chain, original.master_chain);
+    assert_eq!(original, deserialized);
 }
 
 #[test]
