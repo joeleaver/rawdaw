@@ -121,12 +121,33 @@ pub const FALLBACK_SAMPLE_RATE: u32 = 48_000;
 /// allocates scratch sized to this at construction.
 pub const MAX_BLOCK: usize = 256;
 
-/// Master output gain. Roughly -12 dB. Multi-voice synth chords +
-/// the still-sine drum bursts comfortably exceed unity at the
-/// mixer; this gives the cpal device clean headroom without a
-/// soft-clipper. Replace with a real master-channel strip + a
-/// soft-clipper once `rawdaw-fx` grows more nodes.
-const MASTER_GAIN: f32 = 0.25;
+/// Master output gain. Calibrated to **-6 dB (`0.5`)** at X7 of
+/// `docs/master-fx-chain-plan.md` with the X3-shipped
+/// soft-clipper sitting between this gain and cpal.
+///
+/// Listen test (2026-05-25, round-1 demo loop, default
+/// soft-clip threshold 0.7 / -3.1 dBFS): chord stacks land
+/// at a comfortable, present loudness. Bass voices are the
+/// level-setters — they're the loudest voice in the mix and
+/// they hit the soft-clip knee gently, which is the design
+/// (tanh shape rounds rather than distorts; the limiter
+/// catching peak transients is what it's for). All other
+/// voices stay below the knee under default playback.
+///
+/// Tighter candidates if a future patch / arrangement runs
+/// the clipper hot on every voice: `0.35` (~-9 dB), `0.4`
+/// (~-8 dB). Looser candidates if chord stacks feel quiet:
+/// `0.6` (~-4.5 dB), `0.7` (~-3 dB). The soft-clip threshold
+/// (default 0.7, editable live via the X6 SoftClipEditor) is
+/// the per-listen tuning knob; this constant is the
+/// "headroom budget" the chain operates inside.
+///
+/// Pre-X7 history: `0.25` (-12 dB) was the workaround value
+/// established at E6 before the master-FX chain existed —
+/// multi-voice synth chords + drum bursts comfortably exceed
+/// unity at the mixer, and there was no limiter to catch them
+/// cleanly, so the master gain absorbed the headroom alone.
+const MASTER_GAIN: f32 = 0.5;
 
 /// Playhead poll rate. ~60 Hz target — visually smooth without
 /// burning a core to mirror a single `u64`. Tuned in pairs with the

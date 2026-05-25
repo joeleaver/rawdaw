@@ -133,8 +133,28 @@ itself starts shaping signal at X3+.
   clicking "Master" then dragging the threshold slider to ~0.27
   shows `-11.4 dBFS` readout, with the post-apply value
   re-bound through the publisher cycle.
-- X7 — not started.
-- X8 — not started.
+- X7 ✅ landed 2026-05-25. `MASTER_GAIN` raised from `0.25`
+  (-12 dB, the pre-X7 workaround) to `0.5` (-6 dB) after the
+  listen test. Result with round-1 demo loop + default
+  soft-clip threshold 0.7 (-3.1 dBFS): chord stacks at
+  comfortable present loudness; bass voices are the
+  level-setters that engage the clipper knee gently — exactly
+  the design (tanh shape rounds rather than distorts; the
+  limiter catching peak transients is its job). All other
+  voices stay below the knee under default playback.
+  `MASTER_GAIN` doc comment in `audio/mod.rs` updated with
+  the listen-test record + tighter/looser candidate values
+  for future re-tuning if patches / arrangements shift the
+  level budget. No test count change (audible-calibration
+  phase, not code).
+- X8 ✅ landed 2026-05-25. Memory pointers updated:
+  `project_status` and `project_next_session_pickup` now
+  reflect master-FX-chain milestone CLOSED + point at G as
+  the next bite; `project_ui_complete_roadmap` marks X ✅.
+  Plan doc's Status section finalized with this entry.
+  Cross-reference in `synth-ui-integration-plan.md` left as
+  written — its U7 note about future master FX was a
+  forward-looking placeholder, not a defect.
 
 ## Phase X0 — Plan + design decisions ◀ this doc
 
