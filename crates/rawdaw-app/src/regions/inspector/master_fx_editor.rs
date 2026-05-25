@@ -1,16 +1,13 @@
 //! Master-FX inspector body.
 //!
-//! X5 placeholder: renders a header + a "coming in X6" copy block
-//! so the selection branch has something to mount when the user
-//! clicks "Master" in the tracks pane. X6 replaces the body with
-//! the real `MasterFxEditor` (per-kind dispatch on the slot's
-//! [`crate::audio::MasterFxKind`] →
-//! [`SoftClipEditor`]/future EQ/Reverb bodies).
+//! Per-kind dispatcher (mirror of U5's `SynthEditor`): the chain
+//! breadcrumb sits at the top, and the editor body below
+//! dispatches on the slot's [`crate::audio::MasterFxKind`] to the
+//! kind-specific editor (X6 ships [`super::soft_clip_editor::
+//! SoftClipEditor`]; future EQ / Reverb editors plug in here).
 //!
-//! The header is already X5-final: chain breadcrumb
-//! ("Master · slot N · SoftClip") sourced from the live
-//! [`crate::audio::MasterFxEditorHandle`] table so the slot
-//! count and per-slot kinds reflect whatever
+//! Sourced from the live [`crate::audio::MasterFxEditorHandle`]
+//! table so the slot count and per-slot kinds reflect whatever
 //! `Project.master_chain.fx` currently carries.
 
 use rinch::prelude::*;
@@ -18,6 +15,8 @@ use rinch::prelude::*;
 use crate::audio::{AudioResources, MasterFxKind};
 use crate::parts::Icon;
 use crate::theme;
+
+use super::soft_clip_editor::SoftClipEditor;
 
 #[component]
 pub fn MasterFxEditor(slot: usize) -> NodeHandle {
@@ -32,6 +31,7 @@ pub fn MasterFxEditor(slot: usize) -> NodeHandle {
     let kind_label = match handle.kind {
         MasterFxKind::SoftClip => "SoftClip".to_string(),
     };
+    let is_soft_clip = matches!(handle.kind, MasterFxKind::SoftClip);
 
     let wrap_style = "display: flex; flex-direction: column; \
          min-height: 0; flex: 1;";
@@ -44,12 +44,6 @@ pub fn MasterFxEditor(slot: usize) -> NodeHandle {
          font-weight: 600;";
     let title_style = "font-size: 16px; font-weight: 600; \
          color: rgba(232,234,238,0.96); margin-top: 4px;";
-    let body_style = "flex: 1; display: flex; flex-direction: column; \
-         align-items: center; justify-content: center; padding: 24px; \
-         gap: 10px; text-align: center;";
-    let copy_style = "font-size: 12.5px; color: rgba(232,234,238,0.62); \
-         line-height: 1.5; max-width: 240px;";
-    let stroke = "rgba(232,234,238,0.28)".to_string();
 
     rsx! {
         div { style: {wrap_style.to_string()},
@@ -59,11 +53,37 @@ pub fn MasterFxEditor(slot: usize) -> NodeHandle {
                 }
                 div { style: {title_style.to_string()}, "Master FX" }
             }
-            div { style: {body_style.to_string()},
-                Icon { glyph: "dot", size: 28.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
-                div { style: {copy_style.to_string()},
-                    "The soft-clip editor body lands in X6."
-                }
+            // Per-kind editor dispatch. v1 only has SoftClip; the
+            // `if` arms grow as new FX kinds land — `else if` for
+            // each variant of `MasterFxKind`, falling through to
+            // an explicit "unhandled" state so we notice when a
+            // new kind ships without an editor.
+            if is_soft_clip {
+                SoftClipEditor { slot: slot }
+            } else {
+                UnhandledKind { }
+            }
+        }
+    }
+}
+
+/// Fallback for a `MasterFxKind` variant without an editor body
+/// yet. With v1's single `SoftClip` variant this never renders;
+/// future EQ / Reverb additions will trip it during a partial
+/// adoption window if their editor lands behind the kind.
+#[component]
+fn UnhandledKind() -> NodeHandle {
+    let wrap_style = "flex: 1; display: flex; flex-direction: column; \
+         align-items: center; justify-content: center; padding: 24px; \
+         gap: 8px; text-align: center;";
+    let copy_style = "font-size: 12.5px; color: rgba(232,234,238,0.62); \
+         line-height: 1.5; max-width: 240px;";
+    let stroke = "rgba(232,234,238,0.28)".to_string();
+    rsx! {
+        div { style: {wrap_style.to_string()},
+            Icon { glyph: "dot", size: 28.0, stroke: {stroke.clone()}, stroke_width: 1.6 }
+            div { style: {copy_style.to_string()},
+                "No editor available for this FX kind yet."
             }
         }
     }

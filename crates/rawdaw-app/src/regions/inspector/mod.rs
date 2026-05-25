@@ -34,6 +34,7 @@ mod drum_editor;
 mod master_fx_editor;
 mod matrix_editor;
 mod preset_dropdown;
+mod soft_clip_editor;
 mod synth_editor;
 mod wavetable_editor;
 

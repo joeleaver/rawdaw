@@ -114,7 +114,25 @@ itself starts shaping signal at X3+.
   selected_master_fx; midi_target untouched; clear-none is a
   pure clear). MCP-verified: clicking "Master" highlights the
   row, widens the inspector, and renders the placeholder body.
-- X6 — not started.
+- X6 ✅ landed 2026-05-25. New `regions/inspector/soft_clip_
+  editor.rs` with `SoftClipEditor { slot: usize }`: single
+  Threshold row (label 56px / slider 1fr / value 58px),
+  `Signal<f64>` seeded from the slot's `patch_signal` snapshot,
+  Effect-driven re-bind on `patch_signal.get()` so external
+  pushes (preset / automation / MIDI Learn) keep the slider in
+  sync (U9 pattern). Slider drag pushes
+  `SoftClipParam::Threshold` via `push_master_fx_param`. Value
+  cell renders `format_threshold_dbfs(v) = 20*log10(v) → "−X.X
+  dBFS"` (default 0.7 → -3.1 dBFS). `regions/inspector/master_
+  fx_editor.rs` body now dispatches on `MasterFxKind` (only
+  SoftClip variant matters in v1; explicit `UnhandledKind`
+  fallback so future EQ/Reverb additions render a visible
+  "no editor available" rather than silently disappearing).
+  Test count: 743 → 746 (+3 — dBFS formatter at unity / half /
+  tenth / default + MIN/MAX clamp values). MCP-verified:
+  clicking "Master" then dragging the threshold slider to ~0.27
+  shows `-11.4 dBFS` readout, with the post-apply value
+  re-bound through the publisher cycle.
 - X7 — not started.
 - X8 — not started.
 
