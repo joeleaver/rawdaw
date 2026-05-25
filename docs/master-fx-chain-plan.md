@@ -53,8 +53,30 @@ itself starts shaping signal at X3+.
   clamps, encode/decode round-trip + rejection cases, publisher
   contract, DSP unity-region + above-threshold shape, end-to-end
   mid-block Param event changes amplitude character).
-- X3 — not started.
-- X3 — not started.
+- X3 ✅ landed 2026-05-25. New `crates/rawdaw-app/src/audio/master_fx.rs`
+  module with the runtime master-FX surface — `MasterFxKind` /
+  `MasterFxPatch` / `MasterFxPublishers` enums (variant-per-kind,
+  v1 = `SoftClip`), `MasterFxEditorHandle { node_id, kind,
+  patch_signal: Signal<MasterFxPatch> }`, plus the
+  `build_master_fx_node(data) -> MasterFxBuild` factory and
+  `build_master_fx_handles(publishers) -> Rc<Vec<...>>` helper.
+  `configure_graph` walks `project.master_chain.fx` after the
+  master gain: NodeIds `N+2..=N+1+chain_len`; `gain →
+  fx[0].in`, `fx[k].out → fx[k+1].in`, …;
+  `ConfiguredGraph.master` is the *last* chain slot's NodeId
+  (or master gain when chain is empty). `ConfiguredGraph` gained
+  `master_fx_publishers: Vec<(NodeId, MasterFxKind,
+  MasterFxPublishers)>`. `AudioResources` gained
+  `master_fx_handles: Rc<Vec<MasterFxEditorHandle>>` +
+  `master_fx_publishers: Rc<Vec<...>>` (kept for X4 poll attach).
+  `debug_assert!` on handle count vs chain length at the graph
+  boundary. Test count: 729 → 736 (+3 master_fx unit tests + 4
+  audio integration tests covering empty / single / multi chain
+  + handle-count contract; one existing `node_layout_has_...`
+  test updated to clear the chain so the cpal-source NodeId
+  resolves back to the master gain). MCP-verified: round-1 app
+  boots cleanly with the default `[SoftClip]` chain wired
+  end-to-end.
 - X4 — not started.
 - X5 — not started.
 - X6 — not started.

@@ -44,6 +44,7 @@ use rawdaw_model::realize::realize;
 use rawdaw_synth_drum::{DrumPatch, DrumPublishers, DrumSynthNode};
 use rawdaw_synth_wavetable::{WavetablePatch, WavetablePublishers, WavetableSynthNode};
 
+use super::master_fx::{build_master_fx_node, MasterFxKind, MasterFxPublishers};
 use super::MASTER_GAIN;
 
 /// Poll rate for the per-track patch mirrors. 20 Hz keeps the
@@ -100,6 +101,10 @@ pub struct DrumEditorHandle {
 /// `AudioResources::build_from_project_and_rate`) can destructure
 /// once and assign each field where it belongs.
 pub struct ConfiguredGraph {
+    /// NodeId that cpal reads from. With an empty master chain
+    /// this is the master `GainNode` (round-1 behavior); with a
+    /// non-empty chain this is the *last* FX node in the chain so
+    /// the chain's shaping is what reaches the device.
     pub master: NodeId,
     pub routing: TrackRouting,
     pub realized_events: Vec<BlockEvent>,
@@ -108,6 +113,14 @@ pub struct ConfiguredGraph {
     pub wavetable_publishers: BTreeMap<usize, (NodeId, WavetablePublishers)>,
     /// Same shape as [`Self::wavetable_publishers`], for drum tracks.
     pub drum_publishers: BTreeMap<usize, (NodeId, DrumPublishers)>,
+    /// Per-slot master-FX publishers, dense by chain index. Each
+    /// entry pairs the slot's NodeId with the FX-kind tag and the
+    /// kind-specific publishers wrapped in
+    /// [`MasterFxPublishers`]. AudioResources clones each into a
+    /// [`super::master_fx::MasterFxEditorHandle`] for the X6 UI
+    /// (and X4 will register polls against them). Empty when
+    /// `project.master_chain.fx` is empty.
+    pub master_fx_publishers: Vec<(NodeId, MasterFxKind, MasterFxPublishers)>,
 }
 
 pub fn configure_graph(
@@ -116,17 +129,21 @@ pub fn configure_graph(
     sample_rate: u32,
 ) -> ConfiguredGraph {
     let track_count = project.tracks.len();
+    let chain_len = project.master_chain.fx.len();
     let mixer_id = NodeId::new(0);
-    let master_id = NodeId::new((track_count + 1) as u32);
+    let master_gain_id = NodeId::new((track_count + 1) as u32);
     let mut routing = TrackRouting::new();
     let mut wavetable_publishers: BTreeMap<usize, (NodeId, WavetablePublishers)> = BTreeMap::new();
     let mut drum_publishers: BTreeMap<usize, (NodeId, DrumPublishers)> = BTreeMap::new();
+    let mut master_fx_publishers: Vec<(NodeId, MasterFxKind, MasterFxPublishers)> =
+        Vec::with_capacity(chain_len);
 
     // One mixer + one instrument per track + one Connect per track +
-    // master GainNode + Connect mixer → master. Batched so the
-    // engine recomputes topo order once after the whole
-    // reconfiguration.
-    let mut commands: Vec<GraphCommand> = Vec::with_capacity(2 * track_count + 3);
+    // master GainNode + Connect mixer → master + (per master-FX
+    // slot: one AddNode + one Connect). Batched so the engine
+    // recomputes topo order once after the whole reconfiguration.
+    let mut commands: Vec<GraphCommand> =
+        Vec::with_capacity(2 * track_count + 3 + 2 * chain_len);
     commands.push(GraphCommand::AddNode {
         id: mixer_id,
         node: Box::new(MixerNode::new(track_count)),
@@ -172,15 +189,40 @@ pub fn configure_graph(
     }
     // Master GainNode after the mixer.
     commands.push(GraphCommand::AddNode {
-        id: master_id,
+        id: master_gain_id,
         node: Box::new(GainNode::new(MASTER_GAIN)),
     });
     commands.push(GraphCommand::Connect {
         edge: Edge {
             from: NodePort::new(mixer_id, 0),
-            to: NodePort::new(master_id, 0),
+            to: NodePort::new(master_gain_id, 0),
         },
     });
+
+    // Master-FX chain. NodeIds N+2..=N+1+chain_len; first node hangs
+    // off the master gain; each subsequent node hangs off its
+    // predecessor. cpal reads from the final node in the chain
+    // (resolved into `master_output_id` below) — or from the master
+    // gain directly when the chain is empty (round-1 behavior).
+    let master_fx_base_id = (track_count + 2) as u32;
+    let mut prev_out_id = master_gain_id;
+    for (slot, data) in project.master_chain.fx.iter().enumerate() {
+        let fx_id = NodeId::new(master_fx_base_id + slot as u32);
+        let built = build_master_fx_node(data);
+        master_fx_publishers.push((fx_id, built.kind, built.publishers));
+        commands.push(GraphCommand::AddNode {
+            id: fx_id,
+            node: built.node,
+        });
+        commands.push(GraphCommand::Connect {
+            edge: Edge {
+                from: NodePort::new(prev_out_id, 0),
+                to: NodePort::new(fx_id, 0),
+            },
+        });
+        prev_out_id = fx_id;
+    }
+    let master_output_id = prev_out_id;
     engine.push_command(GraphCommand::Batch(commands));
 
     // Realize → translate → push events. `translate_events` errors
@@ -193,11 +235,12 @@ pub fn configure_graph(
         engine.push_event(ev.clone());
     }
     ConfiguredGraph {
-        master: master_id,
+        master: master_output_id,
         routing,
         realized_events,
         wavetable_publishers,
         drum_publishers,
+        master_fx_publishers,
     }
 }
 

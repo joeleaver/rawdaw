@@ -223,7 +223,12 @@ fn push_wavetable_param_targets_correct_node_id() {
 
 #[test]
 fn node_layout_has_mixer_then_instruments_then_master_gain() {
-    let (project, _) = build_round1_project();
+    // Round-1 has an empty master-FX chain after a manual clear,
+    // so the cpal-source NodeId resolves back to the master gain
+    // node (the X3-introduced chain sits between gain and cpal
+    // only when non-empty).
+    let (mut project, _) = build_round1_project();
+    project.master_chain.fx.clear();
     let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
     let n = project.tracks.len();
     // Instrument NodeIds are 1..=n.
@@ -232,8 +237,8 @@ fn node_layout_has_mixer_then_instruments_then_master_gain() {
     let expected: Vec<NodeId> = (1..=n as u32).map(NodeId::new).collect();
     assert_eq!(instrument_ids, expected);
     // Mixer sits at NodeId(0) (not in routing — it's the bus, not
-    // an instrument), and the master GainNode sits at NodeId(n+1)
-    // and is the cpal output read.
+    // an instrument), and the master GainNode sits at NodeId(n+1).
+    // With an empty FX chain the master gain is the cpal output.
     assert_eq!(resources.master, NodeId::new((n + 1) as u32));
 }
 
@@ -318,4 +323,120 @@ fn realized_events_are_cached_for_replay() {
     let cached = resources.realized_events.borrow().clone();
     assert_eq!(cached.len(), resources.initial_event_count);
     assert!(!cached.is_empty());
+}
+
+// ─── X3: master-FX chain wiring ────────────────────────────────────
+
+#[test]
+fn default_master_chain_routes_through_softclip_node() {
+    // The round-1 fixture inherits the safety-net chain from
+    // `MasterChainData::default` (single SoftClip). configure_graph
+    // must allocate one FX slot after the master gain, install a
+    // SoftClipNode there, and report `master = soft_clip_id`
+    // (not the master-gain id) so cpal reads the shaped signal.
+    let (project, _) = build_round1_project();
+    let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+
+    assert_eq!(resources.master_fx_handles.len(), 1);
+    assert_eq!(
+        resources.master_fx_handles[0].kind,
+        super::MasterFxKind::SoftClip
+    );
+
+    let track_count = project.tracks.len() as u32;
+    let master_gain_id = NodeId::new(track_count + 1);
+    let soft_clip_id = NodeId::new(track_count + 2);
+    assert_eq!(resources.master_fx_handles[0].node_id, soft_clip_id);
+    assert_eq!(
+        resources.master, soft_clip_id,
+        "cpal must read from the last chain node, not the master gain"
+    );
+    // Sanity: master gain still lives at its historical NodeId so the
+    // chain hangs off the right place.
+    assert_ne!(resources.master, master_gain_id);
+}
+
+#[test]
+fn empty_master_chain_keeps_master_gain_as_cpal_source() {
+    // A project with `master_chain.fx = vec![]` (user explicitly
+    // cleared the safety net) round-trips to a graph where cpal
+    // reads from the master gain — preserves round-1 behavior
+    // exactly when no FX is configured.
+    let (mut project, _) = build_round1_project();
+    project.master_chain.fx.clear();
+    let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+
+    assert!(resources.master_fx_handles.is_empty());
+    let track_count = project.tracks.len() as u32;
+    let master_gain_id = NodeId::new(track_count + 1);
+    assert_eq!(
+        resources.master, master_gain_id,
+        "with empty chain, cpal reads from master gain"
+    );
+}
+
+#[test]
+fn multi_entry_master_chain_routes_through_last_node() {
+    // A two-entry chain (two SoftClips for synthetic v1 — future
+    // EQ→SoftClip etc. use the same wiring). Validates that
+    // NodeIds increment per slot, handles match positions, and
+    // `master` resolves to the *last* slot's NodeId.
+    use rawdaw_model::master_fx::{MasterFxData, SoftClipData, MASTER_CHAIN_FORMAT_VERSION,
+        SOFT_CLIP_FORMAT_VERSION};
+    let (mut project, _) = build_round1_project();
+    project.master_chain = rawdaw_model::master_fx::MasterChainData {
+        format_version: MASTER_CHAIN_FORMAT_VERSION,
+        fx: vec![
+            MasterFxData::SoftClip(SoftClipData {
+                format_version: SOFT_CLIP_FORMAT_VERSION,
+                threshold: 0.5,
+            }),
+            MasterFxData::SoftClip(SoftClipData {
+                format_version: SOFT_CLIP_FORMAT_VERSION,
+                threshold: 0.8,
+            }),
+        ],
+    };
+    let resources = AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+
+    assert_eq!(resources.master_fx_handles.len(), 2);
+    let track_count = project.tracks.len() as u32;
+    let fx0_id = NodeId::new(track_count + 2);
+    let fx1_id = NodeId::new(track_count + 3);
+    assert_eq!(resources.master_fx_handles[0].node_id, fx0_id);
+    assert_eq!(resources.master_fx_handles[1].node_id, fx1_id);
+    assert_eq!(
+        resources.master, fx1_id,
+        "cpal must read from the final chain slot"
+    );
+}
+
+#[test]
+fn master_fx_handle_count_always_matches_project_chain_length() {
+    // Pinning the debug_assert contract in `build_from_project_and_rate`:
+    // handle count must equal `project.master_chain.fx.len()`. Tested
+    // across the three chain shapes (empty / single / multi).
+    use rawdaw_model::master_fx::{MasterFxData, SoftClipData, MASTER_CHAIN_FORMAT_VERSION,
+        SOFT_CLIP_FORMAT_VERSION};
+    for chain_len in [0usize, 1, 3, 5] {
+        let (mut project, _) = build_round1_project();
+        project.master_chain = rawdaw_model::master_fx::MasterChainData {
+            format_version: MASTER_CHAIN_FORMAT_VERSION,
+            fx: (0..chain_len)
+                .map(|_| {
+                    MasterFxData::SoftClip(SoftClipData {
+                        format_version: SOFT_CLIP_FORMAT_VERSION,
+                        threshold: 0.7,
+                    })
+                })
+                .collect(),
+        };
+        let resources =
+            AudioResources::build_from_project_and_rate(&project, FALLBACK_SAMPLE_RATE);
+        assert_eq!(
+            resources.master_fx_handles.len(),
+            chain_len,
+            "handles must match chain_len={chain_len}",
+        );
+    }
 }

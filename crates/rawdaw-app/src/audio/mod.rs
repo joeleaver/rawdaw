@@ -64,6 +64,7 @@
 
 mod edit_pump;
 mod graph;
+mod master_fx;
 mod midi;
 mod synth_ops;
 
@@ -99,6 +100,14 @@ use crate::midi_input::MidiInputBridge;
 use midir::MidiInputConnection;
 
 pub use graph::{DrumEditorHandle, WavetableEditorHandle};
+pub use master_fx::{
+    build_master_fx_handles, MasterFxEditorHandle, MasterFxKind, MasterFxPublishers,
+};
+// `MasterFxPatch` is re-exported only via the master_fx module for
+// now — X6 will surface it through AudioResources for the editor
+// component once that lands.
+#[allow(unused_imports)] // X6 will read this
+pub use master_fx::MasterFxPatch;
 
 /// Fallback engine sample rate used when no cpal output device can be
 /// probed. Matches the engine-side render tests so unit tests that
@@ -235,6 +244,20 @@ pub struct AudioResources {
     /// alongside the handles for the same reasons as the wavetable
     /// publishers field above.
     drum_publishers: Rc<BTreeMap<usize, DrumPublishers>>,
+    /// Per-slot master-FX editor handles (X3). Dense `Vec` indexed
+    /// by `project.master_chain.fx` position — each entry carries
+    /// the slot's NodeId, the FX-kind tag, and a reactive patch
+    /// signal the X6 UI reads. Empty when the project has no
+    /// master FX configured. `debug_assert!`ed against the chain
+    /// length at the graph boundary so any mismatch surfaces as a
+    /// debug panic.
+    pub master_fx_handles: Rc<Vec<MasterFxEditorHandle>>,
+    /// Audio-thread publishers paired with each master-FX handle.
+    /// Kept alongside the handles for the same reasons as the
+    /// wavetable / drum publisher fields above; X4 reaches in to
+    /// register the per-slot patch poll.
+    #[allow(dead_code)] // X4 attaches polls
+    master_fx_publishers: Rc<Vec<(NodeId, MasterFxKind, MasterFxPublishers)>>,
     // The PlayheadPoller / WavetablePoller / DrumPoller fields (each
     // an `Rc<std::thread>` + AtomicBool stop flag) were all removed
     // when we adopted `rinch::core::reactive::poll_signal` (rinch
@@ -340,7 +363,23 @@ impl AudioResources {
             realized_events,
             wavetable_publishers,
             drum_publishers,
+            master_fx_publishers,
         } = configure_graph(&mut engine, project, sample_rate);
+        debug_assert_eq!(
+            master_fx_publishers.len(),
+            project.master_chain.fx.len(),
+            "configure_graph master-FX publisher count must match project.master_chain.fx.len()",
+        );
+        // Build the X3 editor-handle table from the publishers. The
+        // kind tag is pulled along so the X6 UI can dispatch per
+        // slot. Strip the kind here — handles already carry it —
+        // and keep a Vec<(NodeId, MasterFxPublishers)> for the X4
+        // poll attach.
+        let master_fx_handles_input: Vec<(NodeId, MasterFxPublishers)> = master_fx_publishers
+            .iter()
+            .map(|(node_id, _kind, pubs)| (*node_id, pubs.clone()))
+            .collect();
+        let master_fx_handles = build_master_fx_handles(&master_fx_handles_input);
         let initial_event_count = realized_events.len();
         let sample_clock = engine.sample_clock();
         let transport = engine.transport_handle();
@@ -390,6 +429,8 @@ impl AudioResources {
             wavetable_publishers: Rc::new(extract_publishers(&wavetable_publishers)),
             drum_handles: Rc::new(build_drum_handles(&drum_publishers)),
             drum_publishers: Rc::new(extract_drum_publishers(&drum_publishers)),
+            master_fx_handles,
+            master_fx_publishers: Rc::new(master_fx_publishers),
             // No `poll_signal` registrations in the test path —
             // they assert main-thread and unit tests run outside the
             // runtime. `build()` attaches the polls after this fn
