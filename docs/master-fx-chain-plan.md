@@ -32,7 +32,28 @@ itself starts shaping signal at X3+.
   default fills the new field during deserialize).
   Workspace tests: 708 → 715 (+5 master_fx unit tests + 2
   project migration tests in `tests/roundtrip.rs`).
-- X2 — not started.
+- X2 ✅ landed 2026-05-25. New `crates/rawdaw-fx/src/softclip.rs`
+  with runtime `SoftClipPatch { threshold: f32 }` (Copy +
+  `From<SoftClipData>` so the X3 graph builder can construct a
+  runtime patch from a project's `master_chain` entry),
+  `SoftClipPublishers { version: Arc<AtomicU64>, snapshot:
+  Arc<Mutex<SoftClipPatch>> }` (mirror of `WavetablePublishers`
+  shape), `SoftClipParam::Threshold` enum with encode/decode/apply
+  against the engine's `[u8; 8]` path (byte 0 = FX-kind
+  discriminant `SOFT_CLIP_FX_KIND = 0`, byte 1 = per-kind
+  sub-tag), and the `SoftClipNode` `AudioNode` impl with the
+  `y = T * tanh(x / T)` per-sample tanh-knee shaper. Constructors
+  `new()`, `with_patch()`, `with_patch_publishers()` follow the
+  U3a synth pattern. Threshold clamps to `[MIN_THRESHOLD,
+  MAX_THRESHOLD] = [0.001, 0.999]` in both `SoftClipPatch::new`
+  and `SoftClipParam::apply` so out-of-range disk data or host
+  bugs can't drive the node pathological. `rawdaw-model` promoted
+  from dev-dep to regular dep for the `From<SoftClipData>` impl.
+  Workspace tests: 715 → 729 (+14 in softclip module — pass,
+  clamps, encode/decode round-trip + rejection cases, publisher
+  contract, DSP unity-region + above-threshold shape, end-to-end
+  mid-block Param event changes amplitude character).
+- X3 — not started.
 - X3 — not started.
 - X4 — not started.
 - X5 — not started.

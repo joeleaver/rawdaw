@@ -13,8 +13,9 @@ workspace = true
 # FX nodes are AudioNode implementations; they need the engine's
 # trait + port types.
 rawdaw-engine = { path = "../rawdaw-engine" }
-
-[dev-dependencies]
-# `ProcessContext` carries a `MusicalTime` field; tests fabricate
-# contexts so they need the model crate's type.
+# `SoftClipPatch` carries `From<SoftClipData>` so the master-FX
+# graph builder can construct a runtime patch from the model's
+# serialized data. The conversion is the seam between the two
+# crates per the X0 design (model owns serialized types,
+# rawdaw-fx owns runtime types + DSP).
 rawdaw-model = { path = "../rawdaw-model" }
