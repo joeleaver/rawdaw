@@ -435,7 +435,9 @@ pub(super) fn ProjectMenu() -> NodeHandle {
     );
 
     rsx! {
-        DropdownMenu { opened_fn: move || opened.get(),
+        DropdownMenu {
+            opened_fn: move || opened.get(),
+            on_close: move || opened.set(false),
             DropdownMenuTarget {
                 button {
                     r#type: "button",

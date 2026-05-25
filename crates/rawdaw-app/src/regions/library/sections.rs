@@ -211,7 +211,9 @@ fn SectionRow(id: SectionId, color: String, name: String, meta: String) -> NodeH
                     div { style: {row_meta_style()}, {meta.clone()} }
                 }
             }
-            DropdownMenu { opened_fn: move || menu_open.get(),
+            DropdownMenu {
+                opened_fn: move || menu_open.get(),
+                on_close: move || menu_open.set(false),
                 DropdownMenuTarget {
                     button {
                         r#type: "button",

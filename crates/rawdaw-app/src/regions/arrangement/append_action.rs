@@ -27,7 +27,9 @@ pub(super) fn AppendButton() -> NodeHandle {
 
     rsx! {
         div { style: {wrapper_style()},
-            DropdownMenu { opened_fn: move || menu_open.get(),
+            DropdownMenu {
+                opened_fn: move || menu_open.get(),
+                on_close: move || menu_open.set(false),
                 DropdownMenuTarget {
                     button {
                         r#type: "button",

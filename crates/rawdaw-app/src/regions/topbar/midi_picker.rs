@@ -29,7 +29,8 @@ pub(super) fn MidiPicker() -> NodeHandle {
         "display: flex; align-items: center; gap: 6px; \
          padding: 0 6px 0 9px; border-radius: 4px; \
          background: {bg0}; border: 1px solid {line}; \
-         font-size: 12px; color: rgba(232,234,238,0.96);",
+         font-size: 12px; color: rgba(232,234,238,0.96); \
+         max-width: 260px; min-width: 0;",
         bg0 = theme::BG0,
         line = theme::LINE,
     );
@@ -37,7 +38,7 @@ pub(super) fn MidiPicker() -> NodeHandle {
         div { style: {wrap_style.clone()},
             Tag { text: "MIDI" }
             Select {
-                size: "sm",
+                size: "xs",
                 value_fn: {|| use_store::<AudioResources>()
                     .current_midi_device
                     .get()

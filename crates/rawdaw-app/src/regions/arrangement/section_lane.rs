@@ -310,7 +310,9 @@ fn BlockActionsMenu(step_idx: usize) -> NodeHandle {
 
     rsx! {
         div { style: {actions_menu_wrapper_style()},
-            DropdownMenu { opened_fn: move || menu_open.get(),
+            DropdownMenu {
+                opened_fn: move || menu_open.get(),
+                on_close: move || menu_open.set(false),
                 DropdownMenuTarget {
                     button {
                         r#type: "button",
@@ -606,11 +608,11 @@ fn VariantChipSelect(
     let chip_label = format!("{current_variant} ▾");
     let chip_style = format!(
         "position: absolute; right: 6px; top: 5px; \
-         height: 18px; padding: 0 6px; \
+         height: 22px; padding: 0 8px; \
          display: inline-flex; align-items: center; \
-         border-radius: 3px; background: {chip_bg}; \
+         border-radius: 4px; background: {chip_bg}; \
          border: 1px solid {chip_border}; \
-         color: rgba(232,234,238,0.92); font-size: 10px; \
+         color: rgba(232,234,238,0.94); font-size: 12px; \
          font-weight: 500; letter-spacing: 0.2px; \
          font-family: inherit; cursor: pointer; \
          max-width: calc(100% - 12px); \
@@ -619,7 +621,9 @@ fn VariantChipSelect(
     );
 
     rsx! {
-        DropdownMenu { opened_fn: move || menu_open.get(),
+        DropdownMenu {
+            opened_fn: move || menu_open.get(),
+            on_close: move || menu_open.set(false),
             DropdownMenuTarget {
                 button {
                     r#type: "button",

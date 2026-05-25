@@ -237,7 +237,9 @@ fn ChordLoopRow(id: ChordLoopId, color: String, name: String, meta: String) -> N
                     div { style: {row_meta_style()}, {meta.clone()} }
                 }
             }
-            DropdownMenu { opened_fn: move || menu_open.get(),
+            DropdownMenu {
+                opened_fn: move || menu_open.get(),
+                on_close: move || menu_open.set(false),
                 DropdownMenuTarget {
                     button {
                         r#type: "button",
